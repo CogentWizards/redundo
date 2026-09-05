@@ -1,7 +1,7 @@
 [project]
 name = "redundo"
 version = "0.1.0"
-description = "Point it at your agent's OTLP traces, get a report on what's wasted. redundo adapt normalizes traces from Hermes/OpenInference, Claude Code, or Claude Cowork into one schema; redundo analyze classifies repeated LLM/tool calls as confirmed waste, likely legitimate, or unclassified."
+description = "Point it at your agent's OTLP traces, get a report on what's wasted. redundo adapt normalizes traces from Hermes/OpenInference, Claude Code, Claude Cowork, or OpenClaw into one schema; redundo analyze classifies repeated LLM/tool calls as confirmed waste, likely legitimate, or unclassified."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
