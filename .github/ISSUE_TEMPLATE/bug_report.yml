@@ -1,0 +1,51 @@
+name: Bug report
+description: Something in redundo produced a wrong, missing, or misleading result.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. redundo's whole design point is "never guess past a genuine unknown" -- so a case where it guessed wrong, or where its degrade-honestly behavior is confusing, is exactly the kind of bug report that matters most.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Where does this happen?
+      options:
+        - redundo adapt (a specific source: openinference, claude-code, cowork, openclaw)
+        - redundo analyze (classification, coverage, report output)
+        - redundo collect
+        - CLI / packaging
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected vs. what you actually got.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: >
+        A small trace (JSONL for `analyze`, or a captured OTLP batch for `adapt`) that
+        reproduces this, plus the exact command you ran. Redact any real prompt/tool
+        content first -- content_hash exists so you never have to share raw content to
+        report a bug.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: redundo version
+      description: Output of `pip show redundo` (the Version line), or the commit/tag you installed from.
+    validations:
+      required: true

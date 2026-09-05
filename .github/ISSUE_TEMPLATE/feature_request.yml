@@ -1,0 +1,42 @@
+name: Feature request
+description: A new source, a new analysis, or a change to adapt/analyze's behavior.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before proposing a new adapter source or analysis, skim [CONTRIBUTING.md](../../CONTRIBUTING.md) --
+        both are held to specific discipline (real captured telemetry, honest coverage
+        reporting, never guessing past a genuine unknown) that shapes what a good PR
+        for either looks like.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of change is this?
+      options:
+        - New adapter source (a new agent framework's OTLP)
+        - New analysis (something other than redundant-call detection)
+        - Change to an existing source or analysis
+        - CLI / packaging
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem or gap?
+      description: What can't you do with redundo today that you want to?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: >
+        If this is a new source: what does its real OTLP/telemetry shape look like,
+        and do you have a real capture to validate against? (See CONTRIBUTING.md --
+        every source in this project was built against actual captured data, not
+        just a framework's docs.)
