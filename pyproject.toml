@@ -26,9 +26,9 @@ dependencies = []
 collector = ["opentelemetry-proto>=1.20", "protobuf>=4.0"]
 
 [project.urls]
-Homepage = "https://github.com/cogent-ai/redundo"
-Repository = "https://github.com/cogent-ai/redundo"
-Issues = "https://github.com/cogent-ai/redundo/issues"
+Homepage = "https://github.com/CogentWizards/redundo"
+Repository = "https://github.com/CogentWizards/redundo"
+Issues = "https://github.com/CogentWizards/redundo/issues"
 
 [project.scripts]
 redundo = "redundo.cli:main"

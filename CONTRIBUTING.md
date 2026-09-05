@@ -101,6 +101,25 @@ uv run pytest
 `tests/adapter/` and `tests/analyzer/` run independently — a change to
 one package's tests should never need to touch the other's.
 
+## Releasing to PyPI
+
+Publishing uses [Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
+(OIDC) via GitHub Actions — no API token is stored anywhere. To cut a release:
+
+1. Bump `version` in `pyproject.toml`, merge that through the normal PR
+   workflow.
+2. Tag the merge commit `vX.Y.Z` and push the tag, or create a GitHub
+   Release directly against `main` with that tag.
+3. Publishing a GitHub Release triggers `.github/workflows/publish.yml`,
+   which builds the sdist/wheel with `uv build` and publishes them via
+   `pypa/gh-action-pypi-publish`.
+
+The PyPI project must have this repository registered as a trusted
+publisher first (PyPI account/org → Publishing settings → project name
+`redundo`, repo `CogentWizards/redundo`, workflow `publish.yml`,
+environment `pypi`) — a one-time setup step, done on pypi.org, not in
+this repo.
+
 ## Reporting a documented behavior that turned out to be wrong
 
 If you've captured real telemetry from a source and it disagrees with
