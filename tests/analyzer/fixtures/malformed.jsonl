@@ -1,0 +1,4 @@
+{"task_id": "t1", "step_index": 0, "event_type": "tool_call", "name": "search", "content_hash": "h1"}
+{"task_id": "t1", "step_index": 1, "event_type": "not_a_real_type", "name": "search", "content_hash": "h1"}
+{not valid json at all
+{"task_id": "t1", "step_index": 2, "event_type": "tool_call", "name": "search", "content_hash": "h1"}

@@ -1,0 +1,47 @@
+[project]
+name = "redundo"
+version = "0.1.0"
+description = "Point it at your agent's OTLP traces, get a report on what's wasted. redundo adapt normalizes traces from Hermes/OpenInference, Claude Code, or Claude Cowork into one schema; redundo analyze classifies repeated LLM/tool calls as confirmed waste, likely legitimate, or unclassified."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Cogent AI" }]
+keywords = ["opentelemetry", "otlp", "observability", "ai-agents", "llm", "tracing", "cost-analysis"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Monitoring",
+]
+dependencies = []
+
+[project.optional-dependencies]
+# Only needed for `redundo collect`, the convenience local OTLP receiver --
+# `adapt` and `analyze` proper have zero dependencies.
+collector = ["opentelemetry-proto>=1.20", "protobuf>=4.0"]
+
+[project.urls]
+Homepage = "https://github.com/cogent-ai/redundo"
+Repository = "https://github.com/cogent-ai/redundo"
+Issues = "https://github.com/cogent-ai/redundo/issues"
+
+[project.scripts]
+redundo = "redundo.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/redundo"]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

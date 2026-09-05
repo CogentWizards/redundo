@@ -1,0 +1,31 @@
+{"task_id": "session-001", "step_index": 0, "event_type": "tool_call", "name": "web_search", "content_hash": "args_search_ai_news", "model": "gpt-5.6", "workflow": "research_agent", "cost_usd": 0.004, "tokens_in": 120, "tokens_out": 15, "timestamp": "2026-08-31T09:00:00Z"}
+{"task_id": "session-001", "step_index": 1, "event_type": "tool_result", "name": "web_search", "content_hash": "result_search_page_1", "outcome": "ok", "timestamp": "2026-08-31T09:00:01Z"}
+{"task_id": "session-001", "step_index": 2, "event_type": "tool_call", "name": "web_search", "content_hash": "args_search_ai_news", "model": "gpt-5.6", "workflow": "research_agent", "cost_usd": 0.004, "tokens_in": 120, "tokens_out": 15, "timestamp": "2026-08-31T09:00:05Z"}
+{"task_id": "session-001", "step_index": 3, "event_type": "tool_result", "name": "web_search", "content_hash": "result_search_page_1", "outcome": "ok", "timestamp": "2026-08-31T09:00:06Z"}
+{"task_id": "session-001", "step_index": 4, "event_type": "tool_call", "name": "web_search", "content_hash": "args_search_ai_news", "model": "gpt-5.6", "workflow": "research_agent", "cost_usd": 0.004, "tokens_in": 120, "tokens_out": 15, "timestamp": "2026-08-31T09:00:10Z"}
+{"task_id": "session-001", "step_index": 5, "event_type": "tool_result", "name": "web_search", "content_hash": "result_search_page_1", "outcome": "error", "timestamp": "2026-08-31T09:00:11Z"}
+
+{"task_id": "session-002", "step_index": 0, "event_type": "tool_call", "name": "read_file", "content_hash": "args_read_config_yaml", "model": "claude-sonnet-5", "workflow": "coding_agent", "cost_usd": 0.002, "tokens_in": 80, "tokens_out": 40, "timestamp": "2026-08-31T09:05:00Z"}
+{"task_id": "session-002", "step_index": 1, "event_type": "tool_result", "name": "read_file", "content_hash": "result_config_v1", "outcome": "ok", "timestamp": "2026-08-31T09:05:01Z"}
+{"task_id": "session-002", "step_index": 2, "event_type": "tool_call", "name": "write_file", "content_hash": "args_write_config_yaml", "model": "claude-sonnet-5", "workflow": "coding_agent", "cost_usd": 0.003, "outcome": "ok", "metadata": {"write": true}, "timestamp": "2026-08-31T09:05:03Z"}
+{"task_id": "session-002", "step_index": 3, "event_type": "tool_call", "name": "read_file", "content_hash": "args_read_config_yaml", "model": "claude-sonnet-5", "workflow": "coding_agent", "cost_usd": 0.002, "tokens_in": 80, "tokens_out": 40, "timestamp": "2026-08-31T09:05:05Z"}
+{"task_id": "session-002", "step_index": 4, "event_type": "tool_result", "name": "read_file", "content_hash": "result_config_v2", "outcome": "error", "timestamp": "2026-08-31T09:05:06Z"}
+
+{"task_id": "session-003", "step_index": 0, "event_type": "tool_call", "name": "get_stock_price", "content_hash": "args_price_AAPL", "model": "gpt-5.6", "workflow": "trading_agent", "cost_usd": 0.001, "tokens_in": 50, "tokens_out": 10, "timestamp": "2026-08-31T09:10:00Z"}
+{"task_id": "session-003", "step_index": 1, "event_type": "tool_result", "name": "get_stock_price", "content_hash": "result_price_231_50", "outcome": "ok", "timestamp": "2026-08-31T09:10:01Z"}
+{"task_id": "session-003", "step_index": 2, "event_type": "tool_call", "name": "get_stock_price", "content_hash": "args_price_AAPL", "model": "gpt-5.6", "workflow": "trading_agent", "cost_usd": 0.001, "tokens_in": 50, "tokens_out": 10, "timestamp": "2026-08-31T09:10:30Z"}
+{"task_id": "session-003", "step_index": 3, "event_type": "tool_result", "name": "get_stock_price", "content_hash": "result_price_231_62", "outcome": "error", "timestamp": "2026-08-31T09:10:31Z"}
+
+{"task_id": "session-004", "step_index": 0, "event_type": "tool_call", "name": "ping_endpoint", "content_hash": "args_ping_api_health", "model": "gpt-5.6", "workflow": "healthcheck", "cost_usd": 0.0005, "tokens_in": 20, "tokens_out": 5, "timestamp": "2026-08-31T09:15:00Z"}
+{"task_id": "session-004", "step_index": 1, "event_type": "tool_result", "name": "ping_endpoint", "content_hash": "result_timeout", "outcome": "error", "timestamp": "2026-08-31T09:15:01Z"}
+{"task_id": "session-004", "step_index": 2, "event_type": "tool_call", "name": "ping_endpoint", "content_hash": "args_ping_api_health", "model": "gpt-5.6", "workflow": "healthcheck", "cost_usd": 0.0005, "tokens_in": 20, "tokens_out": 5, "timestamp": "2026-08-31T09:15:05Z"}
+{"task_id": "session-004", "step_index": 3, "event_type": "tool_result", "name": "ping_endpoint", "content_hash": "result_ok_200", "outcome": "ok", "timestamp": "2026-08-31T09:15:06Z"}
+
+{"task_id": "session-005", "step_index": 0, "event_type": "tool_call", "name": "legacy_lookup", "content_hash": "args_lookup_customer_42", "model": "claude-sonnet-5", "workflow": "legacy_pipeline", "cost_usd": 0.002, "tokens_in": 60, "tokens_out": 8, "timestamp": "2026-08-31T09:20:00Z"}
+{"task_id": "session-005", "step_index": 1, "event_type": "tool_call", "name": "legacy_lookup", "content_hash": "args_lookup_customer_42", "model": "claude-sonnet-5", "workflow": "legacy_pipeline", "cost_usd": 0.002, "tokens_in": 60, "tokens_out": 8, "timestamp": "2026-08-31T09:20:03Z"}
+
+{"task_id": "session-006", "step_index": 0, "event_type": "llm_call", "name": "gpt-5.6", "content_hash": "prompt_summarize_report_v1", "model": "gpt-5.6", "workflow": "summarizer", "cost_usd": 0.02, "tokens_in": 3000, "tokens_out": 200, "metadata": {"response_hash": "resp_generic_error_msg"}, "timestamp": "2026-08-31T09:25:00Z"}
+{"task_id": "session-006", "step_index": 1, "event_type": "llm_call", "name": "gpt-5.6", "content_hash": "prompt_summarize_report_v1", "model": "gpt-5.6", "workflow": "summarizer", "cost_usd": 0.02, "tokens_in": 3000, "tokens_out": 200, "outcome": "error", "metadata": {"response_hash": "resp_generic_error_msg"}, "timestamp": "2026-08-31T09:25:04Z"}
+
+{"task_id": "session-007", "step_index": 0, "event_type": "llm_call", "name": "gpt-5.6", "content_hash": "prompt_summarize_report_v2", "model": "gpt-5.6", "workflow": "summarizer", "cost_usd": 0.02, "tokens_in": 3000, "tokens_out": 200, "timestamp": "2026-08-31T09:30:00Z"}
+{"task_id": "session-007", "step_index": 1, "event_type": "llm_call", "name": "gpt-5.6", "content_hash": "prompt_summarize_report_v2", "model": "gpt-5.6", "workflow": "summarizer", "cost_usd": 0.02, "tokens_in": 3000, "tokens_out": 200, "outcome": "error", "timestamp": "2026-08-31T09:30:05Z"}
