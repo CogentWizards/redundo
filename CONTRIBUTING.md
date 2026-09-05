@@ -1,9 +1,29 @@
 # Contributing
 
+By participating in this project you agree to abide by its
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
 This is two packages under one name: `redundo.adapter` turns a
 specific trace source into the schema, `redundo.analyzer` runs
 analyses over that schema. They share the schema contract and nothing
 else at runtime — contribute to either independently.
+
+## Workflow
+
+- **Every change goes through a branch and a pull request against
+  `main`** — including maintainers' own changes. `main` is protected:
+  direct pushes are rejected, and CI must pass before a PR can merge.
+- **Branch names**: `fix/…` for bug fixes, `feat/…` for new sources or
+  analyses, `chore/…` for anything else (docs, CI, tooling).
+- **Bug reports and feature requests** go through the issue templates
+  (`.github/ISSUE_TEMPLATE/`) rather than an ad-hoc issue — the bug
+  report template in particular asks for a minimal reproduction (a
+  small fixture, not a real capture) and the redundo version, which is
+  most of what's needed to act on it.
+- **CI** (`.github/workflows/ci.yml`) runs the full test suite on
+  Python 3.10–3.12 for every PR. A PR that doesn't pass CI doesn't get
+  merged, no exception for "it's just docs" — the workflow itself is
+  the only thing verifying that.
 
 ## Adding a new source (`redundo.adapter`)
 
@@ -85,5 +105,6 @@ one package's tests should never need to touch the other's.
 
 If you've captured real telemetry from a source and it disagrees with
 what's written in `docs/`, that's a genuinely valuable bug report even
-without a fix attached — open an issue with the captured data (redacted
-of any real content) or a description of the discrepancy.
+without a fix attached — open an issue (the bug report template) with
+the captured data (redacted of any real content) or a description of
+the discrepancy.
