@@ -70,7 +70,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .. import hashing
-from ..otlp import LogRecord, Span, parse_log_records, parse_spans
+from ..base import AdapterSource, Detection
+from ..otlp import (
+    LogRecord,
+    Span,
+    document_resource_attributes,
+    is_log_document,
+    is_trace_document,
+    parse_log_records,
+    parse_spans,
+)
 
 _KEPT_SPAN_NAMES = {"claude_code.llm_request", "claude_code.tool"}
 _STRUCTURAL_SPAN_NAMES = {
@@ -828,3 +837,46 @@ def _try_parse_json(value: str) -> Any | None:
         return json.loads(value)
     except (TypeError, ValueError):
         return None
+
+
+# Observed on real Claude Code captures, never documented for Cowork -- see
+# registry.py's module docstring for why Cowork's own detection can't just
+# be "the inverse of this set" living on ClaudeCodeSource instead.
+_CLAUDE_CODE_ONLY_EVENT_NAMES = frozenset(
+    {"mcp_server_connection", "permission_mode_changed", "auth"}
+)
+
+
+class ClaudeCodeSource(AdapterSource):
+    name = "claude-code"
+
+    def detect(self, documents: list[dict[str, Any]]) -> Detection | None:
+        for doc in documents:
+            if is_trace_document(doc):
+                for span in parse_spans(doc):
+                    if span.name.startswith("claude_code."):
+                        return Detection("claude-code", f"span name {span.name!r}")
+
+        for doc in documents:
+            for resource_attrs in document_resource_attributes(doc):
+                if resource_attrs.get("service.name") == "claude-code":
+                    return Detection("claude-code", "resource service.name='claude-code'")
+
+        event_names: set[str] = set()
+        for doc in documents:
+            if not is_log_document(doc):
+                continue
+            for rec in parse_log_records(doc):
+                name = rec.attributes.get("event.name")
+                if isinstance(name, str):
+                    event_names.add(name)
+        hit = event_names & _CLAUDE_CODE_ONLY_EVENT_NAMES
+        if hit:
+            return Detection(
+                "claude-code",
+                f"event name(s) {sorted(hit)} not in Cowork's documented event set",
+            )
+        return None
+
+    def convert(self, documents: list[dict[str, Any]]):
+        return convert_claude_code(documents)

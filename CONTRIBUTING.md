@@ -42,11 +42,18 @@ A good addition:
    how tool calls and their results are represented, and a "known gaps"
    section stating plainly what can't be recovered and why. Copy the
    structure of an existing source doc.
-3. **Adds a detection rule** in `detect.py` — something in the data
-   itself (a span name, an attribute, a resource attribute) that
-   reliably distinguishes this source from every other one already
-   supported. If nothing does, say so in the docstring and require
-   `--source` instead of guessing.
+3. **Implements `AdapterSource`** (`base.py`): a `detect(documents)` that
+   returns a `Detection` when something in the data itself (a span name,
+   an attribute, a resource attribute) reliably distinguishes this source
+   from every other one already supported, else `None` -- if nothing
+   does, say so in the docstring and require `--source` instead of
+   guessing; and a `convert(documents)` that can just delegate to an
+   existing `convert_*()` free function. Register it under this repo's
+   own `[project.entry-points."redundo.adapter.sources"]` table (built-in
+   sources go through the exact same discovery path as a third-party
+   plugin would -- see `registry.py`'s module docstring). A new source
+   living in its own package instead of this repo needs no PR here at
+   all, just its own entry point.
 4. **Never fabricates content.** If a result or a piece of content isn't
    observable, omit the record or mark it explicitly rather than
    inventing a placeholder hash — see `hashing.py`'s module docstring and

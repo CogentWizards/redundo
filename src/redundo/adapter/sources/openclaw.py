@@ -62,7 +62,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .. import hashing
-from ..otlp import Span, parse_spans
+from ..base import AdapterSource, Detection
+from ..otlp import Span, is_trace_document, parse_spans
 
 # Span name -> the event_type it becomes. Every other span name is a
 # structural wrapper or an unmapped signal (see module docstring point 3)
@@ -464,3 +465,25 @@ def _tool_events(
         "metadata": _base_metadata(span, result_masks, "prompt"),
     }
     return call, result
+
+
+_OBSERVATION_UNIT_ATTR = "openclaw.model_call.observation_unit"
+
+
+class OpenClawSource(AdapterSource):
+    name = "openclaw"
+
+    def detect(self, documents: list[dict[str, Any]]) -> Detection | None:
+        for doc in documents:
+            if not is_trace_document(doc):
+                continue
+            for span in parse_spans(doc):
+                if span.name.startswith("openclaw."):
+                    return Detection("openclaw", f"span name {span.name!r}")
+                if _OBSERVATION_UNIT_ATTR in span.attributes:
+                    return Detection("openclaw", f"span attribute {_OBSERVATION_UNIT_ATTR!r}")
+        return None
+
+    def convert(self, documents: list[dict[str, Any]]):
+        trace_docs = [d for d in documents if is_trace_document(d)]
+        return convert_openclaw(trace_docs)

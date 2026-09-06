@@ -3,12 +3,13 @@ matching the redundo.analyzer schema contract.
 
     redundo adapt ./otlp_traces -o trace.jsonl
 
-The source (OpenInference/Hermes, Claude Code, Cowork, or OpenClaw) is auto-detected
-from the captured data itself -- see detect.py for exactly how, and
-`--source` to skip detection and force one explicitly. A directory is
-accepted rather than a single file because every source's own exporter
-flushes on an interval, producing many small batch files per session
-rather than one large export.
+The source (OpenInference/Hermes, Claude Code, Cowork, OpenClaw, or a
+third-party plugin registered under the `redundo.adapter.sources` entry
+point group) is auto-detected from the captured data itself -- see
+`registry.py` for exactly how, and `--source` to skip detection and force
+one explicitly. A directory is accepted rather than a single file because
+every source's own exporter flushes on an interval, producing many small
+batch files per session rather than one large export.
 """
 
 from __future__ import annotations
@@ -18,9 +19,9 @@ import json
 import sys
 from pathlib import Path
 
-from .detect import DetectionError, Source, detect_source
+from .base import DetectionError
 from .otlp import OtlpParseError, is_log_document, is_trace_document
-from .sources import convert_claude_code, convert_cowork, convert_openclaw, convert_openinference
+from .registry import default_registry
 from .writer import write_jsonl
 
 
@@ -40,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write JSONL here instead of stdout",
     )
     parser.add_argument(
-        "--source", choices=[s.value for s in Source], default=None,
+        "--source", choices=default_registry.names(), default=None,
         help="Skip auto-detection and force this source",
     )
     parser.add_argument(
@@ -81,28 +82,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.source is not None:
-        source = Source(args.source)
-        reason = "--source flag"
+        source_name, reason = args.source, "--source flag"
     else:
         try:
-            detection = detect_source(documents)
+            detection = default_registry.detect(documents)
         except DetectionError as exc:
             print(f"redundo adapt: {exc}", file=sys.stderr)
             return 1
-        source, reason = detection.source, detection.reason
-
-    trace_docs = [d for d in documents if is_trace_document(d)]
-    log_docs = [d for d in documents if is_log_document(d)]
+        source_name, reason = detection.source, detection.reason
 
     try:
-        if source is Source.OPENINFERENCE:
-            records, summary = convert_openinference(trace_docs)
-        elif source is Source.CLAUDE_CODE:
-            records, summary = convert_claude_code(documents)
-        elif source is Source.OPENCLAW:
-            records, summary = convert_openclaw(trace_docs)
-        else:
-            records, summary = convert_cowork(log_docs)
+        source = default_registry.get(source_name)
+        records, summary = source.convert(documents)
     except OtlpParseError as exc:
         print(f"redundo adapt: {exc}", file=sys.stderr)
         return 1
@@ -114,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         write_jsonl(records, sys.stdout)
 
     if args.summary or not records:
-        print(f"\nsource: {source.value} (detected via {reason})", file=sys.stderr)
+        print(f"\nsource: {source_name} (detected via {reason})", file=sys.stderr)
         if skipped_unrecognized:
             print(
                 f"  ({skipped_unrecognized} file(s) in {args.otlp_dir} were not "
