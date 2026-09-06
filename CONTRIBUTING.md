@@ -67,36 +67,47 @@ A good addition:
 
 ## Adding a new analysis (`redundo.analyzer`)
 
-The schema and ingest layer (`schema.py`, `ingest.py`) and the reporting
-infrastructure (`report.py`'s coverage plumbing, `to_text()`/`to_json()`/
-`to_html()`) are not specific to waste detection. `classify.py`,
-`cycles.py`, and the candidate-pair parts of `lineage.py` are — that's
-today's one analysis, not the whole package.
+The schema and ingest layer (`schema.py`, `ingest.py`), the generic
+aggregation primitives (`metrics.py`'s `Slice`/`CoverageStats`), and the
+reporting infrastructure (`report.py`'s `to_text()`/`to_json()`/
+`to_html()`) are not specific to waste detection — they operate on the
+generic `Analysis`/`AnalysisResult`/`Bucket` shapes in `analysis.py`.
+`classify.py`, `cycles.py`, and `analyses/waste.py` are the one analysis
+this project ships with, not the whole package.
 
 A new analysis over the same schema should:
 
-1. **Reuse `load_events()` and the `Event` dataclass** — never invent a
-   parallel ingestion path. The schema is the contract every adapter
-   targets; a second analysis reading something else defeats the point
-   of having one.
-2. **Report coverage honestly**, the same way the waste analysis does:
-   what fraction of the loaded corpus this analysis can actually speak
-   to, before any headline number. See `metrics.py`'s `CoverageStats`
-   and `report.py`'s coverage lines for the pattern to follow.
+1. **Implement `Analysis`** (`analysis.py`): a `run(events) -> AnalysisResult`
+   that reuses `load_events()`/`Event` — never invent a parallel ingestion
+   path — and produces an ordered list of `Bucket`s (whatever labels make
+   sense for your analysis; there's no fixed enum to match). Conforming to
+   this shape gets you all three renderers (`to_text`/`to_json`/`to_html`)
+   for free — see `analyses/waste.py` for a complete example, and note
+   how little of it is about rendering.
+2. **Report coverage honestly**: call `metrics.compute_generic_coverage()`
+   for the two dimensions every analysis can speak to (pricing, task-id
+   confidence), and append any analysis-specific caveat as a pre-rendered
+   sentence to `coverage.extra_notes` — see `WasteAnalysis`'s own
+   candidate-pair comparability note for the pattern. Don't add a new
+   field to `CoverageStats` for your analysis's own vocabulary.
 3. **Never guess past a genuine unknown.** `classify.py`'s three-signal
    model (waste-supporting / legit-supporting / unknown, never a forced
    binary) and its module docstring are the reference for why: a
    confident wrong answer is worse than an honest "the trace doesn't
    say," because the first time someone spot-checks a confident answer
    by hand and finds it wrong, the tool stops being trusted.
-4. **Prints its rule next to its own counts**, not just a label — see
-   `RULE_TEXT` in `report.py`. A number without the rule that produced it
-   isn't checkable by anyone reading the report.
+4. **Prints its rule next to its own counts**, not just a label — each
+   `Bucket.rule_text` is exactly this. A number without the rule that
+   produced it isn't checkable by anyone reading the report.
 5. **Ships with a fixture-based validation**, the same discipline
    `tests/analyzer/fixtures/sample.jsonl` follows: hand-built traces with
    a known, intended classification for each case your new analysis
    distinguishes, not just real captured examples (useful for demos, too
    brittle/large to be the actual test).
+6. **Registers under `[project.entry-points."redundo.analyzer.analyses"]`**
+   — the built-in `waste` analysis goes through the identical path (see
+   `registry.py`'s module docstring). Living in its own package instead
+   of this repo needs no PR here at all, just its own entry point.
 
 ## Running tests
 
