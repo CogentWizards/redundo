@@ -282,6 +282,7 @@ redundo analyze trace.jsonl
 redundo analyze trace.jsonl --format json
 redundo analyze trace.jsonl --format html --output report.html
 redundo analyze trace.jsonl --lenient   # skip malformed rows instead of failing
+redundo analyze trace.jsonl --analysis waste   # the default -- other analyses can register under this flag
 ```
 
 The HTML report is a single self-contained file: no CDN assets, no
@@ -297,18 +298,25 @@ Or as a library:
 
 ```python
 from redundo.adapter import detect_source, convert_claude_code
-from redundo.analyzer import load_events, find_candidate_pairs, classify_pair, build_report
-from redundo.analyzer.lineage import group_by_task
+from redundo.analyzer import load_events, WasteAnalysis
 
 documents = [...]  # parsed OTLP JSON documents
 detection = detect_source(documents)
 records, summary = convert_claude_code(documents)  # or convert_openinference / convert_cowork / convert_openclaw
 
 events = load_events("trace.jsonl")
-lineages = group_by_task(events)
-pairs = find_candidate_pairs(events)
-classifications = [classify_pair(p, lineages[p.task_id]) for p in pairs]
-report = build_report(classifications, events)
+result = WasteAnalysis().run(events)
+```
+
+Or run a different analysis the same way -- any `Analysis` subclass takes
+a `list[Event]` and returns an `AnalysisResult` that every renderer
+(`to_text`/`to_json`/`to_html`) already knows how to display:
+
+```python
+from redundo.analyzer import AnalysisRegistry, to_html
+
+result = AnalysisRegistry().get("waste").run(events)
+open("report.html", "w").write(to_html(result))
 ```
 
 Every `Classification` carries a one-line `reason` naming exactly which

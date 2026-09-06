@@ -91,4 +91,4 @@ def test_adapt_piped_into_analyze_end_to_end(tmp_path, capsys, monkeypatch):
     analyze_exit = main(["analyze", "--format", "json"])
     assert analyze_exit == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["total_candidate_pairs"] == 1
+    assert report["total_candidates"] == 1

@@ -1,5 +1,5 @@
-"""CLI entry point: read a normalized JSONL trace (file or stdin), print a
-waste report.
+"""CLI entry point: read a normalized JSONL trace (file or stdin), print an
+analysis report.
 """
 
 from __future__ import annotations
@@ -8,19 +8,19 @@ import argparse
 import sys
 from pathlib import Path
 
-from .classify import classify_pair
-from .cycles import find_candidate_pairs
 from .ingest import IngestError, load_events
-from .lineage import group_by_task
-from .metrics import build_report
+from .registry import default_registry
 from .report import to_html, to_json, to_text
+
+_RENDERERS = {"text": to_text, "json": to_json, "html": to_html}
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="redundo analyze",
-        description="Classify repeated LLM/tool calls in a normalized trace as "
-        "confirmed waste, likely legitimate, or unclassified.",
+        description="Run an analysis over a normalized trace -- by default, "
+        "classify repeated LLM/tool calls as confirmed waste, likely "
+        "legitimate, or unclassified.",
     )
     parser.add_argument(
         "trace", type=str, nargs="?", default="-",
@@ -28,8 +28,14 @@ def build_parser() -> argparse.ArgumentParser:
         "'-', to read from stdin -- e.g. `redundo adapt ... | redundo analyze`.",
     )
     parser.add_argument(
+        "--analysis",
+        choices=default_registry.names(),
+        default="waste",
+        help="Which analysis to run (default: waste)",
+    )
+    parser.add_argument(
         "--format",
-        choices=("text", "json", "html"),
+        choices=tuple(_RENDERERS),
         default="text",
         help="Output format (default: text)",
     )
@@ -74,17 +80,16 @@ def main(argv: list[str] | None = None) -> int:
         print("redundo analyze: no events loaded", file=sys.stderr)
         return 1
 
-    lineages = group_by_task(events)
-    pairs = find_candidate_pairs(events)
-    classifications = [classify_pair(pair, lineages[pair.task_id]) for pair in pairs]
-    report = build_report(classifications, events, keep_reasons=args.samples)
+    try:
+        analysis = default_registry.get(args.analysis, keep_reasons=args.samples)
+    except TypeError:
+        # This analysis's constructor doesn't accept keep_reasons -- not
+        # every analysis needs a "how many samples to keep" knob.
+        analysis = default_registry.get(args.analysis)
+    result = analysis.run(events)
 
-    if args.format == "json":
-        output = to_json(report)
-    elif args.format == "html":
-        output = to_html(report)
-    else:
-        output = to_text(report)
+    render = _RENDERERS[args.format]
+    output = render(result, max_reasons=args.samples)
 
     if args.output:
         args.output.write_text(output, encoding="utf-8")

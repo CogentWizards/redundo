@@ -1,11 +1,13 @@
 from pathlib import Path
 
+import pytest
+
+from redundo.analyzer.analyses import WasteAnalysis
 from redundo.analyzer.classify import Verdict, classify_pair
 from redundo.analyzer.cli import main
 from redundo.analyzer.cycles import find_candidate_pairs
 from redundo.analyzer.ingest import load_events
 from redundo.analyzer.lineage import group_by_task
-from redundo.analyzer.metrics import build_report
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -23,11 +25,12 @@ def test_sample_fixture_lands_in_expected_buckets():
     assert by_task["legit-success-1"] == Verdict.LIKELY_LEGITIMATE
     assert by_task["unclassified-1"] == Verdict.UNCLASSIFIED
 
-    report = build_report(classifications, events)
-    assert report.total_candidate_pairs == 5
-    assert report.by_verdict[Verdict.CONFIRMED_WASTE].count == 1
-    assert report.by_verdict[Verdict.LIKELY_LEGITIMATE].count == 3
-    assert report.by_verdict[Verdict.UNCLASSIFIED].count == 1
+    result = WasteAnalysis().run(events)
+    assert result.total_candidates == 5
+    buckets = {b.key: b.slice for b in result.buckets}
+    assert buckets["confirmed_waste"].count == 1
+    assert buckets["likely_legitimate"].count == 3
+    assert buckets["unclassified"].count == 1
 
 
 def test_cli_text_output(capsys):
@@ -37,6 +40,21 @@ def test_cli_text_output(capsys):
     assert "confirmed_waste" in captured
     assert "likely_legitimate" in captured
     assert "unclassified" in captured
+
+
+def test_cli_explicit_analysis_flag(capsys):
+    exit_code = main([str(FIXTURES / "sample.jsonl"), "--analysis", "waste"])
+    assert exit_code == 0
+    assert "confirmed_waste" in capsys.readouterr().out
+
+
+def test_cli_unknown_analysis_fails_with_dynamic_name_list(capsys):
+    # argparse's own choices= validation rejects this before main()'s body
+    # ever runs, so it's a SystemExit(2), not a returned exit code.
+    with pytest.raises(SystemExit) as exc_info:
+        main([str(FIXTURES / "sample.jsonl"), "--analysis", "bogus"])
+    assert exc_info.value.code == 2
+    assert "waste" in capsys.readouterr().err
 
 
 def test_cli_json_output(capsys):

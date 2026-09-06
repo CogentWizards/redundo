@@ -1,42 +1,25 @@
-"""Render a Report as text, JSON, or a self-contained HTML page."""
+"""Render an AnalysisResult as text, JSON, or a self-contained HTML page.
+
+Generic over any analysis's output -- this module doesn't know what a
+`Verdict` is, or what "waste" means. It only knows the `AnalysisResult`/
+`Bucket`/`Slice`/`CoverageStats` shapes from `analysis.py`/`metrics.py`.
+Any analysis that produces a conforming `AnalysisResult` gets all three
+renderers for free.
+"""
 
 from __future__ import annotations
 
 import html
 import json
 
-from .classify import Verdict
-from .metrics import CoverageStats, Report, Slice
-
-_ORDER = (Verdict.CONFIRMED_WASTE, Verdict.LIKELY_LEGITIMATE, Verdict.UNCLASSIFIED)
-
-# The rule itself, printed next to every count rather than left implicit.
-# "42 confirmed_waste" is a claim; "42 confirmed_waste -- repeated call,
-# unchanged result, no intervening write, task failed" is a claim someone
-# can check against one case by hand. That's what makes it credible enough
-# to forward. Keep this in sync with classify.py's actual decision logic --
-# it's prose describing that logic, not a separate source of truth.
-RULE_TEXT = {
-    Verdict.CONFIRMED_WASTE: (
-        "repeated call, unchanged result, no intervening write, task failed. "
-        "All four, confirmed -- drop any one and it's a guess, not a finding."
-    ),
-    Verdict.LIKELY_LEGITIMATE: (
-        "a specific reason it's not waste: result changed (polling worked), "
-        "a write intervened (verification), or the task succeeded and neither "
-        "the result nor the write status is already confirmed waste on its own"
-    ),
-    Verdict.UNCLASSIFIED: (
-        "everything else -- a required signal (result, write status, or "
-        "outcome) was missing from the trace, or the call confirms waste on "
-        "its own and task-level success can't settle whether it mattered. "
-        "No verdict, on purpose"
-    ),
-}
+from .analysis import AnalysisResult, Bucket
+from .metrics import CoverageStats, Slice
 
 
-def to_json(report: Report, *, indent: int = 2) -> str:
-    return json.dumps(report.as_dict(), indent=indent)
+def to_json(result: AnalysisResult, *, max_reasons: int = 20, indent: int = 2) -> str:
+    data = result.as_dict()
+    data["reasons"] = {key: reasons[:max_reasons] for key, reasons in result.reasons.items()}
+    return json.dumps(data, indent=indent)
 
 
 def _fmt_usd(value: float) -> str:
@@ -67,36 +50,28 @@ def _coverage_lines(coverage: CoverageStats) -> list[str]:
             f"conversation id ({conf * 100:.0f}%); the rest fell back to trace-id "
             "grouping, where cross-trace rework isn't detected."
         )
-    if coverage.events_in_tasks_with_no_candidate_pairs:
-        cmp_pct = coverage.tasks_with_candidate_pairs_fraction * 100
-        lines.append(
-            f"  {coverage.tasks_with_candidate_pairs}/{coverage.tasks_total} tasks "
-            f"({cmp_pct:.0f}%) had at least one repeated call for redundancy detection "
-            f"to examine. The rest -- {_fmt_usd(coverage.cost_usd_in_tasks_with_no_candidate_pairs)} "
-            f"of tracked spend, {coverage.events_in_tasks_with_no_candidate_pairs} event(s) -- "
-            "had nothing that repeated at all, so nothing appears for them in the buckets "
-            "below. That's not a gap in the data; every call in those tasks was simply unique."
-        )
+    for note in coverage.extra_notes:
+        lines.append(f"  {note}")
     return lines
 
 
-def to_text(report: Report) -> str:
+def to_text(result: AnalysisResult, *, max_reasons: int = 20) -> str:
     lines: list[str] = []
-    lines.extend(_coverage_lines(report.coverage))
+    lines.extend(_coverage_lines(result.coverage))
     lines.append("")
-    lines.append(f"Candidate redundant-repeat pairs: {report.total_candidate_pairs}")
+    lines.append(f"Candidate redundant-repeat pairs: {result.total_candidates}")
     lines.append("")
 
-    for verdict in _ORDER:
-        s = report.by_verdict[verdict]
-        lines.append(f"{s.count} {verdict.value} -- {RULE_TEXT[verdict]}")
+    for bucket in result.buckets:
+        s = bucket.slice
+        lines.append(f"{s.count} {bucket.key} -- {bucket.rule_text}")
         lines.append(f"  cost_usd:   {s.cost_usd:.6f}" + (
             f"  ({s.unpriced_count} repeat(s) had no cost_usd)" if s.unpriced_count else ""
         ))
         lines.append(f"  tokens_in:  {s.tokens_in}")
         lines.append(f"  tokens_out: {s.tokens_out}")
 
-        by_model = report.by_verdict_and_model.get(verdict, {})
+        by_model = result.by_bucket_and_model.get(bucket.key, {})
         if by_model:
             lines.append("  by model:")
             for model, ms in sorted(by_model.items(), key=lambda kv: -kv[1].count):
@@ -105,7 +80,7 @@ def to_text(report: Report) -> str:
                     f"tokens_in={ms.tokens_in} tokens_out={ms.tokens_out}"
                 )
 
-        by_workflow = report.by_verdict_and_workflow.get(verdict, {})
+        by_workflow = result.by_bucket_and_workflow.get(bucket.key, {})
         if by_workflow:
             lines.append("  by workflow:")
             for wf, ws in sorted(by_workflow.items(), key=lambda kv: -kv[1].count):
@@ -114,7 +89,7 @@ def to_text(report: Report) -> str:
                     f"tokens_in={ws.tokens_in} tokens_out={ws.tokens_out}"
                 )
 
-        reasons = report.reasons.get(verdict, [])
+        reasons = result.reasons.get(bucket.key, [])[:max_reasons]
         if reasons:
             lines.append("  sample cases (spot-check these by hand):")
             for reason in reasons:
@@ -122,14 +97,8 @@ def to_text(report: Report) -> str:
 
         lines.append("")
 
-    if report.by_verdict[Verdict.UNCLASSIFIED].count > report.by_verdict[
-        Verdict.CONFIRMED_WASTE
-    ].count + report.by_verdict[Verdict.LIKELY_LEGITIMATE].count:
-        lines.append(
-            "Note: most candidate pairs are unclassified. That means the trace is "
-            "missing signal (write flags, result correlation, or terminal outcome), "
-            "not that this tool is being conservative for its own sake -- see README."
-        )
+    if result.footnote:
+        lines.append(result.footnote)
 
     return "\n".join(lines)
 
@@ -148,48 +117,50 @@ def to_text(report: Report) -> str:
 # classification reasons -- all attacker-controlled if the trace comes from
 # somewhere untrusted) goes through html.escape(). This file gets opened in
 # a real browser; unescaped trace content would be a stored-XSS vector.
+#
+# Bucket color is assigned BY POSITION in result.buckets, not by key --
+# an analysis can have any number of buckets with any keys, so there's no
+# fixed enum to hang a color mapping off. Colors are applied via inline
+# `style=`, not a `.card-{key}` CSS class: a hardcoded class-per-key
+# mapping is exactly the kind of hand-written string that silently drifts
+# out of sync with real bucket keys (this file used to have one, matched
+# only to the waste analysis's three Verdict values).
 # ---------------------------------------------------------------------------
 
-_VERDICT_LABEL = {
-    Verdict.CONFIRMED_WASTE: "Confirmed waste",
-    Verdict.LIKELY_LEGITIMATE: "Likely legitimate",
-    Verdict.UNCLASSIFIED: "Unclassified",
-}
-
-_VERDICT_RAMP = {
+_PALETTE: tuple[tuple[str, ...], ...] = (
     # (light fill, light stroke, light title, light subtitle,
     #  dark fill, dark stroke, dark title, dark subtitle)
-    Verdict.CONFIRMED_WASTE: ("#FAECE7", "#D85A30", "#4A1B0C", "#712B13",
-                               "#712B13", "#F0997B", "#F5C4B3", "#F0997B"),
-    Verdict.LIKELY_LEGITIMATE: ("#EAF3DE", "#639922", "#173404", "#27500A",
-                                 "#27500A", "#97C459", "#C0DD97", "#97C459"),
-    Verdict.UNCLASSIFIED: ("#F1EFE8", "#5F5E5A", "#2C2C2A", "#444441",
-                            "#444441", "#B4B2A9", "#D3D1C7", "#B4B2A9"),
-}
+    ("#FAECE7", "#D85A30", "#4A1B0C", "#712B13", "#712B13", "#F0997B", "#F5C4B3", "#F0997B"),
+    ("#EAF3DE", "#639922", "#173404", "#27500A", "#27500A", "#97C459", "#C0DD97", "#97C459"),
+    ("#F1EFE8", "#5F5E5A", "#2C2C2A", "#444441", "#444441", "#B4B2A9", "#D3D1C7", "#B4B2A9"),
+)
 
 
-def _bar_chart_svg(report: Report) -> str:
+def _palette_for(index: int) -> tuple[str, ...]:
+    return _PALETTE[index % len(_PALETTE)]
+
+
+def _bar_chart_svg(buckets: list[Bucket]) -> str:
     """One horizontal bar per bucket. Uses cost_usd if any bucket has priced
     repeats, otherwise falls back to call count -- an all-zero dollar chart
     would just be misleading.
     """
-    slices = [(v, report.by_verdict[v]) for v in _ORDER]
-    use_cost = any(s.cost_usd > 0 for _, s in slices)
-    values = [s.cost_usd if use_cost else s.count for _, s in slices]
+    use_cost = any(b.slice.cost_usd > 0 for b in buckets)
+    values = [b.slice.cost_usd if use_cost else b.slice.count for b in buckets]
     max_value = max(values) or 1
 
     width, row_h, gap, label_w, chart_w = 640, 40, 14, 150, 400
-    height = len(slices) * (row_h + gap) - gap + 8
+    height = len(buckets) * (row_h + gap) - gap + 8
     bars: list[str] = []
 
-    for i, (verdict, s) in enumerate(slices):
-        light_fill, light_stroke, *_ = _VERDICT_RAMP[verdict]
+    for i, bucket in enumerate(buckets):
+        light_fill, light_stroke, *_ = _palette_for(i)
         y = i * (row_h + gap) + 4
         bar_w = (values[i] / max_value) * chart_w if max_value else 0
-        value_text = _fmt_usd(s.cost_usd) if use_cost else f"{s.count} pair(s)"
+        value_text = _fmt_usd(bucket.slice.cost_usd) if use_cost else f"{bucket.slice.count} pair(s)"
         bars.append(
             f'<g>'
-            f'<text x="0" y="{y + row_h / 2 + 5}" class="bar-label">{html.escape(_VERDICT_LABEL[verdict])}</text>'
+            f'<text x="0" y="{y + row_h / 2 + 5}" class="bar-label">{html.escape(bucket.label)}</text>'
             f'<rect x="{label_w}" y="{y}" width="{chart_w}" height="{row_h}" class="bar-track" rx="4"/>'
             f'<rect x="{label_w}" y="{y}" width="{max(bar_w, 2)}" height="{row_h}" '
             f'fill="{light_fill}" stroke="{light_stroke}" stroke-width="1.5" rx="4"/>'
@@ -200,7 +171,7 @@ def _bar_chart_svg(report: Report) -> str:
     axis_label = "Cost (USD)" if use_cost else "Candidate pairs (no cost_usd on any repeat)"
     return (
         f'<svg viewBox="0 0 {width} {height + 24}" width="100%" role="img" '
-        f'aria-label="Bar chart comparing {axis_label.lower()} across the three classification buckets">'
+        f'aria-label="Bar chart comparing {axis_label.lower()} across the classification buckets">'
         f'<title>{html.escape(axis_label)} by bucket</title>'
         f'{"".join(bars)}'
         f'<text x="{label_w}" y="{height + 20}" class="axis-label">{html.escape(axis_label)}</text>'
@@ -232,23 +203,15 @@ def _coverage_html(coverage: CoverageStats) -> str:
             f"conversation id (<strong>{conf * 100:.0f}%</strong>); the rest fell back to "
             "trace-id grouping, where cross-trace rework isn't detected.</p>"
         )
-    if coverage.events_in_tasks_with_no_candidate_pairs:
-        cmp_pct = coverage.tasks_with_candidate_pairs_fraction * 100
-        parts.append(
-            f"<p>{coverage.tasks_with_candidate_pairs}/{coverage.tasks_total} tasks "
-            f"(<strong>{cmp_pct:.0f}%</strong>) had at least one repeated call for "
-            "redundancy detection to examine. The rest -- "
-            f"{html.escape(_fmt_usd(coverage.cost_usd_in_tasks_with_no_candidate_pairs))} of "
-            f"tracked spend, {coverage.events_in_tasks_with_no_candidate_pairs} event(s) -- "
-            "had nothing that repeated at all, so nothing appears for them in the buckets "
-            "below. That's not a gap in the data; every call in those tasks was simply "
-            "unique.</p>"
-        )
+    for note in coverage.extra_notes:
+        parts.append(f"<p>{html.escape(note)}</p>")
     return "".join(parts)
 
 
-def _metric_card(verdict: Verdict, s: Slice) -> str:
-    label = html.escape(_VERDICT_LABEL[verdict])
+def _metric_card(bucket: Bucket, index: int) -> str:
+    _, stroke, *_ = _palette_for(index)
+    s = bucket.slice
+    label = html.escape(bucket.label)
     headline = _fmt_usd(s.cost_usd) if s.cost_usd > 0 else f"{s.count} pair(s)"
     sub_parts = [f"{s.count} pair(s)"]
     if s.tokens_in or s.tokens_out:
@@ -257,7 +220,7 @@ def _metric_card(verdict: Verdict, s: Slice) -> str:
         sub_parts.append(f"{s.unpriced_count} unpriced")
     subtitle = html.escape(" &middot; ".join(sub_parts))
     return (
-        f'<div class="card card-{verdict.value}">'
+        f'<div class="card" style="border-left-color: {stroke};">'
         f'<p class="card-label">{label}</p>'
         f'<p class="card-headline">{html.escape(headline)}</p>'
         f'<p class="card-sub">{subtitle}</p>'
@@ -282,11 +245,10 @@ def _breakdown_table(title: str, rows: dict[str, Slice]) -> str:
     )
 
 
-def _bucket_section(report: Report, verdict: Verdict) -> str:
-    s = report.by_verdict[verdict]
-    by_model = report.by_verdict_and_model.get(verdict, {})
-    by_workflow = report.by_verdict_and_workflow.get(verdict, {})
-    reasons = report.reasons.get(verdict, [])
+def _bucket_section(result: AnalysisResult, bucket: Bucket, *, max_reasons: int) -> str:
+    by_model = result.by_bucket_and_model.get(bucket.key, {})
+    by_workflow = result.by_bucket_and_workflow.get(bucket.key, {})
+    reasons = result.reasons.get(bucket.key, [])[:max_reasons]
 
     reasons_html = ""
     if reasons:
@@ -303,9 +265,9 @@ def _bucket_section(report: Report, verdict: Verdict) -> str:
     tables_html = f'<div class="tables">{tables}</div>' if tables else ""
 
     return (
-        f'<section class="bucket bucket-{verdict.value}">'
-        f'<h2>{html.escape(_VERDICT_LABEL[verdict])} <span class="count-pill">{s.count}</span></h2>'
-        f'<p class="rule">{html.escape(RULE_TEXT[verdict])}</p>'
+        f'<section class="bucket">'
+        f'<h2>{html.escape(bucket.label)} <span class="count-pill">{bucket.slice.count}</span></h2>'
+        f'<p class="rule">{html.escape(bucket.rule_text)}</p>'
         f'{tables_html}'
         f'{reasons_html}'
         f'</section>'
@@ -317,7 +279,7 @@ _HTML_TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Waste analysis report</title>
+<title>Analysis report</title>
 <style>
 :root {{
   --page-bg: #ffffff; --card-bg: #fcfcfb; --text-primary: #0b0b0b;
@@ -341,14 +303,11 @@ main {{ max-width: 760px; margin: 0 auto; }}
 h1 {{ font-size: 22px; font-weight: 500; margin: 0 0 4px; }}
 h2 {{ font-size: 18px; font-weight: 500; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }}
 .subtitle {{ color: var(--text-secondary); font-size: 14px; margin: 0 0 2rem; }}
-.cards {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 2rem; }}
+.cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 2rem; }}
 .card {{ background: var(--card-bg); border-radius: 12px; padding: 1rem 1.1rem; border-left: 3px solid; }}
 .card-label {{ font-size: 13px; color: var(--text-secondary); margin: 0 0 6px; }}
 .card-headline {{ font-size: 22px; font-weight: 500; margin: 0 0 4px; }}
 .card-sub {{ font-size: 12px; color: var(--text-muted); margin: 0; }}
-.card-confirmed_waste {{ border-color: #D85A30; }}
-.card-likely_legitimate {{ border-color: #639922; }}
-.card-unclassified {{ border-color: #5F5E5A; }}
 .chart {{ margin: 0 0 2.5rem; }}
 .bar-label {{ font-size: 13px; fill: var(--text-secondary); }}
 .bar-value {{ font-size: 13px; fill: var(--text-primary); }}
@@ -385,7 +344,7 @@ details.reasons li {{ margin-bottom: 4px; font-family: ui-monospace, "SF Mono", 
 </head>
 <body>
 <main>
-<h1>Waste analysis report</h1>
+<h1>Analysis report</h1>
 <p class="subtitle">{total_pairs} candidate redundant-repeat pair(s) evaluated</p>
 <div class="coverage">{coverage}</div>
 <div class="cards">{cards}</div>
@@ -398,37 +357,23 @@ details.reasons li {{ margin-bottom: 4px; font-family: ui-monospace, "SF Mono", 
 """
 
 
-def to_html(report: Report) -> str:
+def to_html(result: AnalysisResult, *, max_reasons: int = 20) -> str:
     """Render a self-contained HTML page: no CDN assets, no webfonts, no JS.
     Safe to open directly from disk or attach anywhere -- every value pulled
     from the trace is HTML-escaped before being interpolated.
     """
-    coverage_html = _coverage_html(report.coverage)
-    cards = "".join(_metric_card(v, report.by_verdict[v]) for v in _ORDER)
-    chart = _bar_chart_svg(report)
-    sections = "".join(_bucket_section(report, v) for v in _ORDER)
-
-    waste = report.by_verdict[Verdict.CONFIRMED_WASTE].count
-    legit = report.by_verdict[Verdict.LIKELY_LEGITIMATE].count
-    unclassified = report.by_verdict[Verdict.UNCLASSIFIED].count
-    if unclassified > waste + legit:
-        footnote = (
-            "Most candidate pairs are unclassified. That means the trace is missing "
-            "signal (write flags, result correlation, or terminal outcome), not that "
-            "this tool is being conservative for its own sake. A large unclassified "
-            "bucket is the honest answer, not a defect -- see the project README."
-        )
-    else:
-        footnote = (
-            "Unclassified pairs are reported with a count and no verdict, deliberately: "
-            "a confident wrong classification here is worse than an honest unknown."
-        )
+    coverage_html = _coverage_html(result.coverage)
+    cards = "".join(_metric_card(b, i) for i, b in enumerate(result.buckets))
+    chart = _bar_chart_svg(result.buckets)
+    sections = "".join(
+        _bucket_section(result, b, max_reasons=max_reasons) for b in result.buckets
+    )
 
     return _HTML_TEMPLATE.format(
-        total_pairs=report.total_candidate_pairs,
+        total_pairs=result.total_candidates,
         coverage=coverage_html,
         cards=cards,
         chart=chart,
         sections=sections,
-        footnote=html.escape(footnote),
+        footnote=html.escape(result.footnote or ""),
     )
