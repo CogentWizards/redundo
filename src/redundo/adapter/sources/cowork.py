@@ -67,8 +67,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .. import hashing
+from ..base import AdapterSource, Detection
 
-from ..otlp import LogRecord, parse_log_records
+from ..otlp import LogRecord, document_resource_attributes, is_log_document, parse_log_records
 
 _SESSION_ID_ATTR = "session.id"
 _REDACTED = "<REDACTED>"
@@ -376,3 +377,29 @@ def _try_parse_json(value: str) -> Any | None:
         return json.loads(value)
     except (TypeError, ValueError):
         return None
+
+
+# Event names Cowork's monitoring reference documents in full -- an event
+# outside this set appearing in a logs-only corpus means it isn't Cowork.
+# Used both by CoworkSource's own positive service.name check below and by
+# SourceRegistry's residual fallback for logs-only corpora with no
+# service.name at all (see registry.py's module docstring for why that
+# fallback can't live on this class alone).
+COWORK_EVENT_NAMES = frozenset(
+    {"user_prompt", "assistant_response", "tool_result", "api_request", "api_error", "tool_decision"}
+)
+
+
+class CoworkSource(AdapterSource):
+    name = "cowork"
+
+    def detect(self, documents: list[dict[str, Any]]) -> Detection | None:
+        for doc in documents:
+            for resource_attrs in document_resource_attributes(doc):
+                if resource_attrs.get("service.name") == "cowork":
+                    return Detection("cowork", "resource service.name='cowork'")
+        return None
+
+    def convert(self, documents: list[dict[str, Any]]):
+        log_docs = [d for d in documents if is_log_document(d)]
+        return convert_cowork(log_docs)

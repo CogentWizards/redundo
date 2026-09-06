@@ -27,7 +27,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .. import hashing
-from ..otlp import Span, parse_spans
+from ..base import AdapterSource, Detection
+from ..otlp import Span, is_trace_document, parse_spans
 
 SUPPORTED_KINDS = frozenset({"LLM", "TOOL"})
 _WORKFLOW_KINDS = frozenset({"AGENT", "CHAIN"})
@@ -480,3 +481,20 @@ def _record_mask_stats(summary: ConversionSummary, mask_count: int) -> None:
     summary.masked_span_total += mask_count
     if mask_count:
         summary.records_with_any_mask += 1
+
+
+class OpenInferenceSource(AdapterSource):
+    name = "openinference"
+
+    def detect(self, documents: list[dict[str, Any]]) -> Detection | None:
+        for doc in documents:
+            if not is_trace_document(doc):
+                continue
+            for span in parse_spans(doc):
+                if _KIND_ATTR in span.attributes:
+                    return Detection("openinference", f"span attribute {_KIND_ATTR!r}")
+        return None
+
+    def convert(self, documents: list[dict[str, Any]]):
+        trace_docs = [d for d in documents if is_trace_document(d)]
+        return convert_openinference(trace_docs)
