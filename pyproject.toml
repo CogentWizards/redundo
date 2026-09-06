@@ -42,6 +42,11 @@ openinference = "redundo.adapter.sources.openinference:OpenInferenceSource"
 [project.entry-points."redundo.analyzer.analyses"]
 waste = "redundo.analyzer.analyses.waste:WasteAnalysis"
 
+[project.entry-points."redundo.analyzer.report_formats"]
+text = "redundo.analyzer.report:to_text"
+json = "redundo.analyzer.report:to_json"
+html = "redundo.analyzer.report:to_html"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

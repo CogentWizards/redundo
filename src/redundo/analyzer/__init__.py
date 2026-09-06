@@ -7,6 +7,7 @@ Public surface:
     analysis.AnalysisResult             what every analysis produces
     analyses.WasteAnalysis              the one analysis this project ships with
     registry.AnalysisRegistry           discovers analyses (built-in + plugins)
+    report_formats.ReportFormatRegistry discovers report renderers (built-in + plugins)
     report.to_text / to_json / to_html  render an AnalysisResult
 
     classify.classify_pair, cycles.find_candidate_pairs, CandidatePair,
@@ -22,6 +23,7 @@ from .ingest import IngestError, check_consistent_hash_spec, load_events
 from .metrics import CoverageStats, Slice, compute_generic_coverage
 from .registry import AnalysisRegistry
 from .report import to_html, to_json, to_text
+from .report_formats import ReportFormatRegistry
 from .schema import Event, SchemaError
 
 __all__ = [
@@ -35,6 +37,7 @@ __all__ = [
     "CoverageStats",
     "Event",
     "IngestError",
+    "ReportFormatRegistry",
     "SchemaError",
     "Slice",
     "Verdict",
