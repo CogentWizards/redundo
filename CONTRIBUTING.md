@@ -8,6 +8,13 @@ specific trace source into the schema, `redundo.analyzer` runs
 analyses over that schema. They share the schema contract and nothing
 else at runtime — contribute to either independently.
 
+**A new adapter source, analysis, or report format doesn't need a PR
+against this repo at all** — all three are plugin points via Python
+entry points; see [docs/plugins.md](docs/plugins.md). This file is
+about contributing *in-tree*: to one of the four built-in sources, the
+built-in analysis, a built-in report format, or the shared
+infrastructure (schema, ingest, coverage) all of them sit on.
+
 ## Workflow
 
 - **Every change goes through a branch and a pull request against

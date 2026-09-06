@@ -56,9 +56,10 @@ packages = ["src/redundo"]
 
 [tool.uv.sources]
 dummy-redundo-plugin = { path = "tests/fixtures/dummy_redundo_plugin", editable = true }
+redundo-plugin-example = { path = "examples/redundo-plugin-example", editable = true }
 
 [dependency-groups]
-dev = ["pytest>=8.0", "dummy-redundo-plugin"]
+dev = ["pytest>=8.0", "dummy-redundo-plugin", "redundo-plugin-example"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

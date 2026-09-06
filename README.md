@@ -70,9 +70,12 @@ redundo analyze trace.jsonl                       # reads stdin if the path is o
 
 More sources are expected over time — an OpenTelemetry-based agent
 observability adapter is only useful if it keeps pace with what people are
-actually building agents with. Adding one means adding a module under
-`src/redundo/adapter/sources/` and a detection rule in `detect.py`; see
-[CONTRIBUTING.md](CONTRIBUTING.md).
+actually building agents with. **Third-party sources don't need a PR
+here at all** — install a package registering itself under the
+`redundo.adapter.sources` entry-point group and it appears in `--source`
+automatically; see [docs/plugins.md](docs/plugins.md). Adding one
+in-tree means adding a module under `src/redundo/adapter/sources/` and an
+entry in this repo's own `pyproject.toml`; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## How auto-detection works
 
@@ -342,14 +345,25 @@ prints, meant for spot-checking a verdict by hand.
   in `docs/claude-code.md` in particular exist specifically because the
   docs and the actual data disagreed.
 
-## Adding a new analysis or a new source
+## Adding a new analysis, source, or report format
 
-- A new **analysis** over the same schema (cost anomaly detection, latency
-  regression, whatever) lives alongside `classify.py`/`cycles.py` as its
-  own module, reusing `load_events()`/`Event` and the coverage reporting,
-  not replacing them.
-- A new **source** adapter is a module under `src/redundo/adapter/sources/`
-  plus a detection rule in `detect.py`.
+All three of adapter sources, analyses, and report formats are plugin
+points via Python entry points — a separate package registering itself
+under `redundo.adapter.sources`, `redundo.analyzer.analyses`, or
+`redundo.analyzer.report_formats` shows up in `--source`/`--analysis`/
+`--format` automatically, no PR against this repo needed.
+[docs/plugins.md](docs/plugins.md) is the full contract for each, and
+[`examples/redundo-plugin-example/`](examples/redundo-plugin-example/) is
+a complete, working, minimal package implementing all three.
+
+Contributing one in-tree instead: a new **analysis** (cost anomaly
+detection, latency regression, whatever) implements `Analysis` and lives
+under `src/redundo/analyzer/analyses/`, reusing `load_events()`/`Event`
+and `metrics.compute_generic_coverage()`, not replacing them. A new
+**source** implements `AdapterSource` and lives under
+`src/redundo/adapter/sources/`. Either way, add the entry point to this
+repo's own `pyproject.toml` — built-ins go through the identical
+discovery path as a third-party plugin would.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the discipline both are held to
 (honest coverage reporting, fixture-based validation, never guessing past

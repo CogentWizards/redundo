@@ -124,6 +124,7 @@ collector = [
 dev = [
     { name = "dummy-redundo-plugin" },
     { name = "pytest" },
+    { name = "redundo-plugin-example" },
 ]
 
 [package.metadata]
@@ -137,7 +138,19 @@ provides-extras = ["collector"]
 dev = [
     { name = "dummy-redundo-plugin", editable = "tests/fixtures/dummy_redundo_plugin" },
     { name = "pytest", specifier = ">=8.0" },
+    { name = "redundo-plugin-example", editable = "examples/redundo-plugin-example" },
 ]
+
+[[package]]
+name = "redundo-plugin-example"
+version = "0.1.0"
+source = { editable = "examples/redundo-plugin-example" }
+dependencies = [
+    { name = "redundo" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "redundo" }]
 
 [[package]]
 name = "tomli"
