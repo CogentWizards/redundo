@@ -39,6 +39,9 @@ cowork        = "redundo.adapter.sources.cowork:CoworkSource"
 openclaw      = "redundo.adapter.sources.openclaw:OpenClawSource"
 openinference = "redundo.adapter.sources.openinference:OpenInferenceSource"
 
+[project.entry-points."redundo.analyzer.analyses"]
+waste = "redundo.analyzer.analyses.waste:WasteAnalysis"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

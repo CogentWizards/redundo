@@ -47,15 +47,26 @@ class CandidatePair:
         return (self.repeat.event_type, self.repeat.name, self.repeat.content_hash)
 
 
-def find_candidate_pairs(events: list[Event]) -> list[CandidatePair]:
+def find_candidate_pairs(
+    events: list[Event],
+    *,
+    lineages: dict[str, TaskLineage] | None = None,
+) -> list[CandidatePair]:
     """One pair per event that has a matching ancestor -- the nearest one,
     not every one. A 3-call identical chain A -> B -> C yields (A, B) and
     (B, C), not (A, B), (A, C), (B, C): each event is only ever "the
     repeat" once, so cost attribution (metrics.py sums the repeat side of
     each pair) doesn't double-count.
+
+    `lineages`: pass an already-computed `group_by_task(events)` result if
+    the caller needs it for anything else too (e.g. per-pair classification
+    against the same lineage) -- avoids computing it twice. Computed fresh
+    when omitted, so existing callers need no changes.
     """
+    if lineages is None:
+        lineages = group_by_task(events)
     pairs: list[CandidatePair] = []
-    for lineage in group_by_task(events).values():
+    for lineage in lineages.values():
         pairs.extend(_pairs_for_task(lineage))
     return pairs
 

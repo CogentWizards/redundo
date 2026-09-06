@@ -1,8 +1,6 @@
-from redundo.analyzer.classify import Verdict, classify_pair
-from redundo.analyzer.cycles import find_candidate_pairs
-from redundo.analyzer.lineage import group_by_task
-from redundo.analyzer.metrics import build_report
-from redundo.analyzer.report import RULE_TEXT, to_html, to_text
+from redundo.analyzer.analyses import RULE_TEXT, WasteAnalysis
+from redundo.analyzer.classify import Verdict
+from redundo.analyzer.report import to_html, to_text
 from redundo.analyzer.schema import Event
 
 
@@ -17,10 +15,7 @@ def make_event(step_index, event_type="tool_call", name="search", content_hash="
 
 
 def build(events):
-    lineages = group_by_task(events)
-    pairs = find_candidate_pairs(events)
-    classifications = [classify_pair(p, lineages[p.task_id]) for p in pairs]
-    return build_report(classifications, events)
+    return WasteAnalysis().run(events)
 
 
 def test_html_is_self_contained_no_external_resources():
@@ -134,3 +129,23 @@ def test_comparability_line_omitted_when_every_task_has_a_candidate_pair():
     assert "nothing that repeated at all" not in output
     page = to_html(build(_confirmed_waste_events()))
     assert "nothing that repeated at all" not in page
+
+
+def test_max_reasons_truncates_at_render_time():
+    # Truncation moved from analysis time (keep_reasons in WasteAnalysis's
+    # constructor) to render time (max_reasons on the renderer) so a
+    # renderer can show fewer than the analysis kept without re-running it.
+    events = []
+    for i in range(6):
+        task_id = f"t{i}"
+        events.append(make_event(0, event_type="tool_call", cost_usd=1.0, task_id=task_id))
+        events.append(make_event(1, event_type="tool_result", content_hash="same",
+                                   task_id=task_id))
+        events.append(make_event(2, event_type="tool_call", cost_usd=1.0, outcome="error",
+                                   task_id=task_id))
+        events.append(make_event(3, event_type="tool_result", content_hash="same",
+                                   outcome="error", task_id=task_id))
+    result = build(events)
+    assert len(result.reasons["confirmed_waste"]) == 6  # WasteAnalysis kept all 6
+    output = to_text(result, max_reasons=2)
+    assert output.count("step=2 (tool_call/search)") == 2
