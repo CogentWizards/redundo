@@ -9,10 +9,8 @@ import sys
 from pathlib import Path
 
 from .ingest import IngestError, load_events
-from .registry import default_registry
-from .report import to_html, to_json, to_text
-
-_RENDERERS = {"text": to_text, "json": to_json, "html": to_html}
+from .registry import default_registry as analysis_registry
+from .report_formats import default_registry as format_registry
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,13 +27,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--analysis",
-        choices=default_registry.names(),
+        choices=analysis_registry.names(),
         default="waste",
         help="Which analysis to run (default: waste)",
     )
     parser.add_argument(
         "--format",
-        choices=tuple(_RENDERERS),
+        choices=format_registry.names(),
         default="text",
         help="Output format (default: text)",
     )
@@ -81,14 +79,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        analysis = default_registry.get(args.analysis, keep_reasons=args.samples)
+        analysis = analysis_registry.get(args.analysis, keep_reasons=args.samples)
     except TypeError:
         # This analysis's constructor doesn't accept keep_reasons -- not
         # every analysis needs a "how many samples to keep" knob.
-        analysis = default_registry.get(args.analysis)
+        analysis = analysis_registry.get(args.analysis)
     result = analysis.run(events)
 
-    render = _RENDERERS[args.format]
+    render = format_registry.get(args.format)
     output = render(result, max_reasons=args.samples)
 
     if args.output:
