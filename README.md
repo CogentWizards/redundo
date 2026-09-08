@@ -77,6 +77,132 @@ automatically; see [docs/plugins.md](docs/plugins.md). Adding one
 in-tree means adding a module under `src/redundo/adapter/sources/` and an
 entry in this repo's own `pyproject.toml`; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Setup by source
+
+Every source below is the same three-step shape from the Quickstart: start
+`redundo collect`, point the framework's OTLP export at it, run the
+framework, then `redundo adapt | redundo analyze`. What differs per source
+is exactly which env vars / config keys turn that export on and what they
+unlock — that's what each subsection gives you, copy-pasteable. Start the
+collector once, in its own terminal, before any of these:
+
+```bash
+pip install "redundo[collector]"
+redundo collect --out-dir ./otlp_traces &
+```
+
+### OpenClaw
+
+```bash
+openclaw plugins install clawhub:@openclaw/diagnostics-otel
+openclaw plugins enable diagnostics-otel
+openclaw config set diagnostics.enabled true
+openclaw config set diagnostics.otel.enabled true
+openclaw config set diagnostics.otel.endpoint "http://localhost:4318"
+openclaw config set diagnostics.otel.captureContent true   # opt-in; off by default
+
+# restart the Gateway, then drive real turns through it, then:
+redundo adapt ./otlp_traces --source openclaw --summary | redundo analyze --format html > report.html
+```
+
+`captureContent` is opt-in and off by default — without it you still get
+counts, timing, and cost, but call/result content stays unobservable, so
+nothing can be confirmed as a repeat. `task_id` for this source is always
+trace-scoped, not conversation-scoped, which is a structural property of
+what OpenClaw's exporter emits, not a fallback. Full detail, including a
+documented case where a live Gateway exported zero spans across several
+real turns (an OpenClaw-side gap, not a redundo one), is in
+[docs/openclaw.md](docs/openclaw.md).
+
+### Hermes
+
+Hermes (and any other framework instrumented with an OpenInference-compatible
+library) doesn't need source-specific flags to unlock content the way
+Claude Code or OpenClaw do — an OpenInference `LLM`/`TOOL` span carries its
+full `input.value`/`output.value` by default. All that's needed is
+standard OTel export, pointed at the collector:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+# then run Hermes (or your OpenInference-instrumented app) as usual
+```
+
+```bash
+redundo adapt ./otlp_traces --source openinference --summary | redundo analyze --format html > report.html
+```
+
+`task_id` prefers `gen_ai.conversation.id`; if a trace's spans never carry
+it, grouping falls back to the trace ID and that fallback is reported, not
+silently assumed — see [docs/openinference.md](docs/openinference.md).
+
+### Claude CLI
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
+export OTEL_TRACES_EXPORTER=otlp
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_METRICS_EXPORTER=none   # not consumed by this adapter
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_TRACES_EXPORT_INTERVAL=1000
+export OTEL_LOGS_EXPORT_INTERVAL=1000
+export OTEL_LOG_USER_PROMPTS=1      # first-of-turn llm_call content
+export OTEL_LOG_TOOL_DETAILS=1      # built-in tool arguments + MCP tool_input
+export OTEL_LOG_TOOL_CONTENT=1      # tool.output content (needs tracing on)
+
+# run your claude session(s), then:
+redundo adapt ./otlp_traces --source claude-code --summary | redundo analyze --format html > report.html
+```
+
+Two independent signals matter here: traces alone still produce a valid
+corpus, but MCP tool call *arguments* only ever appear on the logs signal
+(`OTEL_LOGS_EXPORTER=otlp` + `OTEL_LOG_TOOL_DETAILS=1`), and tool *output*
+content only ever appears in a span event gated by `OTEL_LOG_TOOL_CONTENT=1`.
+`OTEL_TRACES_EXPORT_INTERVAL=1000` (or lower) matters for short-lived `-p`
+invocations — the default 5s interval can lose the whole session to an
+early exit. Full detail in [docs/claude-code.md](docs/claude-code.md).
+
+### Claude Agent SDK
+
+The same env vars as Claude CLI above — the SDK launches the `claude`
+binary as a subprocess and that subprocess inherits its parent's
+environment, so set these in whatever process calls `query()` (shell
+`export` before running your script, or `os.environ`/`process.env` before
+the SDK import) rather than anywhere inside the SDK's own options:
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
+export OTEL_TRACES_EXPORTER=otlp
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_METRICS_EXPORTER=none
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_TRACES_EXPORT_INTERVAL=1000
+export OTEL_LOGS_EXPORT_INTERVAL=1000
+export OTEL_LOG_USER_PROMPTS=1
+export OTEL_LOG_TOOL_DETAILS=1
+export OTEL_LOG_TOOL_CONTENT=1
+
+python your_agent_script.py   # anything that calls claude_agent_sdk.query()
+```
+
+```bash
+redundo adapt ./otlp_traces --source claude-code --summary | redundo analyze --format html > report.html
+```
+
+Same `--source claude-code` as the CLI — the SDK is detected as the same
+source, not a separate one. One thing genuinely differs under the hood:
+the SDK always launches the CLI in streaming mode, which never emits the
+`claude_code.interaction` span the CLI normally uses to attach a turn's
+prompt text. This adapter recovers `llm_call` content for that case
+automatically via a time-window correlation against the logs signal —
+nothing to configure for it, but if you want to know exactly how (and its
+limits), see "Recovering `llm_call` content when there's no interaction
+span at all" in [docs/claude-code.md](docs/claude-code.md).
+
 ## How auto-detection works
 
 Each source has a genuinely different OTLP shape, not just different
