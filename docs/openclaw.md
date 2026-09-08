@@ -129,9 +129,11 @@ OpenClaw's exporter does compute and export a real cost estimate --
 `openclaw.cost.usd`, a Counter metric, fed from `model.usage` diagnostic
 events whenever they carry a `costUsd` value. But it is **only** exported
 on the metrics OTLP signal, never as a span attribute on `openclaw.model.call`
-or anywhere else. This package's adapters only ever read the traces and
-logs signals (matching how `redundo collect` only serves `/v1/traces`
-and `/v1/logs`); this source's logs signal, separately, carries only
+or anywhere else. `redundo collect` does capture `/v1/metrics` (written to
+disk like any other signal), but `OpenClawSource.convert()` -- like every
+adapter source today -- only ever reads the traces and logs documents out
+of that directory; nothing in this package parses OTLP metrics into the
+Event schema yet. This source's logs signal, separately, carries only
 generic gateway log and security-event records -- nothing model-call-shaped,
 unlike `sources.claude_code`'s `api_request` log record, which is where
 *that* source's real cost comes from. `cost_usd` is therefore always

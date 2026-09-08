@@ -6,10 +6,15 @@ This is a convenience for local development and one-off analysis, not a
 production observability pipeline -- if you already run a real OTel
 Collector (or any backend with a file/JSON export path), point your
 source at that instead and hand its output directory to `redundo adapt`
-the same way. Every source this project supports needs both `/v1/traces`
-and `/v1/logs` served from the *same* endpoint (some sources use only one,
-some use both, and get one endpoint config to remember either way), so
-this collector always serves both.
+the same way. Every source this project supports needs `/v1/traces`
+and/or `/v1/logs` served from the *same* endpoint (some sources use only
+one, some use both, and get one endpoint config to remember either way),
+so this collector always serves both, plus `/v1/metrics` for sources that
+also export a metrics signal. **`redundo adapt` does not read metrics
+files today** -- `/v1/metrics` exists so nothing a source sends is
+silently rejected (and so metrics content is on disk for manual
+inspection); a metrics-consuming analysis is a possible future addition,
+not implemented yet.
 
 Requires the `collector` extra: `pip install redundo[collector]`
 
@@ -31,6 +36,10 @@ try:
     from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
         ExportLogsServiceRequest,
         ExportLogsServiceResponse,
+    )
+    from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
+        ExportMetricsServiceRequest,
+        ExportMetricsServiceResponse,
     )
     from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
         ExportTraceServiceRequest,
@@ -78,6 +87,40 @@ def _fix_log_ids_to_hex(request: ExportLogsServiceRequest, document: dict) -> No
                     del rec_doc["spanId"]
 
 
+# Metric points carry trace_id/span_id only on their exemplars, and only
+# for the four data types that have exemplars at all -- Summary doesn't.
+# Maps the proto oneof field name (snake_case) to its OTLP JSON key.
+_METRIC_DATA_JSON_FIELD = {
+    "gauge": "gauge",
+    "sum": "sum",
+    "histogram": "histogram",
+    "exponential_histogram": "exponentialHistogram",
+}
+
+
+def _fix_metric_ids_to_hex(request: ExportMetricsServiceRequest, document: dict) -> None:
+    for rm_proto, rm_doc in zip(request.resource_metrics, document.get("resourceMetrics", [])):
+        for sm_proto, sm_doc in zip(rm_proto.scope_metrics, rm_doc.get("scopeMetrics", [])):
+            for metric_proto, metric_doc in zip(sm_proto.metrics, sm_doc.get("metrics", [])):
+                data_field = metric_proto.WhichOneof("data")
+                json_field = _METRIC_DATA_JSON_FIELD.get(data_field)
+                if json_field is None:
+                    continue  # no data set, or Summary -- neither has exemplars
+                data_doc = metric_doc.get(json_field, {})
+                for dp_proto, dp_doc in zip(
+                    getattr(metric_proto, data_field).data_points, data_doc.get("dataPoints", [])
+                ):
+                    for ex_proto, ex_doc in zip(dp_proto.exemplars, dp_doc.get("exemplars", [])):
+                        if ex_proto.trace_id:
+                            ex_doc["traceId"] = ex_proto.trace_id.hex()
+                        elif "traceId" in ex_doc:
+                            del ex_doc["traceId"]
+                        if ex_proto.span_id:
+                            ex_doc["spanId"] = ex_proto.span_id.hex()
+                        elif "spanId" in ex_doc:
+                            del ex_doc["spanId"]
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[collector] {self.address_string()} - {fmt % args}")
@@ -87,6 +130,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_traces()
         elif self.path in ("/v1/logs", "/v1/logs/"):
             self._handle_logs()
+        elif self.path in ("/v1/metrics", "/v1/metrics/"):
+            self._handle_metrics()
         else:
             self.send_response(404)
             self.end_headers()
@@ -145,6 +190,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _handle_metrics(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        request = ExportMetricsServiceRequest()
+        request.ParseFromString(body)
+        document = MessageToDict(
+            request, preserving_proto_field_name=False, use_integers_for_enums=True
+        )
+        _fix_metric_ids_to_hex(request, document)
+
+        metric_count = sum(
+            len(scope_metric.get("metrics", []))
+            for rm in document.get("resourceMetrics", [])
+            for scope_metric in rm.get("scopeMetrics", [])
+        )
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = OUT_DIR / f"metrics-{time.time_ns()}.otlp.json"
+        out_path.write_text(json.dumps(document), encoding="utf-8")
+        print(f"[collector] wrote {metric_count} metric(s) -> {out_path}")
+
+        payload = ExportMetricsServiceResponse().SerializeToString()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-protobuf")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="redundo collect")
@@ -157,7 +229,10 @@ def main(argv: list[str] | None = None) -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     server = ThreadingHTTPServer(("localhost", args.port), Handler)
-    print(f"[collector] listening on http://localhost:{args.port}/v1/traces and /v1/logs")
+    print(
+        f"[collector] listening on http://localhost:{args.port}"
+        "/v1/traces, /v1/logs, and /v1/metrics"
+    )
     print(f"[collector] writing OTLP JSON batches to {OUT_DIR.resolve()}")
     print("[collector] Ctrl+C to stop, then: redundo adapt <out-dir> -o trace.jsonl")
     try:
