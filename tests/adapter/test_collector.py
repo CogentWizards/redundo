@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import threading
 from http.server import ThreadingHTTPServer
 
@@ -44,6 +45,34 @@ def _post(port: int, path: str, body: bytes) -> int:
         return conn.getresponse().status
     finally:
         conn.close()
+
+
+def _post_chunked(port: int, path: str, body: bytes, chunk_size: int = 7) -> int:
+    """Send `body` as a chunked-transfer-encoded request with no
+    Content-Length header at all -- real HTTP/1.1 chunked framing, hand
+    -built, since http.client doesn't offer a way to send a body this way.
+    """
+    chunks = [body[i : i + chunk_size] for i in range(0, len(body), chunk_size)] or [b""]
+    encoded_body = b"".join(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n" for chunk in chunks)
+    encoded_body += b"0\r\n\r\n"
+    request = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: localhost:{port}\r\n"
+        "Content-Type: application/x-protobuf\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode() + encoded_body
+
+    with socket.create_connection(("localhost", port)) as sock:
+        sock.sendall(request)
+        response = b""
+        while True:
+            data = sock.recv(4096)
+            if not data:
+                break
+            response += data
+    return int(response.split(b"\r\n", 1)[0].split(b" ")[1])
 
 
 def _only_file(out_dir, prefix: str):
@@ -134,6 +163,33 @@ def test_metrics_endpoint_leaves_summary_untouched(running_collector):
     assert status == 200
     document = _only_file(out_dir, "metrics")
     assert document["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["name"] == "latency"
+
+
+def test_chunked_transfer_encoding_body_is_read_correctly(running_collector):
+    """Regression test: some OTLP/HTTP exporters (confirmed against a real
+    OpenClaw diagnostics-otel export -- the JS SDK's exporter-*-otlp-proto
+    packages) send a chunked request body with no Content-Length header at
+    all. The old code read `int(headers.get("Content-Length", 0))`, which
+    silently evaluated to 0 for a chunked body, discarding the entire
+    payload while still returning 200 -- the exporter saw what looked like
+    a successful export of nothing.
+    """
+    port, out_dir = running_collector
+    request = ExportTraceServiceRequest()
+    span = request.resource_spans.add().scope_spans.add().spans.add()
+    span.trace_id = b"\x77" * 16
+    span.span_id = b"\x88" * 8
+    span.name = "chunked.example"
+    body = request.SerializeToString()
+    assert len(body) > 7  # forces multiple chunks at the chunk_size below
+
+    status = _post_chunked(port, "/v1/traces", body, chunk_size=7)
+
+    assert status == 200
+    document = _only_file(out_dir, "traces")
+    written_span = document["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    assert written_span["traceId"] == "77" * 16
+    assert written_span["name"] == "chunked.example"
 
 
 def test_unknown_path_returns_404(running_collector):

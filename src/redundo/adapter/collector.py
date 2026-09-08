@@ -125,6 +125,33 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[collector] {self.address_string()} - {fmt % args}")
 
+    def _read_body(self) -> bytes:
+        """`Content-Length` is absent whenever a client sends a chunked
+        request body -- some OTLP/HTTP exporters (confirmed: the JS SDK's
+        `exporter-*-otlp-proto` packages) do this rather than buffering the
+        whole payload first to compute a length. Reading `Content-Length`
+        (defaulting to 0 when absent) silently drops the entire body in
+        that case while still returning 200, which looks from the
+        exporter's side like a successful export of nothing.
+        """
+        if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+            return self._read_chunked_body()
+        length = int(self.headers.get("Content-Length", 0))
+        return self.rfile.read(length)
+
+    def _read_chunked_body(self) -> bytes:
+        chunks = []
+        while True:
+            size_line = self.rfile.readline()
+            size = int(size_line.split(b";", 1)[0].strip(), 16)
+            if size == 0:
+                while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                    pass  # consume trailer headers up to the final blank line
+                break
+            chunks.append(self.rfile.read(size))
+            self.rfile.read(2)  # trailing CRLF after each chunk's data
+        return b"".join(chunks)
+
     def do_POST(self):
         if self.path in ("/v1/traces", "/v1/traces/"):
             self._handle_traces()
@@ -137,8 +164,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def _handle_traces(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length)
+        body = self._read_body()
         request = ExportTraceServiceRequest()
         request.ParseFromString(body)
         document = MessageToDict(
@@ -164,8 +190,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _handle_logs(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length)
+        body = self._read_body()
         request = ExportLogsServiceRequest()
         request.ParseFromString(body)
         document = MessageToDict(
@@ -191,8 +216,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _handle_metrics(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length)
+        body = self._read_body()
         request = ExportMetricsServiceRequest()
         request.ParseFromString(body)
         document = MessageToDict(
