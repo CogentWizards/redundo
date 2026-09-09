@@ -26,13 +26,28 @@ violate while extending this:
    set to `"trace_id_fallback"` (the existing convention's value for "not
    a real conversation id"), but see docs/openclaw.md for why that framing
    undersells how structural this is here.
-2. cost_usd is always None. OpenClaw's exporter does emit a real cost
-   estimate (`openclaw.cost.usd`, a Counter), but only on the *metrics*
-   OTLP signal -- never as a span attribute. This adapter (like every
-   source in this package) only reads the traces and logs signals; the
-   logs signal here carries only generic gateway log/security records,
-   nothing model-call-shaped. Cost from this source is unreachable from
-   what `redundo adapt` captures, not merely unobserved.
+2. cost_usd is an estimate, apportioned from the metrics signal -- never
+   an exactly metered per-call figure, and only present at all when
+   metrics documents were actually captured. OpenClaw's exporter emits a
+   real cost estimate (`openclaw.cost.usd`, a cumulative Counter) split by
+   (channel, model) attributes, but only on the *metrics* OTLP signal --
+   never as a span attribute, and with no per-call granularity even there
+   (a Counter has no `task_id`/`span_id` to join against; the exporter
+   never populates exemplars either -- confirmed empirically, zero
+   exemplars across a real capture with genuine spend). This adapter
+   apportions each (channel, model) counter's total across every llm_call
+   event sharing that (channel, model) -- weighted by token share
+   (tokens_in + tokens_out) when available, split evenly otherwise --
+   within the counter's own start/observed time window. That window
+   boundary matters: `openclaw.cost.usd` resets to zero (and starts a new
+   window) every time the exporting Gateway process restarts, confirmed
+   directly during this feature's own development -- treating two
+   generations of the same (channel, model) counter as one flat total
+   would either double-count or silently drop a generation's spend
+   depending on which point you picked. See `_apportion_cost` and
+   docs/openclaw.md for the exact mechanism and what it still can't fix
+   (there's no way to attribute cost to a specific llm_call more precisely
+   than "this token's share of this window's total").
 3. Only `openclaw.model.call` and `openclaw.tool.execution` spans become
    Events. `openclaw.harness.run` and `openclaw.run` are structural
    wrapper spans (their nearest analogue is OpenInference's AGENT/CHAIN
@@ -63,7 +78,15 @@ from typing import Any
 
 from .. import hashing
 from ..base import AdapterSource, Detection
-from ..otlp import Span, is_trace_document, parse_spans
+from ..otlp import (
+    AGGREGATION_TEMPORALITY_CUMULATIVE,
+    MetricPoint,
+    Span,
+    is_metrics_document,
+    is_trace_document,
+    parse_metric_points,
+    parse_spans,
+)
 
 # Span name -> the event_type it becomes. Every other span name is a
 # structural wrapper or an unmapped signal (see module docstring point 3)
@@ -105,6 +128,13 @@ class ConversionSummary:
 
     hash_spec: str = hashing.HASH_SPEC
 
+    # Cost apportionment (see _apportion_cost) -- 0/0 means no
+    # openclaw.cost.usd metrics were captured at all, not that every llm_call
+    # happened to cost nothing.
+    cost_windows_found: int = 0
+    llm_calls_with_apportioned_cost: int = 0
+    llm_calls_apportioned_by_equal_split: int = 0
+
     def notes(self) -> list[str]:
         out: list[str] = []
         if self.skipped_by_kind:
@@ -131,18 +161,42 @@ class ConversionSummary:
             "(multi-turn conversations) are not detectable from this signal. "
             "See docs/openclaw.md."
         )
-        out.append(
-            "cost_usd is always None for this source -- OpenClaw only exports cost "
-            "on the metrics OTLP signal, which this adapter doesn't read (and which "
-            "has no per-event granularity to read anyway). See docs/openclaw.md."
-        )
+        if self.cost_windows_found == 0:
+            out.append(
+                "cost_usd is None for every record -- no openclaw.cost.usd metrics "
+                "were found in this corpus (metrics documents weren't captured, or "
+                "this source had none). See docs/openclaw.md."
+            )
+        else:
+            out.append(
+                f"cost_usd is an ESTIMATE for {self.llm_calls_with_apportioned_cost} "
+                "llm_call record(s): each (channel, model) openclaw.cost.usd counter's "
+                "total, for its own observed time window, apportioned across the "
+                "llm_call events in that window by token share"
+                + (
+                    f" ({self.llm_calls_apportioned_by_equal_split} of those had no "
+                    "token data to share by and were split evenly instead)"
+                    if self.llm_calls_apportioned_by_equal_split
+                    else ""
+                )
+                + ". Never an exactly metered per-call figure, and tool_call/"
+                "tool_result records never get one -- see docs/openclaw.md."
+            )
         return out
 
 
-def convert_openclaw(documents: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], ConversionSummary]:
-    """documents: one or more parsed OTLP traces JSON export documents."""
+def convert_openclaw(
+    documents: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], ConversionSummary]:
+    """documents: a mix of OTLP traces and/or metrics JSON export documents
+    (traces are required to produce any records at all; metrics are
+    optional and, when present, feed cost apportionment -- see
+    _apportion_cost)."""
+    trace_docs = [d for d in documents if is_trace_document(d)]
+    metrics_docs = [d for d in documents if is_metrics_document(d)]
+
     spans: list[Span] = []
-    for document in documents:
+    for document in trace_docs:
         spans.extend(parse_spans(document))
     summary = ConversionSummary(total_spans=len(spans))
 
@@ -151,8 +205,16 @@ def convert_openclaw(documents: list[dict[str, Any]]) -> tuple[list[dict[str, An
         by_trace.setdefault(span.trace_id, []).append(span)
 
     records: list[dict[str, Any]] = []
+    # (record, channel, llm_call span's start time) for every llm_call
+    # produced below -- side channel for _apportion_cost, which needs the
+    # channel attribute (never present on the llm_call span itself; see
+    # _channel_of_trace) and the real nanosecond timestamp (not the
+    # ISO-formatted one already written into the record) to place each call
+    # within the right cost-counter time window.
+    llm_call_index: list[tuple[dict[str, Any], str | None, int]] = []
 
     for trace_id, trace_spans in by_trace.items():
+        channel = _channel_of_trace(trace_spans)
         span_by_id = {s.span_id: s for s in trace_spans}
         kept = [s for s in trace_spans if s.name in _EVENT_TYPE_BY_SPAN_NAME]
         for s in trace_spans:
@@ -205,6 +267,7 @@ def convert_openclaw(documents: list[dict[str, Any]]) -> tuple[list[dict[str, An
             if event_type == "llm_call":
                 record = _llm_event(span, trace_id, step, parent_step, workflow, summary)
                 records.append(record)
+                llm_call_index.append((record, channel, span.start_time_unix_nano))
                 last_step_of_span[span.span_id] = step
                 _extend_chain_tail(chain_tail, ancestor_id, span.start_time_unix_nano, span_end, step)
                 step += 1
@@ -225,6 +288,14 @@ def convert_openclaw(documents: list[dict[str, Any]]) -> tuple[list[dict[str, An
                 _extend_chain_tail(chain_tail, ancestor_id, span.start_time_unix_nano, span_end, final_step)
 
     summary.total_records = len(records)
+
+    if metrics_docs:
+        metric_points: list[MetricPoint] = []
+        for document in metrics_docs:
+            metric_points.extend(parse_metric_points(document))
+        generations = _parse_cost_generations(metric_points)
+        _apportion_cost(llm_call_index, generations, summary)
+
     return records, summary
 
 
@@ -284,6 +355,23 @@ def _workflow_of(span: Span, span_by_id: dict[str, Span]) -> str | None:
         current_id = parent.parent_span_id
     channel = span.attributes.get("openclaw.channel")
     return str(channel) if channel else None
+
+
+def _channel_of_trace(trace_spans: list[Span]) -> str | None:
+    """openclaw.channel for cost apportionment -- distinct from
+    _workflow_of's per-span label. Confirmed empirically: no
+    openclaw.model.call span carries openclaw.channel directly (only
+    openclaw.run/openclaw.harness.run, its structural ancestors, do), and a
+    whole trace shares exactly one channel in every real capture seen so
+    far, so scanning the trace's spans for the first one that has it is
+    both simpler and more robust here than walking any one span's specific
+    ancestor chain.
+    """
+    for s in trace_spans:
+        channel = s.attributes.get("openclaw.channel")
+        if channel:
+            return str(channel)
+    return None
 
 
 def _first_present(attributes: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -467,6 +555,137 @@ def _tool_events(
     return call, result
 
 
+_COST_METRIC_NAME = "openclaw.cost.usd"
+_COST_CHANNEL_ATTR = "openclaw.channel"
+_COST_MODEL_ATTR = "openclaw.model"
+
+
+@dataclass(frozen=True, slots=True)
+class _CostGeneration:
+    """One (channel, model) openclaw.cost.usd counter's final observed
+    value for one *generation* -- the span of time between an exporter
+    (re)start and either the next restart or the end of capture. A
+    CUMULATIVE counter's own start_time_unix_nano changes when the
+    exporting Gateway process restarts (confirmed directly against a real
+    capture during this feature's development: the same channel/model
+    pair's start_time jumped mid-session), so two points sharing a
+    start_time are the same generation and two points with different
+    start_times for the same (channel, model) are unrelated generations
+    whose totals must both be counted, not collapsed into "just take the
+    latest snapshot" (which would silently drop whatever the earlier
+    generation had accumulated).
+    """
+
+    channel: str | None
+    model: str | None
+    start_time_unix_nano: int
+    end_time_unix_nano: int  # the final point's own time_unix_nano
+    total_usd: float
+
+
+def _parse_cost_generations(metric_points: list[MetricPoint]) -> list[_CostGeneration]:
+    latest_by_generation: dict[tuple[str | None, str | None, int], MetricPoint] = {}
+    for point in metric_points:
+        if point.name != _COST_METRIC_NAME or point.kind != "sum":
+            continue
+        if point.aggregation_temporality != AGGREGATION_TEMPORALITY_CUMULATIVE:
+            continue  # a DELTA openclaw.cost.usd would need different handling; not seen in practice
+        key = (
+            point.attributes.get(_COST_CHANNEL_ATTR),
+            point.attributes.get(_COST_MODEL_ATTR),
+            point.start_time_unix_nano,
+        )
+        current = latest_by_generation.get(key)
+        if current is None or point.time_unix_nano > current.time_unix_nano:
+            latest_by_generation[key] = point
+
+    return [
+        _CostGeneration(
+            channel=key[0],
+            model=key[1],
+            start_time_unix_nano=key[2],
+            end_time_unix_nano=point.time_unix_nano,
+            total_usd=point.value or 0.0,
+        )
+        for key, point in latest_by_generation.items()
+    ]
+
+
+def _apportion_cost(
+    llm_call_index: list[tuple[dict[str, Any], str | None, int]],
+    generations: list[_CostGeneration],
+    summary: ConversionSummary,
+) -> None:
+    """Split each (channel, model) cost generation's total across the
+    llm_call records that share that (channel, model) and belong to that
+    generation's restart cycle -- by token share when the records in the
+    window have token data, evenly otherwise. This is an estimate:
+    openclaw.cost.usd has no per-call granularity to divide exactly (see
+    module docstring point 2), so "this call's share of this generation's
+    total" is the most precise claim the data supports.
+
+    A generation's own start_time_unix_nano is when the exporting SDK
+    started tracking that specific attribute combination as a distinct
+    counter series -- not necessarily when the calls it covers began.
+    Confirmed directly during this feature's development against a real
+    capture: real llm_call spans landed both *before* their generation's
+    own start_time (export/registration lag) and *after* its last observed
+    export timestamp (the call happened, but the next periodic metrics
+    flush hadn't occurred yet by the time this capture ended). Requiring a
+    call to fall inside [start_time, last_export] missed both of those --
+    confirmed to undercount roughly 12 of 13 real llm_call events in that
+    capture. The boundary that's actually meaningful is *which restart
+    cycle* a call belongs to: strictly before the *next* generation of the
+    same (channel, model) begins, with no lower bound on the first
+    generation and no upper bound on the last -- same open-ended-window
+    idiom sources.claude_code uses for its own cross-signal time bucketing.
+    """
+    summary.cost_windows_found = len(generations)
+    if not generations:
+        return
+
+    by_key: dict[tuple[str | None, str | None], list[_CostGeneration]] = {}
+    for generation in generations:
+        by_key.setdefault((generation.channel, generation.model), []).append(generation)
+
+    for (channel_key, model_key), same_key_generations in by_key.items():
+        same_key_generations.sort(key=lambda g: g.start_time_unix_nano)
+        for index, generation in enumerate(same_key_generations):
+            window_start = (
+                float("-inf") if index == 0 else generation.start_time_unix_nano
+            )
+            window_end = (
+                same_key_generations[index + 1].start_time_unix_nano
+                if index + 1 < len(same_key_generations)
+                else float("inf")
+            )
+            matching = [
+                record
+                for record, channel, start_ns in llm_call_index
+                if record["model"] == model_key
+                and channel == channel_key
+                and window_start <= start_ns < window_end
+            ]
+            if not matching:
+                continue
+
+            total_tokens = sum(
+                (record["tokens_in"] or 0) + (record["tokens_out"] or 0) for record in matching
+            )
+            for record in matching:
+                if total_tokens > 0:
+                    record_tokens = (record["tokens_in"] or 0) + (record["tokens_out"] or 0)
+                    share = record_tokens / total_tokens
+                    basis = "apportioned_from_metrics_by_tokens"
+                else:
+                    share = 1 / len(matching)
+                    basis = "apportioned_from_metrics_equal_split"
+                    summary.llm_calls_apportioned_by_equal_split += 1
+                record["cost_usd"] = round(generation.total_usd * share, 6)
+                record["metadata"]["cost_basis"] = basis
+                summary.llm_calls_with_apportioned_cost += 1
+
+
 _OBSERVATION_UNIT_ATTR = "openclaw.model_call.observation_unit"
 
 
@@ -485,5 +704,4 @@ class OpenClawSource(AdapterSource):
         return None
 
     def convert(self, documents: list[dict[str, Any]]):
-        trace_docs = [d for d in documents if is_trace_document(d)]
-        return convert_openclaw(trace_docs)
+        return convert_openclaw(documents)

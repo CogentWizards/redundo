@@ -66,7 +66,7 @@ redundo analyze trace.jsonl                       # reads stdin if the path is o
 | **OpenInference** (Hermes, and anything else instrumented with an OpenInference-compatible library) | Full call/result content on both LLM and tool spans | [docs/openinference.md](docs/openinference.md) |
 | **Claude Code** (CLI, IDE extensions, Agent SDK) | Tool arguments and output via `OTEL_LOG_TOOL_DETAILS`/`OTEL_LOG_TOOL_CONTENT`; MCP tool arguments require the logs signal | [docs/claude-code.md](docs/claude-code.md) |
 | **Claude Cowork** | Logs-signal only; tool *arguments* observable, tool *output* is not, under any configuration | [docs/cowork.md](docs/cowork.md) |
-| **OpenClaw** (`@openclaw/diagnostics-otel`) | Content is opt-in (`captureContent`, off by default); `task_id` is always trace-scoped, not conversation-scoped -- see docs/openclaw.md for why that's structural, not a fallback | [docs/openclaw.md](docs/openclaw.md) |
+| **OpenClaw** (`@openclaw/diagnostics-otel`) | Content is opt-in (`captureContent`, off by default); `cost_usd` is an estimate apportioned from the metrics signal, only when metrics were captured; `task_id` is always trace-scoped, not conversation-scoped -- see docs/openclaw.md for why that's structural, not a fallback | [docs/openclaw.md](docs/openclaw.md) |
 
 More sources are expected over time — an OpenTelemetry-based agent
 observability adapter is only useful if it keeps pace with what people are
@@ -106,11 +106,16 @@ redundo adapt ./otlp_traces --source openclaw --summary | redundo analyze --form
 ```
 
 `captureContent` is opt-in and off by default — without it you still get
-counts, timing, and cost, but call/result content stays unobservable, so
-nothing can be confirmed as a repeat. `task_id` for this source is always
-trace-scoped, not conversation-scoped, which is a structural property of
-what OpenClaw's exporter emits, not a fallback. Full detail, including a
-documented case where a live Gateway exported zero spans across several
+counts, timing, and an estimated cost, but call/result content stays
+unobservable, so nothing can be confirmed as a repeat. Cost only exists on
+the metrics signal (never per-call), so it's an apportioned estimate, not
+an exactly metered figure — `cost_usd` stays `None` entirely unless you
+also point `redundo adapt` at a directory that has metrics files in it
+(the same `otlp_traces` dir `redundo collect` already writes them to).
+`task_id` for this source is always trace-scoped, not conversation-scoped,
+which is a structural property of what OpenClaw's exporter emits, not a
+fallback. Full detail, including a documented case where a live Gateway
+exported zero spans across several
 real turns (an OpenClaw-side gap, not a redundo one), is in
 [docs/openclaw.md](docs/openclaw.md).
 

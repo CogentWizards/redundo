@@ -111,3 +111,40 @@ def logs_document(records: list[LogRecord], resource_attributes: dict | None = N
         ]
     }
     return {"resourceLogs": [{"resource": resource, "scopeLogs": [{"logRecords": raw_records}]}]}
+
+
+def cost_metric_document(
+    data_points: list[dict], name: str = "openclaw.cost.usd"
+) -> dict:
+    """A minimal OTLP metrics document carrying one Sum metric with the
+    given data points. Each data point dict takes: value (float),
+    start_time (int), time (int), attributes (dict), and optionally
+    aggregation_temporality (int, default 2/CUMULATIVE) and is_monotonic
+    (bool, default True) -- set per-call since a real point could
+    legitimately differ, though every real capture seen so far agrees.
+    """
+    raw_points = []
+    for dp in data_points:
+        raw_points.append({
+            "startTimeUnixNano": str(dp.get("start_time", 0)),
+            "timeUnixNano": str(dp.get("time", 0)),
+            "asDouble": dp["value"],
+            "attributes": [
+                {"key": k, "value": _any_value(v)} for k, v in dp.get("attributes", {}).items()
+            ],
+        })
+    return {
+        "resourceMetrics": [{
+            "resource": {"attributes": []},
+            "scopeMetrics": [{
+                "metrics": [{
+                    "name": name,
+                    "sum": {
+                        "dataPoints": raw_points,
+                        "aggregationTemporality": 2,
+                        "isMonotonic": True,
+                    },
+                }],
+            }],
+        }],
+    }

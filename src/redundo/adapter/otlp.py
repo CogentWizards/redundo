@@ -63,6 +63,33 @@ class LogRecord:
     resource_attributes: dict[str, Any] = field(default_factory=dict)
 
 
+# OTLP AggregationTemporality enum values, on a Sum metric's own `sum`
+# object (never on the point) -- 1 = DELTA (each point is an independent
+# increment, safe to add across points), 2 = CUMULATIVE (each point already
+# includes every prior increment *since that point's own
+# start_time_unix_nano* -- summing raw points double-counts; see callers
+# for how to total one of these correctly, including across a counter
+# reset, which starts a new start_time_unix_nano for the same attribute
+# set rather than continuing the old one).
+AGGREGATION_TEMPORALITY_DELTA = 1
+AGGREGATION_TEMPORALITY_CUMULATIVE = 2
+
+
+@dataclass(frozen=True, slots=True)
+class MetricPoint:
+    name: str
+    description: str
+    unit: str
+    kind: str  # "gauge" | "sum" | "histogram" | "exponentialHistogram" | "summary"
+    value: float | None  # asDouble/asInt; None for histogram/summary points (no single value)
+    start_time_unix_nano: int
+    time_unix_nano: int
+    aggregation_temporality: int | None  # only set for kind == "sum"
+    is_monotonic: bool | None  # only set for kind == "sum"
+    attributes: dict[str, Any] = field(default_factory=dict)
+    resource_attributes: dict[str, Any] = field(default_factory=dict)
+
+
 def _attr_value(value: dict[str, Any]) -> Any:
     """Unwrap an OTLP AnyValue. Only the scalar kinds actually observed in
     practice are handled; arrays/kvlists pass through as their raw
@@ -104,6 +131,10 @@ def is_trace_document(document: dict[str, Any]) -> bool:
 
 def is_log_document(document: dict[str, Any]) -> bool:
     return "resourceLogs" in document
+
+
+def is_metrics_document(document: dict[str, Any]) -> bool:
+    return "resourceMetrics" in document
 
 
 def document_resource_attributes(document: dict[str, Any]) -> list[dict[str, Any]]:
@@ -191,6 +222,55 @@ def parse_log_records(document: dict[str, Any]) -> list[LogRecord]:
             for raw_record in scope_log.get("logRecords", []):
                 records.append(_parse_one_log_record(raw_record, resource_attrs))
     return records
+
+
+# Metric data lives under one of these keys on a Metric object (a mutually
+# exclusive "oneof" in the proto source) -- each one holds its own
+# `dataPoints` list in the same shape MessageToDict produces.
+_METRIC_DATA_KINDS = ("gauge", "sum", "histogram", "exponentialHistogram", "summary")
+
+
+def parse_metric_points(document: dict[str, Any]) -> list[MetricPoint]:
+    """Flatten one OTLP metrics JSON export document into MetricPoint
+    records -- one per data point (a single metric can carry several, one
+    per distinct attribute combination, e.g. one per model/channel).
+    """
+    if not is_metrics_document(document):
+        raise OtlpParseError("not an OTLP metrics export: missing 'resourceMetrics'")
+
+    points: list[MetricPoint] = []
+    for resource_metric in document.get("resourceMetrics", []):
+        resource_attrs = _attrs_to_dict(
+            (resource_metric.get("resource") or {}).get("attributes", [])
+        )
+        for scope_metric in resource_metric.get("scopeMetrics", []):
+            for metric in scope_metric.get("metrics", []):
+                for kind in _METRIC_DATA_KINDS:
+                    data = metric.get(kind)
+                    if data is None:
+                        continue
+                    agg_temporality = data.get("aggregationTemporality") if kind == "sum" else None
+                    is_monotonic = data.get("isMonotonic") if kind == "sum" else None
+                    for dp in data.get("dataPoints", []):
+                        value = dp.get("asDouble")
+                        if value is None and "asInt" in dp:
+                            value = int(dp["asInt"])
+                        points.append(
+                            MetricPoint(
+                                name=metric.get("name", ""),
+                                description=metric.get("description", ""),
+                                unit=metric.get("unit", ""),
+                                kind=kind,
+                                value=value,
+                                start_time_unix_nano=int(dp.get("startTimeUnixNano") or 0),
+                                time_unix_nano=int(dp.get("timeUnixNano") or 0),
+                                aggregation_temporality=agg_temporality,
+                                is_monotonic=is_monotonic,
+                                attributes=_attrs_to_dict(dp.get("attributes", [])),
+                                resource_attributes=resource_attrs,
+                            )
+                        )
+    return points
 
 
 def _parse_one_log_record(raw: dict[str, Any], resource_attrs: dict[str, Any]) -> LogRecord:
