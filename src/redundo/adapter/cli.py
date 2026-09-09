@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from .base import DetectionError
-from .otlp import OtlpParseError, is_log_document, is_trace_document
+from .otlp import OtlpParseError, is_log_document, is_metrics_document, is_trace_document
 from .registry import default_registry
 from .writer import write_jsonl
 
@@ -34,7 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "otlp_dir", type=Path,
-        help="Directory of *.json OTLP export batch files (traces and/or logs, any mix)",
+        help="Directory of *.json OTLP export batch files (traces, logs, and/or "
+        "metrics, any mix)",
     )
     parser.add_argument(
         "-o", "--output", type=Path, default=None, metavar="PATH",
@@ -69,14 +70,14 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, json.JSONDecodeError) as exc:
             print(f"redundo adapt: {path}: {exc}", file=sys.stderr)
             return 1
-        if is_trace_document(doc) or is_log_document(doc):
+        if is_trace_document(doc) or is_log_document(doc) or is_metrics_document(doc):
             documents.append(doc)
         else:
             skipped_unrecognized += 1
 
     if not documents:
         print(
-            f"redundo adapt: no OTLP trace or log documents found in {args.otlp_dir}",
+            f"redundo adapt: no OTLP trace, log, or metrics documents found in {args.otlp_dir}",
             file=sys.stderr,
         )
         return 1

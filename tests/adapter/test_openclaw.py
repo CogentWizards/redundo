@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from helpers import span, traces_document
+from helpers import cost_metric_document, span, traces_document
 from redundo.adapter.sources.openclaw import convert_openclaw
 
 # gen_ai.input.messages/output.messages shape verified against
@@ -303,3 +303,178 @@ def test_overlapping_siblings_stay_independent_not_chained():
     records, _ = convert(traces_document(spans))
     assert records[0]["parent_id"] is None
     assert records[1]["parent_id"] is None
+
+
+# --- cost_usd: apportioned from the metrics signal --------------------------
+
+def _llm_call_span(span_id, trace_id, model, tokens_in, tokens_out, start, channel=None):
+    attrs = {
+        "gen_ai.request.model": model,
+        "gen_ai.usage.input_tokens": tokens_in,
+        "gen_ai.usage.output_tokens": tokens_out,
+    }
+    return span(span_id, trace_id=trace_id, name="openclaw.model.call", start=start, end=start + 1,
+                attributes=attrs)
+
+
+def _channel_span(span_id, trace_id, channel):
+    # openclaw.channel lives on a structural wrapper span in real captures
+    # (openclaw.run/openclaw.harness.run), never on openclaw.model.call
+    # itself -- see _channel_of_trace. Any span in the trace carrying it is
+    # enough for this adapter to pick it up.
+    return span(span_id, trace_id=trace_id, name="openclaw.run", start=0, end=100,
+                attributes={"openclaw.channel": channel})
+
+
+def test_no_metrics_documents_leaves_cost_usd_none():
+    spans = [_channel_span("r1", "trace-1", "webchat"),
+             _llm_call_span("s1", "trace-1", "m", 100, 10, start=1)]
+    records, summary = convert_openclaw([traces_document(spans)])
+    assert records[-1]["cost_usd"] is None
+    assert summary.cost_windows_found == 0
+    assert any("no openclaw.cost.usd metrics were found" in n for n in summary.notes())
+
+
+def test_cost_apportioned_by_token_share_within_channel_and_model():
+    spans = [
+        _channel_span("r1", "trace-1", "webchat"),
+        _llm_call_span("s1", "trace-1", "m", tokens_in=90, tokens_out=10, start=1),   # 100 tokens
+        _llm_call_span("s2", "trace-1", "m", tokens_in=270, tokens_out=30, start=2),  # 300 tokens
+    ]
+    metrics = cost_metric_document([{
+        "value": 4.0, "start_time": 0, "time": 1000,
+        "attributes": {"openclaw.channel": "webchat", "openclaw.model": "m"},
+    }])
+    records, summary = convert_openclaw([traces_document(spans), metrics])
+
+    llm_calls = [r for r in records if r["event_type"] == "llm_call"]
+    assert llm_calls[0]["cost_usd"] == 1.0    # 100/400 of $4.00
+    assert llm_calls[1]["cost_usd"] == 3.0    # 300/400 of $4.00
+    assert llm_calls[0]["metadata"]["cost_basis"] == "apportioned_from_metrics_by_tokens"
+    assert summary.llm_calls_with_apportioned_cost == 2
+    assert summary.llm_calls_apportioned_by_equal_split == 0
+    assert any("ESTIMATE for 2 llm_call" in n for n in summary.notes())
+
+
+def test_cost_split_evenly_when_no_token_data():
+    spans = [
+        _channel_span("r1", "trace-1", "webchat"),
+        span("s1", trace_id="trace-1", name="openclaw.model.call", start=1, end=2,
+             attributes={"gen_ai.request.model": "m"}),
+        span("s2", trace_id="trace-1", name="openclaw.model.call", start=2, end=3,
+             attributes={"gen_ai.request.model": "m"}),
+    ]
+    metrics = cost_metric_document([{
+        "value": 1.0, "start_time": 0, "time": 1000,
+        "attributes": {"openclaw.channel": "webchat", "openclaw.model": "m"},
+    }])
+    records, summary = convert_openclaw([traces_document(spans), metrics])
+
+    llm_calls = [r for r in records if r["event_type"] == "llm_call"]
+    assert llm_calls[0]["cost_usd"] == 0.5
+    assert llm_calls[1]["cost_usd"] == 0.5
+    assert llm_calls[0]["metadata"]["cost_basis"] == "apportioned_from_metrics_equal_split"
+    assert summary.llm_calls_apportioned_by_equal_split == 2
+
+
+def test_cost_not_apportioned_across_different_model():
+    spans = [
+        _channel_span("r1", "trace-1", "webchat"),
+        _llm_call_span("s1", "trace-1", "model-a", tokens_in=100, tokens_out=0, start=1),
+        _llm_call_span("s2", "trace-1", "model-b", tokens_in=100, tokens_out=0, start=1),
+    ]
+    metrics = cost_metric_document([{
+        "value": 1.0, "start_time": 0, "time": 1000,
+        "attributes": {"openclaw.channel": "webchat", "openclaw.model": "model-a"},
+    }])
+    records, _ = convert_openclaw([traces_document(spans), metrics])
+
+    llm_calls = [r for r in records if r["event_type"] == "llm_call"]
+    by_model = {r["model"]: r for r in llm_calls}
+    assert by_model["model-a"]["cost_usd"] == 1.0
+    assert by_model["model-b"]["cost_usd"] is None  # different model -- no matching generation
+
+
+def test_tool_call_and_tool_result_never_get_apportioned_cost():
+    spans = [
+        _channel_span("r1", "trace-1", "webchat"),
+        _llm_call_span("s1", "trace-1", "m", tokens_in=100, tokens_out=0, start=1),
+        span("s2", trace_id="trace-1", name="openclaw.tool.execution", start=2, end=3,
+             attributes={"gen_ai.tool.name": "lookup"}),
+    ]
+    metrics = cost_metric_document([{
+        "value": 1.0, "start_time": 0, "time": 1000,
+        "attributes": {"openclaw.channel": "webchat", "openclaw.model": "m"},
+    }])
+    records, _ = convert_openclaw([traces_document(spans), metrics])
+
+    tool_call = next(r for r in records if r["event_type"] == "tool_call")
+    assert tool_call["cost_usd"] is None
+
+
+def test_cost_generations_kept_separate_across_counter_reset():
+    # Two generations of the same (channel, model) counter -- confirmed to
+    # happen in practice when the exporting Gateway process restarts
+    # mid-capture, which resets the counter to zero and starts a new
+    # start_time_unix_nano. Calls before the reset must draw only from the
+    # first generation's total; calls after, only from the second's -- not
+    # from a single collapsed "latest wins" or "sum everything" total.
+    spans = [
+        _channel_span("r1", "trace-1", "webchat"),
+        _llm_call_span("s1", "trace-1", "m", tokens_in=100, tokens_out=0, start=50),   # before reset
+        _llm_call_span("s2", "trace-1", "m", tokens_in=100, tokens_out=0, start=150),  # after reset
+    ]
+    metrics = cost_metric_document([
+        {  # generation 1: window [0, 100]
+            "value": 2.0, "start_time": 0, "time": 100,
+            "attributes": {"openclaw.channel": "webchat", "openclaw.model": "m"},
+        },
+        {  # generation 2: window [120, 200] -- a new start_time, same channel/model
+            "value": 5.0, "start_time": 120, "time": 200,
+            "attributes": {"openclaw.channel": "webchat", "openclaw.model": "m"},
+        },
+    ])
+    records, _ = convert_openclaw([traces_document(spans), metrics])
+
+    llm_calls = [r for r in records if r["event_type"] == "llm_call"]
+    assert llm_calls[0]["cost_usd"] == 2.0  # sole match in generation 1's window
+    assert llm_calls[1]["cost_usd"] == 5.0  # sole match in generation 2's window
+
+
+def test_llm_call_long_before_its_generations_own_start_still_matches():
+    # A generation's start_time_unix_nano is when the SDK started tracking
+    # that attribute combination, not when the real activity it covers
+    # began -- confirmed directly against a real capture where genuine
+    # llm_call spans landed noticeably earlier than their generation's own
+    # start_time (registration lag) and still needed to draw from that
+    # generation's total. With only one generation for a (channel, model)
+    # pair, its window is unbounded on both ends: there is no "too early"
+    # or "too late," only "which generation, if any, exists for this key."
+    spans = [
+        _channel_span("r1", "trace-1", "webchat"),
+        _llm_call_span("s1", "trace-1", "m", tokens_in=100, tokens_out=0, start=-500),
+    ]
+    metrics = cost_metric_document([{
+        "value": 1.0, "start_time": 1000, "time": 2000,
+        "attributes": {"openclaw.channel": "webchat", "openclaw.model": "m"},
+    }])
+    records, _ = convert_openclaw([traces_document(spans), metrics])
+
+    llm_call = next(r for r in records if r["event_type"] == "llm_call")
+    assert llm_call["cost_usd"] == 1.0
+
+
+def test_llm_call_with_no_generation_for_its_channel_stays_unpriced():
+    spans = [
+        _channel_span("r1", "trace-1", "cron"),
+        _llm_call_span("s1", "trace-1", "m", tokens_in=100, tokens_out=0, start=1),
+    ]
+    metrics = cost_metric_document([{
+        "value": 1.0, "start_time": 0, "time": 100,
+        "attributes": {"openclaw.channel": "webchat", "openclaw.model": "m"},
+    }])
+    records, summary = convert_openclaw([traces_document(spans), metrics])
+
+    llm_call = next(r for r in records if r["event_type"] == "llm_call")
+    assert llm_call["cost_usd"] is None
+    assert summary.llm_calls_with_apportioned_cost == 0

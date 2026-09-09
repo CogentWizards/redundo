@@ -106,7 +106,7 @@ def test_cli_fails_on_missing_directory(tmp_path, capsys):
 def test_cli_fails_on_empty_directory(tmp_path, capsys):
     exit_code = main([str(tmp_path)])
     assert exit_code == 1
-    assert "no OTLP trace or log documents found" in capsys.readouterr().err
+    assert "no OTLP trace, log, or metrics documents found" in capsys.readouterr().err
 
 
 def test_cli_fails_loudly_when_source_undetectable(tmp_path, capsys):

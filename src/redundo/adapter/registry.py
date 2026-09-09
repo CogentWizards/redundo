@@ -29,7 +29,7 @@ from importlib.metadata import entry_points
 from typing import Any
 
 from .base import AdapterSource, Detection, DetectionError
-from .otlp import is_log_document, parse_log_records
+from .otlp import is_log_document, is_metrics_document, is_trace_document, parse_log_records
 from .sources.cowork import COWORK_EVENT_NAMES
 
 logger = logging.getLogger(__name__)
@@ -89,13 +89,15 @@ class SourceRegistry:
                 "service.name and no Claude-Code-only event present",
             )
 
-        trace_count = sum(1 for d in documents if not is_log_document(d))
+        trace_count = sum(1 for d in documents if is_trace_document(d))
+        metrics_count = sum(1 for d in documents if is_metrics_document(d))
         raise DetectionError(
             "could not determine which source produced this corpus -- found "
-            f"{trace_count} trace document(s) and {len(log_docs)} log document(s), "
-            "but none carried a recognizable span name, openinference.span.kind "
-            "attribute, resource service.name, or logs-signal event.name. Pass "
-            f"--source explicitly ({', '.join(self.names())})."
+            f"{trace_count} trace document(s), {len(log_docs)} log document(s), and "
+            f"{metrics_count} metrics document(s), but none carried a recognizable "
+            "span name, openinference.span.kind attribute, resource service.name, "
+            "or logs-signal event.name. Pass --source explicitly "
+            f"({', '.join(self.names())})."
         )
 
 

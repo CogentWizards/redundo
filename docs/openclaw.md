@@ -123,22 +123,62 @@ participate in a candidate pair -- every `llm_call`/`tool_call` looks
 unique by construction. That's not a bug in this adapter; it's an honest
 reflection of what the operator chose to export.
 
-## Cost: unreachable from the signals this adapter reads, not merely unobserved
+## Cost: an estimate apportioned from the metrics signal, not a metered figure
 
 OpenClaw's exporter does compute and export a real cost estimate --
-`openclaw.cost.usd`, a Counter metric, fed from `model.usage` diagnostic
-events whenever they carry a `costUsd` value. But it is **only** exported
-on the metrics OTLP signal, never as a span attribute on `openclaw.model.call`
-or anywhere else. `redundo collect` does capture `/v1/metrics` (written to
-disk like any other signal), but `OpenClawSource.convert()` -- like every
-adapter source today -- only ever reads the traces and logs documents out
-of that directory; nothing in this package parses OTLP metrics into the
-Event schema yet. This source's logs signal, separately, carries only
-generic gateway log and security-event records -- nothing model-call-shaped,
-unlike `sources.claude_code`'s `api_request` log record, which is where
-*that* source's real cost comes from. `cost_usd` is therefore always
-`None` from this adapter, structurally, not because no corpus has
-happened to carry it yet.
+`openclaw.cost.usd`, a cumulative Counter split by `(openclaw.channel,
+openclaw.model)` attributes, fed from `model.usage` diagnostic events
+whenever they carry a `costUsd` value. But it is **only** exported on the
+metrics OTLP signal, never as a span attribute on `openclaw.model.call` or
+anywhere else, and even there it has no per-call granularity: a Counter
+has no `task_id`/`span_id` to join a specific dollar amount back to a
+specific call, and the exporter never populates metric exemplars either
+(confirmed empirically: zero exemplars across a real capture with genuine
+spend).
+
+`redundo collect` captures `/v1/metrics` (written to disk like any other
+signal; pass the whole capture directory to `redundo adapt` as usual --
+metrics files are picked up automatically alongside traces and logs). This
+adapter apportions each `(channel, model)` counter's total across every
+`llm_call` event sharing that `(channel, model)`, weighted by token share
+(`tokens_in + tokens_out`) when the calls in scope have token data, split
+evenly otherwise. `tool_call`/`tool_result` records never get a `cost_usd`
+-- the counter is model-call-scoped, with nothing analogous for tools.
+
+**The counter resets to zero, and starts a new observation window, every
+time the exporting Gateway process restarts** -- confirmed directly
+during this feature's development against a real capture where the same
+`(channel, model)` pair's `start_time_unix_nano` changed mid-session.
+Treating every point as one flat running total would silently drop
+whatever a pre-restart generation had accumulated. This adapter instead
+tracks each restart as its own *generation*, and needed one more
+correction beyond that: a generation's own `start_time_unix_nano` is when
+the exporting SDK began tracking that attribute combination, not
+necessarily when the real calls it covers began -- also confirmed
+directly, real `llm_call` spans landed both before their generation's
+recorded start (registration lag) and after its last observed export
+(a real call made in the time between one periodic metrics flush and the
+next). Bucketing by "does this call's timestamp fall inside this
+generation's own observed range" undercounted roughly 12 of 13 real calls
+in that capture. The correct boundary is *which restart cycle a call
+belongs to* -- strictly before the next generation of the same `(channel,
+model)` begins, open-ended at both ends of the whole sequence -- the same
+idiom `sources.claude_code` uses for its own cross-signal time-window
+bucketing (see that source's own docs for the fuller reasoning). Every
+apportioned record's `metadata.cost_basis` names which case applied
+(`"apportioned_from_metrics_by_tokens"` or `"_equal_split"`), and
+`ConversionSummary.notes()` reports how many `llm_call` records actually
+got an estimate -- if metrics documents weren't captured at all, that
+count is `0` and `cost_usd` stays `None` everywhere, same as before this
+feature existed.
+
+**What this still can't do**: a `(channel, model)` generation with zero
+matching `llm_call` spans in the trace data (e.g. a call whose own export
+was lost or never captured) simply has its total go unapportioned to
+anyone -- correct, not a bug, since inventing a match would be a guess.
+And this is still an estimate, never an exactly metered per-call figure:
+"this call's token share of this generation's total" is the most precise
+claim the data actually supports.
 
 ## `metadata.write` is never set
 
