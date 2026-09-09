@@ -90,6 +90,7 @@ def load_events(
     events = list(iter_events(source, strict=strict, on_error=on_error))
     events.sort(key=lambda e: (e.task_id, e.step_index))
     check_consistent_hash_spec(events)
+    check_consistent_similarity_spec(events)
     return events
 
 
@@ -117,5 +118,28 @@ def check_consistent_hash_spec(events: list[Event]) -> str | None:
             f"values found: {sorted(specs)}) -- content_hash values are not comparable "
             "across different hash_spec versions. Re-run every source through the same "
             "adapter version, or split this corpus by hash_spec before analyzing."
+        )
+    return next(iter(specs), None)
+
+
+def check_consistent_similarity_spec(events: list[Event]) -> str | None:
+    """Same discipline as check_consistent_hash_spec, for
+    metadata["similarity_spec"]/metadata["similarity_fingerprint"]: a
+    Hamming-distance comparison between two fingerprints computed under
+    different SimHash procedures is meaningless, not just imprecise --
+    refuse rather than produce a confident wrong near-duplicate finding.
+    """
+    specs = {
+        event.metadata["similarity_spec"]
+        for event in events
+        if isinstance(event.metadata, dict) and event.metadata.get("similarity_spec") is not None
+    }
+    if len(specs) > 1:
+        raise IngestError(
+            f"events use inconsistent similarity_fingerprint procedures "
+            f"(metadata.similarity_spec values found: {sorted(specs)}) -- fingerprints "
+            "are not comparable across different similarity_spec versions. Re-run every "
+            "source through the same adapter version, or split this corpus by "
+            "similarity_spec before analyzing."
         )
     return next(iter(specs), None)

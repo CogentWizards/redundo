@@ -1,6 +1,6 @@
 from redundo.analyzer.analyses import RULE_TEXT, WasteAnalysis
 from redundo.analyzer.classify import Verdict
-from redundo.analyzer.report import to_html, to_text
+from redundo.analyzer.report import _palette_for, to_html, to_text
 from redundo.analyzer.schema import Event
 
 
@@ -33,7 +33,7 @@ def test_html_is_self_contained_no_external_resources():
     assert "<script" not in page.lower()
 
 
-def test_html_contains_all_three_bucket_labels():
+def test_html_contains_all_four_bucket_labels():
     events = [
         make_event(0, event_type="tool_call"),
         make_event(1, event_type="tool_result", content_hash="same"),
@@ -44,6 +44,16 @@ def test_html_contains_all_three_bucket_labels():
     assert "Confirmed waste" in page
     assert "Likely legitimate" in page
     assert "Unclassified" in page
+    assert "Near duplicate" in page
+
+
+def test_fourth_bucket_gets_its_own_palette_color_not_a_wraparound():
+    # WasteAnalysis now emits 4 buckets; _PALETTE previously had exactly 3
+    # entries, so index 3 wrapped to index 0's colors (identical to
+    # confirmed_waste, indistinguishable in the rendered report). Guards
+    # against that regression directly, independent of any one analysis's
+    # bucket count.
+    assert _palette_for(3) != _palette_for(0)
 
 
 def test_html_escapes_untrusted_trace_content():

@@ -4,7 +4,7 @@ from redundo.analyzer.schema import Event
 
 def make_event(step_index, event_type="tool_call", name="search", content_hash="h1",
                 outcome=None, cost_usd=None, tokens_in=None, tokens_out=None,
-                model=None, workflow=None, task_id="t1"):
+                model=None, workflow=None, task_id="t1", metadata=None):
     return Event(
         task_id=task_id,
         step_index=step_index,
@@ -19,7 +19,7 @@ def make_event(step_index, event_type="tool_call", name="search", content_hash="
         model=model,
         parent_id=None,
         workflow=workflow,
-        metadata={},
+        metadata=metadata if metadata is not None else {},
     )
 
 
@@ -101,7 +101,9 @@ def test_result_as_dict_is_json_serializable_shape():
     result = run(events)
     d = result.as_dict()
     assert d["total_candidates"] == 1
-    assert set(d["by_bucket"].keys()) == {"confirmed_waste", "likely_legitimate", "unclassified"}
+    assert set(d["by_bucket"].keys()) == {
+        "confirmed_waste", "likely_legitimate", "unclassified", "near_duplicate",
+    }
     assert d["by_bucket"]["confirmed_waste"]["count"] == 1
 
 
@@ -156,3 +158,82 @@ def test_comparability_note_ignores_unpriced_events():
     assert "0/1 tasks" in note
     assert "$0.0000" in note  # nothing priced to sum
     assert "2 event(s)" in note
+
+
+# --- 4th bucket: near_duplicate ---------------------------------------------
+
+_ZERO_FP = "0" * 16
+_CLOSE_FP = "f" * 2 + "0" * 14  # distance 8 from _ZERO_FP -- within default threshold
+
+
+def test_exact_and_near_duplicate_pairs_land_in_disjoint_buckets():
+    events = [
+        # An exact-match pair, paired with tool_results and a failed
+        # outcome -- the full confirmed_waste shape, same as
+        # test_repeat_side_of_pair_is_what_gets_counted above.
+        make_event(0, task_id="t1", event_type="tool_call", cost_usd=0.01),
+        make_event(1, task_id="t1", event_type="tool_result", content_hash="same"),
+        make_event(
+            2, task_id="t1", event_type="tool_call", cost_usd=0.02, outcome="error"
+        ),
+        make_event(
+            3, task_id="t1", event_type="tool_result", content_hash="same", outcome="error"
+        ),
+        # A near-duplicate pair in a different task -- different content_hash,
+        # close fingerprints.
+        make_event(
+            0, task_id="t2", content_hash="a", cost_usd=0.03,
+            metadata={"similarity_fingerprint": _ZERO_FP},
+        ),
+        make_event(
+            1, task_id="t2", content_hash="b", cost_usd=0.04,
+            metadata={"similarity_fingerprint": _CLOSE_FP},
+        ),
+    ]
+    result = run(events)
+    exact_bucket = bucket(result, "confirmed_waste")
+    near_bucket = bucket(result, "near_duplicate")
+    assert exact_bucket.slice.count == 1
+    assert near_bucket.slice.count == 1
+    assert result.total_candidates == 2
+
+
+def test_near_duplicate_bucket_empty_when_nothing_similar():
+    events = [
+        make_event(0, content_hash="a", metadata={"similarity_fingerprint": _ZERO_FP}),
+        make_event(1, content_hash="b", metadata={"similarity_fingerprint": "f" * 16}),
+    ]
+    result = run(events)
+    assert bucket(result, "near_duplicate").slice.count == 0
+    assert not any("near-duplicate" in n for n in result.coverage.extra_notes)
+
+
+def test_near_duplicate_comparability_note_is_separate_from_exact_match_note():
+    events = [
+        make_event(
+            0, task_id="t1", content_hash="a",
+            metadata={"similarity_fingerprint": _ZERO_FP},
+        ),
+        make_event(
+            1, task_id="t1", content_hash="b",
+            metadata={"similarity_fingerprint": _CLOSE_FP},
+        ),
+    ]
+    result = run(events)
+    notes = result.coverage.extra_notes
+    exact_note = next(n for n in notes if "repeated call for redundancy" in n)
+    near_note = next(n for n in notes if "near-duplicate" in n)
+    assert exact_note is not near_note
+    assert "0/1 tasks" in exact_note  # no exact pair here
+    assert "1/1 tasks" in near_note
+
+
+def test_near_duplicate_threshold_is_configurable():
+    events = [
+        make_event(0, content_hash="a", metadata={"similarity_fingerprint": _ZERO_FP}),
+        make_event(1, content_hash="b", metadata={"similarity_fingerprint": _CLOSE_FP}),
+    ]
+    strict_result = WasteAnalysis(near_duplicate_threshold=2).run(events)
+    lenient_result = WasteAnalysis(near_duplicate_threshold=20).run(events)
+    assert bucket(strict_result, "near_duplicate").slice.count == 0
+    assert bucket(lenient_result, "near_duplicate").slice.count == 1
