@@ -22,6 +22,12 @@ OUTCOMES: frozenset[str] = frozenset({"ok", "error"})
 # never a wrong guess. See classify.py.
 META_WRITE_KEY = "write"  # bool: did this step have a side effect (mutate state)?
 META_RESPONSE_HASH_KEY = "response_hash"  # str: hash of an llm_call's completion, if known
+# str: SimHash fingerprint of the call's own prompt/arguments (never its
+# result), from redundo.adapter.hashing.similarity_fingerprint. Absent
+# means "this source doesn't populate it," same convention as every other
+# metadata key -- never treated as "definitely no near-duplicate."
+META_SIMILARITY_FINGERPRINT_KEY = "similarity_fingerprint"
+META_SIMILARITY_SPEC_KEY = "similarity_spec"  # str: version of the fingerprint procedure used
 
 
 class SchemaError(ValueError):

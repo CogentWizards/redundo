@@ -1,9 +1,16 @@
+import os
+import subprocess
+import sys
+
 from redundo.adapter.hashing import (
     HASH_LENGTH,
+    SIMHASH_HEX_LENGTH,
     canonicalize_json,
     content_hash,
+    hamming_distance,
     mask_volatile,
     normalize_text,
+    similarity_fingerprint,
 )
 
 
@@ -190,3 +197,86 @@ def test_malformed_structured_content_fallback_still_masks_volatile_spans():
     a, _ = content_hash("{broken json with id 550e8400-e29b-41d4-a716-446655440000", structured=True)
     b, _ = content_hash("{broken json with id 11111111-2222-3333-4444-555555555555", structured=True)
     assert a == b
+
+
+# --- similarity_fingerprint / hamming_distance ------------------------------
+
+
+def test_fingerprint_length_is_hex_chars():
+    fp = similarity_fingerprint("hello world")
+    assert len(fp) == SIMHASH_HEX_LENGTH
+    assert all(c in "0123456789abcdef" for c in fp)
+
+
+def test_identical_text_same_fingerprint():
+    a = similarity_fingerprint("Summarize this report")
+    b = similarity_fingerprint("Summarize this report")
+    assert a == b
+    assert hamming_distance(a, b) == 0
+
+
+def test_near_identical_urls_are_close():
+    a = similarity_fingerprint(
+        '{"url": "https://example.com/page?utm_source=twitter"}', structured=True
+    )
+    b = similarity_fingerprint(
+        '{"url": "https://example.com/page?utm_source=facebook"}', structured=True
+    )
+    # Generous bound, not an exact number -- SimHash bit-flip counts aren't
+    # meant to be pinned precisely, only shown to land far below "unrelated."
+    assert hamming_distance(a, b) < 20
+
+
+def test_unrelated_content_is_far_apart():
+    a = similarity_fingerprint("the quick brown fox jumps over the lazy dog")
+    b = similarity_fingerprint("quarterly revenue projections for the northeast region")
+    assert hamming_distance(a, b) > 20
+
+
+def test_structured_fingerprint_ignores_key_order():
+    a = similarity_fingerprint({"tool": "search", "query": "ai news"}, structured=True)
+    b = similarity_fingerprint({"query": "ai news", "tool": "search"}, structured=True)
+    assert a == b
+
+
+def test_malformed_structured_content_falls_back_instead_of_raising():
+    fp = similarity_fingerprint("{not valid json at all", structured=True)
+    assert len(fp) == SIMHASH_HEX_LENGTH
+
+
+def test_masking_prevents_a_shared_volatile_span_from_inflating_similarity():
+    # Two otherwise-unrelated strings that happen to share one UUID should
+    # NOT be pulled artificially close just because of that shared token --
+    # masking must apply before fingerprinting, same as before hashing.
+    shared_uuid = "550e8400-e29b-41d4-a716-446655440000"
+    a = similarity_fingerprint(f"fetch user profile {shared_uuid}")
+    b = similarity_fingerprint(f"delete billing record {shared_uuid}")
+    assert hamming_distance(a, b) > 20
+
+
+def test_empty_string_produces_a_valid_fingerprint():
+    fp = similarity_fingerprint("")
+    assert len(fp) == SIMHASH_HEX_LENGTH
+
+
+def test_fingerprint_deterministic_across_process_hash_seeds():
+    # The one concrete landmine: an implementation that accidentally used
+    # Python's builtin hash() for shingles instead of a stable hash would
+    # pass every other test in this file (PYTHONHASHSEED is fixed within
+    # one process) and still be non-deterministic across separate
+    # `redundo adapt` runs. Only a subprocess boundary can catch that.
+    script = (
+        "from redundo.adapter.hashing import similarity_fingerprint;"
+        "print(similarity_fingerprint('Summarize this report'))"
+    )
+    results = set()
+    for seed in ("0", "1", "12345"):
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            env={"PYTHONHASHSEED": seed, "PATH": os.environ.get("PATH", "")},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        results.add(proc.stdout.strip())
+    assert len(results) == 1

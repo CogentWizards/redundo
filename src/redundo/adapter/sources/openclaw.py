@@ -413,25 +413,42 @@ def _opaque_hash(span: Span) -> tuple[str, int]:
     return hashing.content_hash(span.span_id, structured=False)
 
 
-def _hash_json_attr(span: Span, attr: str, summary: ConversionSummary) -> tuple[str, int, str]:
-    """(content_hash, mask_count, content_basis) for a captureContent-only
-    attribute that -- per the exporter's own test assertions -- is a
-    JSON-stringified value (a message-parts array, or tool
-    arguments/result). Falls back to opaque when absent, i.e. captureContent
-    was off or this particular event carried nothing to capture.
+def _hash_json_attr(
+    span: Span, attr: str, summary: ConversionSummary
+) -> tuple[str, int, str, str | None]:
+    """(content_hash, mask_count, content_basis, similarity_fingerprint)
+    for a captureContent-only attribute that -- per the exporter's own
+    test assertions -- is a JSON-stringified value (a message-parts array,
+    or tool arguments/result). Falls back to opaque when absent, i.e.
+    captureContent was off or this particular event carried nothing to
+    capture.
+
+    The fingerprint is only ever computed alongside real content, never
+    for the opaque fallback -- a SimHash over a span's own arbitrary
+    span_id string would be noise, not signal, and could produce a
+    coincidentally small Hamming distance between two otherwise-unrelated
+    opaque records, a false near-duplicate. `None` here means "not
+    computed," same "absence is unknown, never a guess" discipline as
+    every other optional metadata value in this module.
     """
     raw = span.attributes.get(attr)
     if raw is None:
         summary.records_with_opaque_content += 1
         digest, masks = _opaque_hash(span)
-        return digest, masks, "opaque"
+        return digest, masks, "opaque", None
     digest, masks = hashing.content_hash(raw, structured=True)
+    fingerprint = hashing.similarity_fingerprint(raw, structured=True)
     summary.records_with_prompt_content += 1
-    return digest, masks, "prompt"
+    return digest, masks, "prompt", fingerprint
 
 
-def _base_metadata(span: Span, masked_spans: int, content_basis: str) -> dict[str, Any]:
-    return {
+def _base_metadata(
+    span: Span,
+    masked_spans: int,
+    content_basis: str,
+    similarity_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    metadata = {
         "hash_spec": hashing.HASH_SPEC,
         "masked_spans": masked_spans,
         "otlp_span_id": span.span_id,
@@ -442,6 +459,10 @@ def _base_metadata(span: Span, masked_spans: int, content_basis: str) -> dict[st
         "task_id_source": "trace_id_fallback",
         "content_basis": content_basis,
     }
+    if similarity_fingerprint is not None:
+        metadata["similarity_fingerprint"] = similarity_fingerprint
+        metadata["similarity_spec"] = hashing.SIMILARITY_SPEC
+    return metadata
 
 
 def _llm_event(
@@ -452,7 +473,9 @@ def _llm_event(
     workflow: str | None,
     summary: ConversionSummary,
 ) -> dict[str, Any]:
-    digest, masks, content_basis = _hash_json_attr(span, _INPUT_MESSAGES_ATTR, summary)
+    digest, masks, content_basis, fingerprint = _hash_json_attr(
+        span, _INPUT_MESSAGES_ATTR, summary
+    )
 
     response_hash = None
     output_raw = span.attributes.get(_OUTPUT_MESSAGES_ATTR)
@@ -466,7 +489,7 @@ def _llm_event(
         tokens_in = int(tokens_in_raw) + _sum_present(span.attributes, _TOKENS_IN_CACHE_ATTRS)
     tokens_out_raw = _first_present(span.attributes, _TOKENS_OUT_ATTRS)
 
-    metadata = _base_metadata(span, masks, content_basis)
+    metadata = _base_metadata(span, masks, content_basis, fingerprint)
     if response_hash is not None:
         metadata["response_hash"] = response_hash
 
@@ -497,7 +520,9 @@ def _tool_events(
     workflow: str | None,
     summary: ConversionSummary,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    call_hash, call_masks, call_basis = _hash_json_attr(span, _TOOL_ARGS_ATTR, summary)
+    call_hash, call_masks, call_basis, call_fingerprint = _hash_json_attr(
+        span, _TOOL_ARGS_ATTR, summary
+    )
     tool_name = _first_present(span.attributes, _TOOL_NAME_ATTRS) or span.name
     has_ended = span.end_time_unix_nano is not None
     # A blocked call never executes, so it can never produce a tool_result
@@ -521,7 +546,7 @@ def _tool_events(
         "model": None,
         "parent_id": parent_step,
         "workflow": workflow,
-        "metadata": _base_metadata(span, call_masks, call_basis),
+        "metadata": _base_metadata(span, call_masks, call_basis, call_fingerprint),
     }
 
     raw_result = span.attributes.get(_TOOL_RESULT_ATTR)

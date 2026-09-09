@@ -1,14 +1,24 @@
 """Content hashing: the precise procedure, implemented once so it can be
 copied correctly. See docs/hashing.md for the written contract this implements and
 the reasoning behind each choice. Do not change this file's behavior
-without bumping HASH_SPEC -- comparisons across corpora depend on both
-sides having run identical code.
+without bumping HASH_SPEC (exact-match hashing) or SIMILARITY_SPEC
+(fingerprinting) as appropriate -- comparisons across corpora depend on
+both sides having run identical code.
 
 The one invariant that matters most: nothing downstream of this module
 ever sees raw content, only hashes. That's what makes it safe to run this
 adapter against production traces without a security review of the
 analyzer. Don't let raw prompt/argument text leak into logs, exceptions,
 or the `name`/`workflow` fields this module doesn't touch.
+
+`similarity_fingerprint()` is a deliberate, narrower exception to that
+invariant's strength, not a silent one: unlike `content_hash` (a real
+cryptographic hash -- no information about closeness leaks from it at
+all), a SimHash fingerprint is designed so that similar inputs produce
+comparable outputs. That is what makes near-duplicate detection possible,
+and it is also a real reduction in the one-wayness this module otherwise
+guarantees -- see docs/hashing.md for the precise tradeoff before using
+it anywhere the stronger guarantee is assumed.
 """
 
 from __future__ import annotations
@@ -21,6 +31,11 @@ from typing import Any
 
 HASH_SPEC = "v1"
 HASH_LENGTH = 16  # hex chars = 64 bits. See docs/hashing.md for the birthday-bound math.
+
+SIMILARITY_SPEC = "v1"
+SIMHASH_BITS = 64
+SIMHASH_HEX_LENGTH = SIMHASH_BITS // 4  # kept as its own constant -- see docs/hashing.md
+_SHINGLE_SIZE = 4  # characters, not words -- see similarity_fingerprint's docstring
 
 # Order matters: broader/more specific patterns first so a later pattern
 # can't partially match inside a token an earlier pass already replaced.
@@ -109,17 +124,15 @@ def mask_volatile(text: str, *, mask_integers: bool = False) -> tuple[str, int]:
     return text, total
 
 
-def content_hash(
-    raw: Any,
-    *,
-    structured: bool = False,
-    mask_integers: bool = False,
-) -> tuple[str, int]:
-    """The full procedure: normalize (text) or canonicalize (structured),
-    mask volatile spans, hash. Returns (hash_hex, masked_span_count).
-
-    `structured=True` for tool call arguments / JSON payloads.
-    `structured=False` (default) for free-text prompts and messages.
+def _masked_text(raw: Any, *, structured: bool, mask_integers: bool) -> tuple[str, int]:
+    """normalize (text) or canonicalize (structured), then mask_volatile --
+    the exact procedure `content_hash` and `similarity_fingerprint` both
+    hash from, so a shared volatile span (a UUID, a timestamp) can't make
+    two identical calls hash differently under `content_hash`, or -- the
+    inverse and arguably more important failure for a *similarity* score
+    -- make two genuinely unrelated calls look artificially similar under
+    `similarity_fingerprint` just because they happen to share an
+    unmasked timestamp or temp path.
 
     A `structured=True` value that isn't actually valid JSON (a mime_type
     attribute claiming application/json on malformed content, for
@@ -140,6 +153,108 @@ def content_hash(
             text = normalize_text(str(raw))
     else:
         text = normalize_text(str(raw))
-    masked_text, span_count = mask_volatile(text, mask_integers=mask_integers)
+    return mask_volatile(text, mask_integers=mask_integers)
+
+
+def content_hash(
+    raw: Any,
+    *,
+    structured: bool = False,
+    mask_integers: bool = False,
+) -> tuple[str, int]:
+    """The full procedure: normalize (text) or canonicalize (structured),
+    mask volatile spans, hash. Returns (hash_hex, masked_span_count).
+
+    `structured=True` for tool call arguments / JSON payloads.
+    `structured=False` (default) for free-text prompts and messages.
+    """
+    masked_text, span_count = _masked_text(raw, structured=structured, mask_integers=mask_integers)
     digest = hashlib.sha256(masked_text.encode("utf-8")).hexdigest()[:HASH_LENGTH]
     return digest, span_count
+
+
+def _shingles(text: str) -> list[str]:
+    """Character n-grams, not word n-grams -- this project's actual
+    content shapes (canonicalized JSON, URLs) have no whitespace token
+    boundaries to split on (`{"query":"ai news"}` is one "word" under
+    word-splitting). A string shorter than the shingle size is treated as
+    one shingle of its own rather than producing none at all, which would
+    leave `simhash64` with nothing to vote on.
+    """
+    if not text:
+        return []
+    if len(text) <= _SHINGLE_SIZE:
+        return [text]
+    return [text[i : i + _SHINGLE_SIZE] for i in range(len(text) - _SHINGLE_SIZE + 1)]
+
+
+def _stable_shingle_hash(shingle: str) -> int:
+    """A 64-bit hash stable across processes -- deliberately not Python's
+    builtin hash(), which is randomized per-process for str
+    (PYTHONHASHSEED) and would silently break every fingerprint
+    comparison made across two separate `redundo adapt` runs.
+    """
+    digest = hashlib.blake2b(shingle.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big")
+
+
+def simhash64(text: str) -> int:
+    """TF-weighted SimHash over character shingles. Term-frequency
+    weighted, not TF-IDF -- there is no corpus-level document-frequency
+    signal available here; this function sees one record's content at a
+    time, by the same trust-boundary design as `content_hash` (raw
+    content never accumulates across records inside this module). That
+    means a JSON payload's repeated boilerplate keys/punctuation get
+    outsized influence over the resulting bits for short structured
+    content -- a known, inherent limitation of TF-only weighting on this
+    kind of content, not a bug to fix later. See docs/hashing.md.
+
+    A bit position whose vote sums to exactly zero resolves to 0,
+    deterministically -- not a coin flip, so identical input always
+    produces an identical fingerprint.
+    """
+    votes = [0] * SIMHASH_BITS
+    for shingle in _shingles(text):
+        shingle_hash = _stable_shingle_hash(shingle)
+        for bit in range(SIMHASH_BITS):
+            if (shingle_hash >> bit) & 1:
+                votes[bit] += 1
+            else:
+                votes[bit] -= 1
+    fingerprint = 0
+    for bit in range(SIMHASH_BITS):
+        if votes[bit] > 0:
+            fingerprint |= 1 << bit
+    return fingerprint
+
+
+def similarity_fingerprint(
+    raw: Any,
+    *,
+    structured: bool = False,
+    mask_integers: bool = False,
+) -> str:
+    """A SimHash fingerprint over the same masked/normalized text
+    `content_hash` hashes from -- hex-formatted, `SIMHASH_HEX_LENGTH`
+    characters wide.
+
+    This is NOT a drop-in replacement for `content_hash` and does not
+    carry the same one-wayness guarantee: it is specifically designed so
+    that similar inputs produce comparable outputs (that is what makes
+    near-duplicate detection possible at all), which is a real, deliberate
+    reduction in the module's usual "nothing about the content leaks"
+    invariant -- see the module docstring and docs/hashing.md before using
+    this anywhere that stronger guarantee is assumed to hold.
+    """
+    masked_text, _ = _masked_text(raw, structured=structured, mask_integers=mask_integers)
+    fingerprint = simhash64(masked_text)
+    return f"{fingerprint:0{SIMHASH_HEX_LENGTH}x}"
+
+
+def hamming_distance(a: str, b: str) -> int:
+    """Number of differing bits between two hex-formatted fingerprints
+    from `similarity_fingerprint`. Smaller means more similar; 0 means an
+    identical fingerprint, not necessarily identical content -- SimHash is
+    lossy by construction (see `simhash64`).
+    """
+    return bin(int(a, 16) ^ int(b, 16)).count("1")

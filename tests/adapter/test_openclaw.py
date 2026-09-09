@@ -107,6 +107,51 @@ def test_capture_content_input_messages_hashed_as_real_content():
     assert summary.records_with_prompt_content == 1
 
 
+def test_opaque_content_never_gets_a_similarity_fingerprint():
+    # A SimHash over a span's own arbitrary span_id would be noise, not
+    # signal, and could coincidentally look "similar" to another
+    # unrelated opaque record -- a false near-duplicate. See
+    # _hash_json_attr's docstring.
+    spans = [span("s1", trace_id="trace-1", name="openclaw.model.call", start=0, end=1,
+                  attributes={"gen_ai.request.model": "m"})]
+    records, _ = convert(traces_document(spans))
+    assert "similarity_fingerprint" not in records[0]["metadata"]
+    assert "similarity_spec" not in records[0]["metadata"]
+
+
+def test_real_content_gets_a_similarity_fingerprint():
+    spans = [span("s1", trace_id="trace-1", name="openclaw.model.call", start=0, end=1,
+                  attributes={"gen_ai.request.model": "m", "gen_ai.input.messages": INPUT_MESSAGES})]
+    records, _ = convert(traces_document(spans))
+    assert len(records[0]["metadata"]["similarity_fingerprint"]) == 16
+    assert records[0]["metadata"]["similarity_spec"] == "v1"
+
+
+def test_tool_call_arguments_also_get_a_similarity_fingerprint():
+    spans = [span("s1", trace_id="trace-1", name="openclaw.tool.execution", start=0, end=1,
+                  attributes={
+                      "gen_ai.tool.name": "lookup",
+                      "gen_ai.tool.call.arguments": '{"q": "trace"}',
+                  })]
+    records, _ = convert(traces_document(spans))
+    assert "similarity_fingerprint" in records[0]["metadata"]
+
+
+def test_tool_result_never_gets_a_similarity_fingerprint():
+    # Fingerprinting is call-side only, per hashing.similarity_fingerprint's
+    # own scope decision -- "was this call similar to an earlier call" is
+    # the useful question; result-side similarity is unscoped.
+    spans = [span("s1", trace_id="trace-1", name="openclaw.tool.execution", start=0, end=1,
+                  attributes={
+                      "gen_ai.tool.name": "lookup",
+                      "gen_ai.tool.call.arguments": '{"q": "trace"}',
+                      "gen_ai.tool.call.result": '{"rows": 1}',
+                  })]
+    records, _ = convert(traces_document(spans))
+    result = next(r for r in records if r["event_type"] == "tool_result")
+    assert "similarity_fingerprint" not in result["metadata"]
+
+
 def test_capture_content_output_messages_becomes_response_hash():
     spans = [span("s1", trace_id="trace-1", name="openclaw.model.call", start=0, end=1,
                   attributes={
