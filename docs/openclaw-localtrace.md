@@ -155,6 +155,29 @@ an occasional gap; tier 1 is unaffected by this gate. Neither tier is an
 exactly metered per-call figure, and `tool_call`/`tool_result` records
 never get one either way.
 
+## Tier 1's pricing data has an age, and it's always shown, not just when stale
+
+Tier 1 is an estimate against **this plugin's own** bundled/fetched
+pricing snapshot -- a completely separate dataset from whatever pricing
+catalog OpenClaw itself uses internally. (A direct deep dive confirmed
+there's no way to read OpenClaw's own resolved catalog instead: its
+computation lives in an internal, content-hashed module with no stable
+import path, the public plugin-sdk surface only exposes helpers for
+*submitting* pricing, nothing is cached to disk, and neither `openclaw
+models list --json` nor `openclaw models status --json` includes a
+single price field.)
+
+A missing model visibly produces no `cost_usd` at all; a provider
+quietly changing a rate produces a confident, plausible-looking dollar
+figure indistinguishable from a correct one -- worse, not better, than a
+gap. So every tier-1 record also carries `openclaw.pricingTableGeneratedAt`
+(read into `metadata.pricing_table_generated_at`), and `--summary`
+**always** reports this table's age -- not only once it's stale -- via
+`ConversionSummary.pricing_table_generated_at` (the latest value seen
+across every tier-1 record) and a note that escalates with an explicit
+refresh instruction once it's over 30 days old (matching the plugin's
+own Gateway-startup warning threshold, so both surfaces agree).
+
 ## No ancestor-chaining needed -- a genuinely flatter shape
 
 `sources.openclaw` needs a sibling-chaining fallback
