@@ -33,6 +33,7 @@ def _turn(
     mutating=None,
     run_start=0,
     run_end=3,
+    direct_cost_usd=None,
 ):
     """One realistic run: run span + model.call span (+ optional
     tool.execution and llm.call siblings), matching the real span shapes
@@ -61,6 +62,8 @@ def _turn(
             llm_attrs["gen_ai.usage.input_tokens"] = tokens_in
         if tokens_out is not None:
             llm_attrs["gen_ai.usage.output_tokens"] = tokens_out
+        if direct_cost_usd is not None:
+            llm_attrs["gen_ai.usage.cost_usd"] = direct_cost_usd
         llm_attrs["gen_ai.input.messages"] = INPUT_MESSAGES
         llm_attrs["gen_ai.output.messages"] = OUTPUT_MESSAGES
         spans.append(
@@ -178,20 +181,43 @@ def test_model_call_with_no_llm_call_sibling_degrades_to_opaque_content():
     assert summary.records_with_opaque_content == 1
 
 
-def test_mismatched_llm_call_and_model_call_counts_are_not_paired_at_all():
-    # Two model.call spans, only one llm.call span -- a count mismatch
-    # this adapter refuses to guess through (see module docstring point 2).
+def test_one_llm_call_span_pairs_with_the_last_of_several_model_call_spans_it_contains():
+    # Regression test for a real bug found against real production data: a
+    # 13-iteration tool loop inside one run produced exactly one llm.call
+    # span, bracketing all 13 model.call spans -- not a 1:1 companion the
+    # way an earlier, smaller-scale test wrongly assumed. The old
+    # count-mismatch guard discarded content/tokens for the ENTIRE run
+    # whenever this happened -- see module docstring point 2.
     spans = _turn("t1", model_start=1, model_end=2)
-    spans += [
+    spans.append(
         span("model2", trace_id="t1", name="openclaw-localtrace.model.call",
-             start=5, end=6, attributes={"openclaw.model": "m2"}),
-        span("llm", trace_id="t1", name="openclaw-localtrace.llm.call",
-             start=0, end=3, attributes={"gen_ai.input.messages": INPUT_MESSAGES}),
+             start=5, end=6, attributes={"openclaw.model": "m2"})
+    )
+    spans.append(
+        span("llm", trace_id="t1", name="openclaw-localtrace.llm.call", start=0, end=8,
+             attributes={"gen_ai.input.messages": INPUT_MESSAGES, "gen_ai.output.messages": OUTPUT_MESSAGES})
+    )
+    records, summary = convert(traces_document(spans))
+    llm_calls = sorted((r for r in records if r["event_type"] == "llm_call"), key=lambda r: r["step_index"])
+    assert len(llm_calls) == 2
+    assert llm_calls[0]["metadata"]["content_basis"] == "opaque"  # earlier call in the run
+    assert llm_calls[1]["metadata"]["content_basis"] == "prompt"  # the LAST call gets the content
+    assert llm_calls[1]["model"] == "m2"
+    assert summary.llm_call_spans_paired == 1
+    assert summary.llm_call_spans_unpaired == 0
+
+
+def test_an_llm_call_span_containing_no_model_call_span_at_all_is_left_unpaired():
+    spans = [
+        span("run", trace_id="t1", name="openclaw-localtrace.run", start=0, end=5),
+        span("llm", trace_id="t1", name="openclaw-localtrace.llm.call", start=0, end=1,
+             attributes={"gen_ai.input.messages": INPUT_MESSAGES}),
+        span("model", trace_id="t1", name="openclaw-localtrace.model.call", start=2, end=3,
+             attributes={"openclaw.model": "m"}),
     ]
     records, summary = convert(traces_document(spans))
-    llm_calls = [r for r in records if r["event_type"] == "llm_call"]
-    assert len(llm_calls) == 2
-    assert all(r["metadata"]["content_basis"] == "opaque" for r in llm_calls)
+    record = next(r for r in records if r["event_type"] == "llm_call")
+    assert record["metadata"]["content_basis"] == "opaque"
     assert summary.llm_call_spans_unpaired == 1
     assert summary.llm_call_spans_paired == 0
 
@@ -235,6 +261,57 @@ def test_workflow_is_none_without_a_channel():
 
 
 # --- cost apportionment ------------------------------------------------------
+
+def test_direct_gen_ai_cost_usd_attribute_becomes_cost_usd_on_the_record():
+    records, summary = convert(traces_document(_turn("t1", llm_call=True, direct_cost_usd=0.0123)))
+    record = next(r for r in records if r["event_type"] == "llm_call")
+    assert record["cost_usd"] == 0.0123
+    assert record["metadata"]["cost_basis"] == "estimated_from_bundled_pricing_table"
+    assert summary.llm_calls_with_direct_cost == 1
+
+
+def test_direct_cost_takes_priority_over_turn_level_apportionment():
+    # Regression test: a real capture where the plugin's own per-call
+    # estimate and the turn-cost gauge would otherwise both try to price
+    # the same record -- the direct estimate must win, not get overwritten.
+    spans = _turn("t1", session_id="sess-1", llm_call=True, direct_cost_usd=0.05,
+                  run_start=0, run_end=3)
+    trace_doc = traces_document(spans)
+    metrics_doc = gauge_metric_document(
+        [{"value": 0.99, "time": 5, "attributes": {"openclaw.sessionId": "sess-1"}}],
+        name="openclaw.turn.cost.usd",
+    )
+    records, summary = convert([trace_doc, metrics_doc])
+    record = next(r for r in records if r["event_type"] == "llm_call")
+    assert record["cost_usd"] == 0.05
+    assert record["metadata"]["cost_basis"] == "estimated_from_bundled_pricing_table"
+    assert summary.llm_calls_with_direct_cost == 1
+    assert summary.llm_calls_with_apportioned_cost == 0
+
+
+def test_turn_level_apportionment_still_fills_in_calls_with_no_direct_estimate():
+    # One call gets a direct per-call estimate, the other doesn't (e.g.
+    # an unrecognized model) -- the turn-cost point should apportion only
+    # across the one still missing a price, not re-split across both.
+    spans = _turn("t1", session_id="sess-1", model_start=1, model_end=2,
+                  llm_call=True, direct_cost_usd=0.05, run_start=0, run_end=6)
+    spans.append(
+        span("model2", trace_id="t1", name="openclaw-localtrace.model.call", start=3, end=4,
+             attributes={"openclaw.model": "m2", "openclaw.sessionId": "sess-1"})
+    )
+    trace_doc = traces_document(spans)
+    metrics_doc = gauge_metric_document(
+        [{"value": 0.20, "time": 10, "attributes": {"openclaw.sessionId": "sess-1"}}],
+        name="openclaw.turn.cost.usd",
+    )
+    records, summary = convert([trace_doc, metrics_doc])
+    llm_calls = sorted((r for r in records if r["event_type"] == "llm_call"), key=lambda r: r["step_index"])
+    assert len(llm_calls) == 2
+    assert llm_calls[0]["cost_usd"] == 0.05  # the direct estimate, untouched
+    assert llm_calls[1]["cost_usd"] == 0.20  # the whole apportioned point, not half of it
+    assert summary.llm_calls_with_direct_cost == 1
+    assert summary.llm_calls_with_apportioned_cost == 1
+
 
 def test_turn_cost_gauge_point_is_apportioned_to_that_runs_llm_call():
     spans = _turn("t1", session_id="sess-1", llm_call=True, tokens_in=10, tokens_out=0,

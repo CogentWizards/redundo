@@ -24,23 +24,28 @@ silently violate while extending this:
    fallback case in this package -- not a partial signal, a total
    absence, same "ceiling vs. fallback" distinction sources.openclaw
    draws for its own ever-present trace_id.
-2. The plugin emits TWO sibling spans per model round-trip, not one:
-   `openclaw-localtrace.model.call` (ids/timing/outcome, no content,
-   never gated behind any permission) and `openclaw-localtrace.llm.call`
-   (prompt/response content and token usage, gated behind the
-   plugin's own `captureContent` config AND the OpenClaw host's
-   `hooks.allowConversationAccess` permission). They are not nested --
-   confirmed via live testing that `llm.call` brackets `model.call` in
-   time (opens before, closes after) rather than nesting inside it,
-   which is *why* they're two spans instead of one in the plugin itself
-   (OTel spans reject attribute writes after `.end()`, so the plugin
-   couldn't merge them either). This adapter re-merges them here, by
-   direct sibling pairing under the same parent span, ordered by start
-   time -- see `_pair_llm_call_spans`. A `model.call` span with no
-   matching `llm.call` (permission not granted, or a pairing count
-   mismatch this adapter refuses to guess through) keeps its ids/timing
-   but degrades content_hash to `content_basis: "opaque"`, same idiom
-   every other source in this package uses for its own no-content case.
+2. `openclaw-localtrace.llm.call` is scoped to the whole *run* (turn),
+   not to one individual `model.call` -- confirmed against a real capture
+   with a 13-iteration tool loop inside one run that produced exactly
+   ONE `llm.call` span, whose own [start, end) interval contains all 13
+   `model.call` spans (opens before the first model_call_started, closes
+   after the last model_call_ended). An earlier version of this adapter
+   assumed a 1:1 pairing (llm_input/llm_output bracketing each individual
+   model.call, matching an early, smaller-scale live test) and required
+   matching counts before pairing anything -- which meant a real run with
+   N model.call spans and 1 llm.call span got NO pairing at all, silently
+   discarding content and token data for every single one of that run's
+   llm_call events. Fixed: each `llm.call` span is paired with the LAST
+   `model.call` span it temporally contains (`_pair_llm_call_spans`) --
+   the one whose response most plausibly produced the captured
+   `assistantTexts` -- since `llm_output`'s content/usage describes that
+   final attempt, not each intermediate tool-loop step. Every earlier
+   model.call in the same run keeps its ids/timing but degrades
+   content_hash to `content_basis: "opaque"` -- not a gap, an accurate
+   reflection of what this signal was ever designed to expose. A
+   `model.call` outside every llm.call's interval (permission not
+   granted, `captureContent` off, or no llm.call at all) degrades the
+   same way.
 3. cost_usd comes from `openclaw.turn.cost.usd`, a Gauge with one point
    per *turn* (not a cumulative Counter the way sources.openclaw's
    `openclaw.cost.usd` is) -- genuinely simpler to apportion because
@@ -106,6 +111,7 @@ _TOKENS_IN_CACHE_ATTRS = (
     "gen_ai.usage.cache_creation.input_tokens",
 )
 _TOKENS_OUT_ATTRS = ("gen_ai.usage.output_tokens",)
+_COST_USD_ATTR = "gen_ai.usage.cost_usd"
 
 _MUTATING_ACTION_ATTR = "openclaw.mutatingAction"
 _ERROR_ATTR = "openclaw.error"
@@ -131,10 +137,16 @@ class ConversionSummary:
 
     sessions_found: int = 0  # distinct real sessionId values seen (0 means captureIdentifiers was off)
 
+    # Per-call cost, straight from the plugin's own bundled-pricing-table
+    # estimate on a paired llm.call span (see _llm_event) -- takes
+    # priority over the turn-level apportionment below.
+    llm_calls_with_direct_cost: int = 0
+
     # Cost apportionment (see _apportion_cost) -- 0/0 means no
     # openclaw.turn.cost.usd points were captured, or none carried a
     # session id to join against (captureIdentifiers off), not that
-    # every llm_call happened to cost nothing.
+    # every llm_call happened to cost nothing. Only ever applied to
+    # records that didn't already get a direct per-call estimate above.
     cost_points_found: int = 0
     llm_calls_with_apportioned_cost: int = 0
     llm_calls_apportioned_by_equal_split: int = 0
@@ -149,10 +161,9 @@ class ConversionSummary:
             )
         if self.llm_call_spans_unpaired:
             out.append(
-                f"{self.llm_call_spans_unpaired} openclaw-localtrace.llm.call span(s) could "
-                "not be paired with exactly one sibling model.call span and were dropped -- "
-                "their content/token data is not reflected in any record. See "
-                "docs/openclaw-localtrace.md."
+                f"{self.llm_call_spans_unpaired} openclaw-localtrace.llm.call span(s) contained "
+                "no model.call span at all and were dropped -- their content/token data is not "
+                "reflected in any record. See docs/openclaw-localtrace.md."
             )
         if self.total_records == 0:
             out.append("no records produced -- nothing below is meaningful.")
@@ -179,18 +190,31 @@ class ConversionSummary:
                 "distinct session(s) found) -- redundancy spanning more than one turn is "
                 "detectable, unlike every other OpenClaw-derived source in this package."
             )
-        if self.cost_points_found == 0:
+        if self.llm_calls_with_direct_cost:
             out.append(
-                "cost_usd is None for every record -- no openclaw.turn.cost.usd metric "
-                "points were found in this corpus (metrics documents weren't captured, "
-                "captureIdentifiers was off so no point carried a session id to join "
-                "against, or this source had none). See docs/openclaw-localtrace.md."
+                f"cost_usd is a direct per-call ESTIMATE for {self.llm_calls_with_direct_cost} "
+                "llm_call record(s) -- computed by the plugin itself from that call's own "
+                "token usage against its bundled static pricing snapshot (metadata.cost_basis "
+                "= \"estimated_from_bundled_pricing_table\"). A plain provider-published-rate "
+                "estimate, not your actual negotiated/discounted billing, and not present for "
+                "every llm_call -- only the calls the plugin's own llm.call span pairing "
+                "reached (see the note above, if any spans were unpaired)."
             )
+        remaining_for_apportionment = self.total_records - self.llm_calls_with_direct_cost
+        if self.cost_points_found == 0:
+            if remaining_for_apportionment > 0:
+                out.append(
+                    "No openclaw.turn.cost.usd metric points were found for the remaining "
+                    "record(s) -- metrics documents weren't captured, captureIdentifiers was "
+                    "off so no point carried a session id to join against, or this source had "
+                    "none. See docs/openclaw-localtrace.md."
+                )
         else:
             out.append(
-                f"cost_usd is an ESTIMATE for {self.llm_calls_with_apportioned_cost} "
-                "llm_call record(s): each turn's openclaw.turn.cost.usd point, apportioned "
-                "across that turn's own llm_call events by token share"
+                f"cost_usd is ALSO an apportioned turn-level ESTIMATE for "
+                f"{self.llm_calls_with_apportioned_cost} further llm_call record(s) that had "
+                "no direct per-call estimate above: each turn's openclaw.turn.cost.usd point, "
+                "apportioned across that turn's own remaining llm_call events by token share"
                 + (
                     f" ({self.llm_calls_apportioned_by_equal_split} of those had no "
                     "token data to share by and were split evenly instead)"
@@ -329,34 +353,47 @@ def _workflow_of(run_span: Span | None) -> str | None:
     return str(channel) if channel else None
 
 
+def _span_end(span: Span) -> int:
+    return span.end_time_unix_nano if span.end_time_unix_nano is not None else span.start_time_unix_nano
+
+
 def _pair_llm_call_spans(
     model_call_spans: list[Span],
     llm_call_spans: list[Span],
     summary: ConversionSummary,
 ) -> dict[str, Span]:
-    """Pair each openclaw-localtrace.llm.call span with the one
-    model.call span it belongs to, by position within the same trace --
-    see module docstring point 2 for why this is a real merge, not an
-    enrichment of an already-open span. Both lists are already sorted by
-    start time by the caller.
+    """Pair each openclaw-localtrace.llm.call span with the LAST
+    model.call span it temporally contains -- see module docstring point
+    2 for why this is a whole-run bracket, not a 1:1 companion, and why
+    "last contained call" is the correct target rather than every call
+    in the run. Both lists are already sorted by start time by the
+    caller.
 
-    Positional pairing (not interval-containment math) is sufficient and
-    correct given the plugin's own construction guarantee: it tracks at
-    most one open llm.call per run at a time (see its own SpanTracker),
-    so within one trace/run, llm.call opens and closes strictly bracket
-    each model.call in the same relative order. If the counts don't
-    match -- partial permission grant mid-capture, or any other surprise
-    this adapter doesn't have a confident story for -- no pairing is
-    made at all rather than guessing which llm.call belongs to which
-    model.call.
+    llm_call_spans is processed oldest-ending first, and a model.call
+    span already claimed by an earlier llm.call is never claimed again --
+    relevant only if a run genuinely has more than one llm.call span
+    (not observed yet, but not assumed impossible either). A llm.call
+    span with no model.call span inside its interval at all (a
+    genuinely empty bracket) is left unpaired rather than guessed at.
     """
     if not llm_call_spans:
         return {}
-    if len(llm_call_spans) != len(model_call_spans):
-        summary.llm_call_spans_unpaired += len(llm_call_spans)
-        return {}
-    summary.llm_call_spans_paired += len(llm_call_spans)
-    return {model_call_spans[i].span_id: llm_call_spans[i] for i in range(len(model_call_spans))}
+    claimed: set[str] = set()
+    pairs: dict[str, Span] = {}
+    for llm_span in sorted(llm_call_spans, key=_span_end):
+        contained = [
+            m
+            for m in model_call_spans
+            if m.span_id not in claimed and _span_end(m) <= _span_end(llm_span)
+        ]
+        if not contained:
+            summary.llm_call_spans_unpaired += 1
+            continue
+        last = max(contained, key=_span_end)
+        claimed.add(last.span_id)
+        pairs[last.span_id] = llm_span
+        summary.llm_call_spans_paired += 1
+    return pairs
 
 
 def _first_present(attributes: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -435,16 +472,29 @@ def _llm_event(
         response_hash, _ = hashing.content_hash(output_raw, structured=True)
 
     tokens_in = tokens_out = None
+    cost_usd = None
     if llm_call_span is not None:
         tokens_in_raw = _first_present(llm_call_span.attributes, _TOKENS_IN_ATTRS)
         if tokens_in_raw is not None:
             tokens_in = int(tokens_in_raw) + _sum_present(llm_call_span.attributes, _TOKENS_IN_CACHE_ATTRS)
         tokens_out_raw = _first_present(llm_call_span.attributes, _TOKENS_OUT_ATTRS)
         tokens_out = int(tokens_out_raw) if tokens_out_raw is not None else None
+        cost_usd_raw = llm_call_span.attributes.get(_COST_USD_ATTR)
+        if cost_usd_raw is not None:
+            cost_usd = float(cost_usd_raw)
 
     metadata = _base_metadata(span, masks, content_basis, task_id_source, fingerprint)
     if response_hash is not None:
         metadata["response_hash"] = response_hash
+    if cost_usd is not None:
+        # A real per-call estimate, from the plugin's own bundled pricing
+        # snapshot -- takes priority over _apportion_cost's turn-level
+        # apportionment below (see its own docstring: it now skips any
+        # record that already has one). Still an estimate against
+        # provider-published rates, not a certified per-call billed
+        # amount -- see docs/openclaw-localtrace.md.
+        metadata["cost_basis"] = "estimated_from_bundled_pricing_table"
+        summary.llm_calls_with_direct_cost += 1
 
     model = span.attributes.get("openclaw.model")
     outcome = "error" if span.attributes.get("openclaw.errorCategory") else ("ok" if span.end_time_unix_nano else None)
@@ -459,7 +509,7 @@ def _llm_event(
         "tokens_out": tokens_out,
         "outcome": outcome,
         "timestamp": _iso_timestamp(span.start_time_unix_nano),
-        "cost_usd": None,  # filled in by _apportion_cost, if metrics were captured
+        "cost_usd": cost_usd,  # else filled in by _apportion_cost, if metrics were captured
         "model": str(model) if model else None,
         "parent_id": None,  # real topology is flat under the run wrapper -- see module docstring point 4
         "workflow": workflow,
@@ -566,6 +616,13 @@ def _apportion_cost(
     sent, so this is the run it almost certainly describes. A point with
     no session-identifying attribute (captureIdentifiers was off) or no
     matching run for its session is skipped, not guessed at.
+
+    Records that already have a direct per-call estimate (from the
+    plugin's own bundled pricing table -- see _llm_event) are excluded
+    entirely from both the token-share denominator and the apportionment
+    itself: a direct per-call figure is strictly more precise than a
+    turn-level split, and double-applying both to the same record would
+    overstate its cost.
     """
     points = [
         p
@@ -602,17 +659,18 @@ def _apportion_cost(
         if matched is None:
             continue
 
-        total_tokens = sum(
-            (r["tokens_in"] or 0) + (r["tokens_out"] or 0) for r in matched.llm_call_records
-        )
-        for record in matched.llm_call_records:
+        eligible = [r for r in matched.llm_call_records if r["cost_usd"] is None]
+        if not eligible:
+            continue
+        total_tokens = sum((r["tokens_in"] or 0) + (r["tokens_out"] or 0) for r in eligible)
+        for record in eligible:
             record_id = id(record)
             apportioned_records[record_id] = record
             if total_tokens > 0:
                 record_tokens = (record["tokens_in"] or 0) + (record["tokens_out"] or 0)
                 share = record_tokens / total_tokens
             else:
-                share = 1 / len(matched.llm_call_records)
+                share = 1 / len(eligible)
                 equal_split_ids.add(record_id)
             contributions[record_id] = contributions.get(record_id, 0.0) + point.value * share
 

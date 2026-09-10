@@ -47,21 +47,34 @@ plugin itself: `llm_input` fires *before* `model_call_started`, and
 `llm_output` fires *after* `model_call_ended` -- the two spans bracket each
 other rather than nesting, and OTel spans reject attribute writes after
 `.end()`, so the plugin has no way to write `llm.call`'s content onto an
-already-closed `model.call` span. This adapter re-merges them on the Python
-side instead, by direct sibling pairing under the same run, ordered by
-start time (`_pair_llm_call_spans`) -- positional pairing is correct here,
-not a heuristic guess, because the plugin itself tracks at most one open
-`llm.call` per run at a time, so within one run the two sequences are
-guaranteed to alternate 1:1.
+already-closed `model.call` span.
 
-A `model.call` span with no matching `llm.call` -- permission not granted,
-`captureContent` off, or (rare) a pairing count mismatch this adapter
-refuses to guess through -- keeps its ids/timing/outcome but degrades
+**`llm.call` is scoped to the whole run (turn), not to one individual
+`model.call`.** Confirmed against a real capture with a 13-iteration tool
+loop inside one run that produced exactly ONE `llm.call` span, whose own
+`[start, end)` interval contains all 13 `model.call` spans (opens before
+the first `model_call_started`, closes after the last
+`model_call_ended`). An earlier version of this adapter assumed a 1:1
+pairing -- matching an early, smaller-scale test -- and required matching
+counts before pairing anything at all, which meant a real run with N
+`model.call` spans and 1 `llm.call` span got **no pairing whatsoever**,
+silently discarding content and token data (and, by extension, the cost
+estimate below) for every one of that run's `llm_call` events. This was a
+real, confirmed production bug, not a hypothetical: a user's own capture
+showed cost coverage of roughly 2% of tracked spend because of it, on top
+of the separate `reply_payload_sending` gap described below.
+
+Fixed: each `llm.call` span is paired with the **last** `model.call` span
+it temporally contains (`_pair_llm_call_spans`) -- the one whose response
+most plausibly produced the captured `assistantTexts`, since `llm_output`
+describes that final attempt, not each intermediate tool-loop step. Every
+earlier `model.call` in the same run keeps its ids/timing but degrades
 content_hash to `content_basis: "opaque"`, the same idiom every other
-source in this package uses for its own no-content case. A count mismatch
-drops *every* pairing for that run rather than guessing which `llm.call`
-belongs to which `model.call` -- `summary.llm_call_spans_unpaired` reports
-how often this happened.
+source in this package uses for its own no-content case -- not a gap, an
+accurate reflection of what this signal was ever designed to expose. An
+`llm.call` span containing no `model.call` span at all (a genuinely empty
+bracket) is left unpaired rather than guessed at --
+`summary.llm_call_spans_unpaired` reports how often this happened.
 
 ## task_id: the real session id, for the first time from an OpenClaw source
 
@@ -98,25 +111,47 @@ straight onto the `tool_call` record's `metadata.write`, never onto the
 paired `tool_result` (matching `classify.py`'s own reasoning: a result row
 is an outcome, not an action, and isn't asked for a write flag).
 
-## cost_usd: a Gauge, not a Counter -- and why that's actually simpler
+## cost_usd: two independent tiers, a direct estimate first
 
-`sources.openclaw`'s cost signal (`openclaw.cost.usd`) is a cumulative
-Counter that resets every time the exporting Gateway process restarts,
-needing a real "generation" concept to apportion correctly (see
-docs/openclaw.md). `openclaw-localtrace`'s `openclaw.turn.cost.usd` is a
-**Gauge** with one independent point per agent turn -- no restart-generation
-ambiguity to resolve at all, because there's no running total to begin
-with.
+Two entirely separate signals feed `cost_usd`, and this adapter prefers
+whichever is more precise on a per-record basis.
 
-Each point is apportioned across the one *run*'s own `llm_call` records --
-by token share when they have token data, evenly otherwise -- matched to
-the run, for the same session, whose own `[start, end)` window ends most
-recently at or before the point's own timestamp (the point is written
-shortly after that run's reply is sent, so this is the run it almost
-certainly describes). A point carries a session-identifying attribute at
-all only when `captureIdentifiers` is on -- the same gate as task_id above
--- so **a corpus without `captureIdentifiers` gets no cost data from this
-source, ever**, not an occasional gap. This is still an estimate, never an
+**Tier 1: a direct per-call estimate.** The plugin itself now computes
+`gen_ai.usage.cost_usd` on `llm.call` spans, from that call's own token
+usage against a bundled static pricing snapshot (see the plugin's own
+README) -- not from OpenClaw at all. This adapter copies it straight onto
+the record (`metadata.cost_basis = "estimated_from_bundled_pricing_table"`)
+whenever present. It is a plain provider-published-rate estimate, not a
+certified per-call billed amount, and it only reaches whichever
+`llm_call` records the pairing above actually reached.
+
+**Tier 2: `openclaw.turn.cost.usd`, apportioned.** `sources.openclaw`'s
+own cost signal (`openclaw.cost.usd`) is a cumulative Counter that resets
+every time the exporting Gateway process restarts, needing a real
+"generation" concept to apportion correctly (see docs/openclaw.md).
+`openclaw-localtrace`'s `openclaw.turn.cost.usd` is a **Gauge** with one
+independent point per agent turn -- no restart-generation ambiguity to
+resolve, because there's no running total to begin with. Each point is
+apportioned across the one *run*'s own `llm_call` records that **don't
+already have a tier-1 estimate** -- by token share when they have token
+data, evenly otherwise -- matched to the run, for the same session,
+whose own `[start, end)` window ends most recently at or before the
+point's own timestamp.
+
+**This second tier turned out to have real coverage gaps in practice,
+confirmed against a real capture**: `openclaw.turn.cost.usd` only fires
+on certain live-dispatcher-delivered replies (OpenClaw's own hook docs:
+absent on "durable delivery, recovered replay, and replies without exact
+run correlation") -- a user's own session had two real agent runs, and
+only one of them ever produced a usage snapshot at all, leaving the
+other's real spend completely untracked by this tier alone. Tier 1 does
+not depend on reply delivery at all, so it has meaningfully better
+coverage in practice, bounded only by the `llm.call` pairing above.
+
+A point carries a session-identifying attribute at all only when
+`captureIdentifiers` is on -- the same gate as task_id above -- so a
+corpus without `captureIdentifiers` gets no tier-2 cost data, ever, not
+an occasional gap; tier 1 is unaffected by this gate. Neither tier is an
 exactly metered per-call figure, and `tool_call`/`tool_result` records
 never get one either way.
 
@@ -132,23 +167,31 @@ There is no nested-call topology in this plugin's v1 scope to represent,
 so `parent_id` is simply `None` for every record this adapter produces --
 genuinely simpler, not a limitation.
 
-## Two real bugs, found only by running it
+## Three real bugs, found only by running it
 
-Both were invisible to this plugin's own unit test suite and found only
-by installing it into a real Gateway and driving real agent turns:
+None were visible from this plugin's or adapter's own unit test suites
+alone -- each needed either a live Gateway and real agent turns, or a
+real user's own multi-step capture, to surface:
 
 1. Every hook fired correctly, but the runtime state they read from was
    always empty, so nothing was ever written to disk -- root-caused to
    `register(api)` being invoked more than once per Gateway process,
    leaving whichever registration's hooks were actually live pointing at
-   state nobody's service instance had populated.
-2. The `llm.call`/`model.call` ordering bug described above -- confirmed
-   by inspecting a real captured traces file with the intended `gen_ai.*`
-   attributes silently missing.
+   state nobody's service instance had populated. (Plugin bug, fixed.)
+2. The `llm.call`/`model.call` ordering bug: `llm_input` fires before
+   `model_call_started`, `llm_output` fires after `model_call_ended`.
+   (Plugin bug, fixed.)
+3. This adapter's own original 1:1 pairing assumption for `llm.call`/
+   `model.call`, described above -- confirmed wrong only once a real
+   user's capture contained a run with far more than one `model.call`
+   inside it. Not visible from the smaller-scale live test that validated
+   bug 2 above, which happened not to exercise more than two calls in one
+   run. (Adapter bug, fixed here.)
 
-Both are fixed in the plugin itself; this adapter's design (the `llm.call`
-merge above) reflects the *fixed*, live-verified shape, not the plugin's
-original (wrong) assumption.
+The lesson repeated across all three: a fix validated against one live
+capture is not the same as a fix validated against real, varied usage --
+each of these looked correct until a bigger, messier real session
+disagreed.
 
 ## No `redundo collect` step
 
