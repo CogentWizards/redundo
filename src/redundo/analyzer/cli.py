@@ -8,7 +8,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .ingest import IngestError, load_events
+from .ingest import IngestError, IngestIOError, load_events
 from .registry import default_registry as analysis_registry
 from .report_formats import default_registry as format_registry
 
@@ -71,7 +71,11 @@ def main(argv: list[str] | None = None) -> int:
         events = load_events(source, strict=not args.lenient, on_error=errors)
     except IngestError as exc:
         print(f"redundo analyze: {exc}", file=sys.stderr)
-        print("Pass --lenient to skip malformed rows instead of failing.", file=sys.stderr)
+        # --lenient only ever helps with malformed *rows* -- misleading
+        # advice for an I/O failure like a missing file, so only offer it
+        # for the error case it actually addresses.
+        if not isinstance(exc, IngestIOError):
+            print("Pass --lenient to skip malformed rows instead of failing.", file=sys.stderr)
         return 1
 
     if not events:
@@ -90,7 +94,11 @@ def main(argv: list[str] | None = None) -> int:
     output = render(result, max_reasons=args.samples)
 
     if args.output:
-        args.output.write_text(output, encoding="utf-8")
+        try:
+            args.output.write_text(output, encoding="utf-8")
+        except OSError as exc:
+            print(f"redundo analyze: could not write {args.output}: {exc}", file=sys.stderr)
+            return 1
         print(f"Wrote {args.format} report to {args.output}", file=sys.stderr)
     else:
         print(output)

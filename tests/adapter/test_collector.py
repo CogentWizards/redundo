@@ -195,3 +195,32 @@ def test_chunked_transfer_encoding_body_is_read_correctly(running_collector):
 def test_unknown_path_returns_404(running_collector):
     port, _ = running_collector
     assert _post(port, "/v1/unknown", b"") == 404
+
+
+def test_main_fails_with_a_clear_message_when_the_port_is_already_in_use(tmp_path, capsys):
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.bind(("localhost", 0))
+    blocker.listen(1)
+    port = blocker.getsockname()[1]
+    try:
+        exit_code = collector.main(["--port", str(port), "--out-dir", str(tmp_path)])
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "could not listen on port" in err
+        assert str(port) in err
+    finally:
+        blocker.close()
+
+
+def test_main_fails_with_a_clear_message_when_out_dir_cannot_be_created(tmp_path, capsys):
+    # A regular file already sits where --out-dir wants a directory --
+    # mkdir(parents=True) raises FileExistsError/NotADirectoryError for
+    # this, previously an uncaught traceback.
+    blocked_path = tmp_path / "blocked"
+    blocked_path.write_text("not a directory", encoding="utf-8")
+
+    exit_code = collector.main(["--out-dir", str(blocked_path), "--port", "0"])
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "could not create" in err
+    assert str(blocked_path) in err

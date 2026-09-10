@@ -1,0 +1,351 @@
+import json
+
+from helpers import gauge_metric_document, span, traces_document
+from redundo.adapter.sources.openclaw_localtrace import (
+    OpenClawLocaltraceSource,
+    convert_openclaw_localtrace,
+)
+
+INPUT_MESSAGES = json.dumps([{"prompt": "what changed?", "history": []}])
+OUTPUT_MESSAGES = json.dumps(["the trace changed"])
+
+
+def convert(document_or_documents):
+    docs = (
+        document_or_documents
+        if isinstance(document_or_documents, list)
+        else [document_or_documents]
+    )
+    return convert_openclaw_localtrace(docs)
+
+
+def _turn(
+    trace_id,
+    *,
+    session_id=None,
+    model_start=1,
+    model_end=2,
+    tool=False,
+    llm_call=False,
+    channel=None,
+    tokens_in=None,
+    tokens_out=None,
+    mutating=None,
+    run_start=0,
+    run_end=3,
+):
+    """One realistic run: run span + model.call span (+ optional
+    tool.execution and llm.call siblings), matching the real span shapes
+    openclaw-localtrace actually emits (confirmed live -- see
+    docs/openclaw-localtrace.md).
+    """
+    run_attrs = {}
+    if session_id:
+        run_attrs["openclaw.sessionId"] = session_id
+    if channel:
+        run_attrs["openclaw.channel"] = channel
+    spans = [
+        span("run", trace_id=trace_id, name="openclaw-localtrace.run",
+             start=run_start, end=run_end, attributes=run_attrs),
+    ]
+    model_attrs = {"openclaw.provider": "anthropic", "openclaw.model": "claude-sonnet-5"}
+    if session_id:
+        model_attrs["openclaw.sessionId"] = session_id
+    spans.append(
+        span("model", trace_id=trace_id, name="openclaw-localtrace.model.call",
+             start=model_start, end=model_end, attributes=model_attrs)
+    )
+    if llm_call:
+        llm_attrs = {}
+        if tokens_in is not None:
+            llm_attrs["gen_ai.usage.input_tokens"] = tokens_in
+        if tokens_out is not None:
+            llm_attrs["gen_ai.usage.output_tokens"] = tokens_out
+        llm_attrs["gen_ai.input.messages"] = INPUT_MESSAGES
+        llm_attrs["gen_ai.output.messages"] = OUTPUT_MESSAGES
+        spans.append(
+            span("llm", trace_id=trace_id, name="openclaw-localtrace.llm.call",
+                 start=model_start - 1, end=model_end + 1, attributes=llm_attrs)
+        )
+    if tool:
+        tool_attrs = {
+            "openclaw.toolName": "exec",
+            "gen_ai.tool.call.arguments": json.dumps({"command": "echo hi"}),
+            "gen_ai.tool.call.result": json.dumps({"content": "hi"}),
+        }
+        if mutating is not None:
+            tool_attrs["openclaw.mutatingAction"] = mutating
+        if session_id:
+            tool_attrs["openclaw.sessionId"] = session_id
+        spans.append(
+            span("tool", trace_id=trace_id, name="openclaw-localtrace.tool.execution",
+                 start=model_end, end=model_end + 1, attributes=tool_attrs)
+        )
+    return spans
+
+
+# --- span-name mapping ------------------------------------------------------
+
+def test_model_call_span_produces_one_llm_call():
+    records, summary = convert(traces_document(_turn("t1")))
+    llm_calls = [r for r in records if r["event_type"] == "llm_call"]
+    assert len(llm_calls) == 1
+    assert llm_calls[0]["model"] == "claude-sonnet-5"
+    assert summary.kept_spans == 1
+
+
+def test_run_span_is_skipped_not_converted():
+    records, summary = convert(traces_document(_turn("t1")))
+    assert summary.skipped_by_kind == {"openclaw-localtrace.run": 1}
+    assert all(r["event_type"] != "run" for r in records)
+
+
+def test_tool_execution_span_produces_call_and_result():
+    records, _ = convert(traces_document(_turn("t1", tool=True)))
+    calls = [r for r in records if r["event_type"] == "tool_call"]
+    results = [r for r in records if r["event_type"] == "tool_result"]
+    assert len(calls) == 1
+    assert len(results) == 1
+    assert calls[0]["name"] == "exec"
+    assert results[0]["parent_id"] is None  # flat topology -- see module docstring point 4
+
+
+def test_an_unmapped_span_name_is_counted_but_not_converted():
+    spans = _turn("t1") + [span("x", trace_id="t1", name="openclaw-localtrace.session.stuck", start=5)]
+    records, summary = convert(traces_document(spans))
+    assert summary.skipped_by_kind["openclaw-localtrace.session.stuck"] == 1
+    assert len(records) == 1  # only the model.call
+
+
+# --- task_id: real session id when captureIdentifiers is on ----------------
+
+def test_task_id_is_real_session_id_when_present():
+    records, summary = convert(traces_document(_turn("t1", session_id="sess-1")))
+    assert records[0]["task_id"] == "sess-1"
+    assert records[0]["metadata"]["task_id_source"] == "conversation_id"
+    assert summary.sessions_found == 1
+
+
+def test_task_id_falls_back_to_trace_id_when_no_session_id():
+    records, summary = convert(traces_document(_turn("exact-trace-id")))
+    assert records[0]["task_id"] == "exact-trace-id"
+    assert records[0]["metadata"]["task_id_source"] == "trace_id_fallback"
+    assert summary.sessions_found == 0
+
+
+def test_two_runs_sharing_a_session_id_merge_into_one_task_with_continuous_steps():
+    # Different trace_ids (different turns), same real session -- this is
+    # the capability the plugin unlocks that sources.openclaw never had.
+    spans_a = _turn("trace-a", session_id="sess-1", model_start=1, model_end=2)
+    spans_b = _turn("trace-b", session_id="sess-1", model_start=10, model_end=11)
+    records, _ = convert(traces_document(spans_a + spans_b))
+    llm_calls = sorted(
+        (r for r in records if r["event_type"] == "llm_call"), key=lambda r: r["step_index"]
+    )
+    assert len(llm_calls) == 2
+    assert {r["task_id"] for r in llm_calls} == {"sess-1"}
+    assert [r["step_index"] for r in llm_calls] == [0, 1]
+
+
+def test_two_runs_with_different_session_ids_stay_separate_tasks():
+    spans_a = _turn("trace-a", session_id="sess-1")
+    spans_b = _turn("trace-b", session_id="sess-2")
+    records, _ = convert(traces_document(spans_a + spans_b))
+    task_ids = {r["task_id"] for r in records if r["event_type"] == "llm_call"}
+    assert task_ids == {"sess-1", "sess-2"}
+
+
+# --- llm.call pairing: the real merge, not an enrichment --------------------
+
+def test_llm_call_span_content_and_tokens_are_merged_into_the_llm_call_record():
+    records, summary = convert(
+        traces_document(_turn("t1", llm_call=True, tokens_in=10, tokens_out=20))
+    )
+    record = next(r for r in records if r["event_type"] == "llm_call")
+    assert record["metadata"]["content_basis"] == "prompt"
+    assert record["tokens_in"] == 10
+    assert record["tokens_out"] == 20
+    assert "response_hash" in record["metadata"]
+    assert summary.llm_call_spans_paired == 1
+    assert summary.records_with_prompt_content == 1
+
+
+def test_model_call_with_no_llm_call_sibling_degrades_to_opaque_content():
+    records, summary = convert(traces_document(_turn("t1", llm_call=False)))
+    record = next(r for r in records if r["event_type"] == "llm_call")
+    assert record["metadata"]["content_basis"] == "opaque"
+    assert record["tokens_in"] is None
+    assert summary.records_with_opaque_content == 1
+
+
+def test_mismatched_llm_call_and_model_call_counts_are_not_paired_at_all():
+    # Two model.call spans, only one llm.call span -- a count mismatch
+    # this adapter refuses to guess through (see module docstring point 2).
+    spans = _turn("t1", model_start=1, model_end=2)
+    spans += [
+        span("model2", trace_id="t1", name="openclaw-localtrace.model.call",
+             start=5, end=6, attributes={"openclaw.model": "m2"}),
+        span("llm", trace_id="t1", name="openclaw-localtrace.llm.call",
+             start=0, end=3, attributes={"gen_ai.input.messages": INPUT_MESSAGES}),
+    ]
+    records, summary = convert(traces_document(spans))
+    llm_calls = [r for r in records if r["event_type"] == "llm_call"]
+    assert len(llm_calls) == 2
+    assert all(r["metadata"]["content_basis"] == "opaque" for r in llm_calls)
+    assert summary.llm_call_spans_unpaired == 1
+    assert summary.llm_call_spans_paired == 0
+
+
+# --- write signal: the capability unlock ------------------------------------
+
+def test_mutating_action_true_becomes_write_true_on_the_tool_call():
+    records, _ = convert(traces_document(_turn("t1", tool=True, mutating=True)))
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    assert call["metadata"]["write"] is True
+
+
+def test_mutating_action_false_becomes_write_false_on_the_tool_call():
+    records, _ = convert(traces_document(_turn("t1", tool=True, mutating=False)))
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    assert call["metadata"]["write"] is False
+
+
+def test_write_flag_never_appears_on_the_tool_result():
+    records, _ = convert(traces_document(_turn("t1", tool=True, mutating=True)))
+    result = next(r for r in records if r["event_type"] == "tool_result")
+    assert "write" not in result["metadata"]
+
+
+def test_no_mutating_action_attribute_leaves_write_unset():
+    records, _ = convert(traces_document(_turn("t1", tool=True)))
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    assert "write" not in call["metadata"]
+
+
+# --- workflow ----------------------------------------------------------------
+
+def test_workflow_comes_from_the_run_spans_channel_attribute():
+    records, _ = convert(traces_document(_turn("t1", channel="discord")))
+    assert records[0]["workflow"] == "discord"
+
+
+def test_workflow_is_none_without_a_channel():
+    records, _ = convert(traces_document(_turn("t1")))
+    assert records[0]["workflow"] is None
+
+
+# --- cost apportionment ------------------------------------------------------
+
+def test_turn_cost_gauge_point_is_apportioned_to_that_runs_llm_call():
+    spans = _turn("t1", session_id="sess-1", llm_call=True, tokens_in=10, tokens_out=0,
+                  run_start=0, run_end=3)
+    trace_doc = traces_document(spans)
+    metrics_doc = gauge_metric_document(
+        [{"value": 0.5, "time": 5, "attributes": {"openclaw.sessionId": "sess-1"}}],
+        name="openclaw.turn.cost.usd",
+    )
+    records, summary = convert([trace_doc, metrics_doc])
+    record = next(r for r in records if r["event_type"] == "llm_call")
+    assert record["cost_usd"] == 0.5
+    assert record["metadata"]["cost_basis"] == "apportioned_from_metrics_by_tokens"
+    assert summary.llm_calls_with_apportioned_cost == 1
+
+
+def test_cost_split_evenly_across_two_llm_calls_with_no_token_data():
+    spans = _turn("t1", session_id="sess-1", model_start=1, model_end=2, run_start=0, run_end=5)
+    spans.append(
+        span("model2", trace_id="t1", name="openclaw-localtrace.model.call", start=3, end=4,
+             attributes={"openclaw.model": "m2", "openclaw.sessionId": "sess-1"})
+    )
+    trace_doc = traces_document(spans)
+    metrics_doc = gauge_metric_document(
+        [{"value": 1.0, "time": 10, "attributes": {"openclaw.sessionId": "sess-1"}}],
+        name="openclaw.turn.cost.usd",
+    )
+    records, summary = convert([trace_doc, metrics_doc])
+    llm_calls = [r for r in records if r["event_type"] == "llm_call"]
+    assert len(llm_calls) == 2
+    assert all(r["cost_usd"] == 0.5 for r in llm_calls)
+    assert all(r["metadata"]["cost_basis"] == "apportioned_from_metrics_equal_split" for r in llm_calls)
+    assert summary.llm_calls_apportioned_by_equal_split == 2
+
+
+def test_cost_point_with_no_session_attribute_is_not_apportioned():
+    spans = _turn("t1", session_id="sess-1")
+    trace_doc = traces_document(spans)
+    metrics_doc = gauge_metric_document(
+        [{"value": 0.5, "time": 5, "attributes": {}}], name="openclaw.turn.cost.usd"
+    )
+    records, summary = convert([trace_doc, metrics_doc])
+    record = next(r for r in records if r["event_type"] == "llm_call")
+    assert record["cost_usd"] is None
+    assert summary.cost_points_found == 1
+    assert summary.llm_calls_with_apportioned_cost == 0
+
+
+def test_no_metrics_documents_means_no_cost_data_at_all():
+    records, summary = convert(traces_document(_turn("t1", session_id="sess-1")))
+    record = next(r for r in records if r["event_type"] == "llm_call")
+    assert record["cost_usd"] is None
+    assert summary.cost_points_found == 0
+
+
+def test_two_turns_in_the_same_session_each_get_their_own_cost_point():
+    spans_a = _turn("trace-a", session_id="sess-1", model_start=1, model_end=2,
+                     run_start=0, run_end=3, tokens_in=None)
+    spans_b = _turn("trace-b", session_id="sess-1", model_start=20, model_end=21,
+                     run_start=19, run_end=22, tokens_in=None)
+    trace_doc = traces_document(spans_a + spans_b)
+    metrics_doc = gauge_metric_document(
+        [
+            {"value": 0.10, "time": 5, "attributes": {"openclaw.sessionId": "sess-1"}},
+            {"value": 0.40, "time": 25, "attributes": {"openclaw.sessionId": "sess-1"}},
+        ],
+        name="openclaw.turn.cost.usd",
+    )
+    records, _ = convert([trace_doc, metrics_doc])
+    llm_calls = sorted(
+        (r for r in records if r["event_type"] == "llm_call"), key=lambda r: r["step_index"]
+    )
+    assert len(llm_calls) == 2
+    assert llm_calls[0]["cost_usd"] == 0.10
+    assert llm_calls[1]["cost_usd"] == 0.40
+
+
+# --- detect() ------------------------------------------------------------------
+
+def test_detect_by_span_name_prefix():
+    doc = traces_document([span("s1", name="openclaw-localtrace.model.call", start=0)])
+    detection = OpenClawLocaltraceSource().detect([doc])
+    assert detection is not None
+    assert detection.source == "openclaw-localtrace"
+    assert "span name" in detection.reason
+
+
+def test_detect_by_resource_service_name():
+    doc = traces_document(
+        [span("s1", name="some.unrelated.span", start=0)],
+        resource_attributes={"service.name": "openclaw-localtrace"},
+    )
+    detection = OpenClawLocaltraceSource().detect([doc])
+    assert detection is not None
+    assert "service.name" in detection.reason
+
+
+def test_detect_does_not_false_positive_on_the_old_openclaw_source():
+    # The hyphen is load-bearing: "openclaw-localtrace." must never be
+    # mistaken for -- or mistake -- "openclaw."'s own span family.
+    doc = traces_document([span("s1", name="openclaw.model.call", start=0)])
+    assert OpenClawLocaltraceSource().detect([doc]) is None
+
+
+def test_detect_returns_none_for_unrelated_data():
+    doc = traces_document([span("s1", name="something.else", start=0)])
+    assert OpenClawLocaltraceSource().detect([doc]) is None
+
+
+def test_real_registry_discovers_this_source():
+    from redundo.adapter.registry import SourceRegistry
+
+    registry = SourceRegistry(discover=True)
+    assert "openclaw-localtrace" in registry.names()

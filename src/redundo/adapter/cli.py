@@ -59,7 +59,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not args.otlp_dir.is_dir():
-        print(f"redundo adapt: not a directory: {args.otlp_dir}", file=sys.stderr)
+        if not args.otlp_dir.exists():
+            print(f"redundo adapt: no such directory: {args.otlp_dir}", file=sys.stderr)
+        else:
+            print(
+                f"redundo adapt: expected a directory, got a file: {args.otlp_dir}",
+                file=sys.stderr,
+            )
         return 1
 
     documents = []
@@ -100,8 +106,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.output:
-        with args.output.open("w", encoding="utf-8") as handle:
-            write_jsonl(records, handle)
+        try:
+            with args.output.open("w", encoding="utf-8") as handle:
+                write_jsonl(records, handle)
+        except OSError as exc:
+            print(f"redundo adapt: could not write {args.output}: {exc}", file=sys.stderr)
+            return 1
     else:
         write_jsonl(records, sys.stdout)
 

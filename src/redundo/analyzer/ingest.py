@@ -21,13 +21,39 @@ class IngestError(ValueError):
     """A row failed validation and strict mode is on."""
 
 
+class IngestIOError(IngestError):
+    """The source itself couldn't be read at all -- missing file, wrong
+    type, permission, or undecodable bytes. Distinct from IngestError's
+    row-validation case so callers (see cli.py) can avoid suggesting
+    --lenient, which only ever helps with malformed *rows* and would be
+    actively misleading advice for "the file doesn't exist"."""
+
+
 def _iter_lines(
     handle: TextIO,
     *,
     strict: bool,
     on_error: "list[str] | None",
 ) -> Iterator[Event]:
-    for line_no, raw_line in enumerate(handle, start=1):
+    line_no = 0
+    lines = iter(handle)
+    while True:
+        try:
+            raw_line = next(lines)
+        except StopIteration:
+            return
+        except UnicodeDecodeError as exc:
+            # Surfaces here, not at open() time -- decoding is lazy,
+            # per-line, so a binary file (or the wrong encoding) only
+            # fails once iteration actually reaches the bad byte(s).
+            raise IngestIOError(
+                f"could not decode line {line_no + 1} as UTF-8 ({exc}) -- is this a "
+                "JSONL file matching the schema contract, not e.g. a binary OTLP "
+                "export? (Hint: 'redundo adapt' output is JSONL; its input directory "
+                "of *.json OTLP batches is not.)"
+            ) from exc
+        line_no += 1
+
         line = raw_line.strip()
         if not line:
             continue
@@ -72,7 +98,18 @@ def iter_events(
     if hasattr(source, "read"):
         yield from _iter_lines(source, strict=strict, on_error=on_error)  # type: ignore[arg-type]
         return
-    with Path(source).open(encoding="utf-8") as handle:
+    path = Path(source)
+    try:
+        handle = path.open(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise IngestIOError(f"file not found: {path}") from exc
+    except IsADirectoryError as exc:
+        raise IngestIOError(f"expected a file, got a directory: {path}") from exc
+    except PermissionError as exc:
+        raise IngestIOError(f"permission denied reading {path}") from exc
+    except OSError as exc:
+        raise IngestIOError(f"could not open {path}: {exc}") from exc
+    with handle:
         yield from _iter_lines(handle, strict=strict, on_error=on_error)
 
 
