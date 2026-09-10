@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from redundo.analyzer.ingest import IngestError, load_events
+from redundo.analyzer.ingest import IngestError, IngestIOError, load_events
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -37,6 +37,27 @@ def test_load_events_refuses_mixed_hash_spec(tmp_path):
     )
     with pytest.raises(IngestError, match="inconsistent content_hash procedures"):
         load_events(path)
+
+
+def test_missing_file_raises_ingest_error_not_a_raw_traceback():
+    # Regression test: this used to propagate a bare FileNotFoundError
+    # straight out of Path.open(), which `redundo analyze`'s CLI only
+    # catches IngestError for -- an uncaught traceback instead of the
+    # friendly message every other bad-input case already gets.
+    with pytest.raises(IngestError, match="file not found"):
+        load_events(FIXTURES / "does-not-exist.jsonl")
+
+
+def test_missing_file_raises_the_io_specific_subclass():
+    # Distinct from a row-validation IngestError so the CLI can skip
+    # suggesting --lenient, which wouldn't help here -- see cli.py.
+    with pytest.raises(IngestIOError):
+        load_events(FIXTURES / "does-not-exist.jsonl")
+
+
+def test_directory_instead_of_file_raises_ingest_error():
+    with pytest.raises(IngestError, match="expected a file, got a directory"):
+        load_events(FIXTURES)
 
 
 def test_load_events_accepts_an_open_stream_not_just_a_path():

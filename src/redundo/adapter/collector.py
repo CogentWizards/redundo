@@ -250,9 +250,22 @@ def main(argv: list[str] | None = None) -> int:
 
     global OUT_DIR
     OUT_DIR = args.out_dir
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"redundo collect: could not create {OUT_DIR}: {exc}", file=sys.stderr)
+        return 1
 
-    server = ThreadingHTTPServer(("localhost", args.port), Handler)
+    try:
+        server = ThreadingHTTPServer(("localhost", args.port), Handler)
+    except OSError as exc:
+        print(
+            f"redundo collect: could not listen on port {args.port}: {exc} "
+            "-- pass --port to choose a different one, or check what's already using it "
+            f"(e.g. `lsof -i :{args.port}`).",
+            file=sys.stderr,
+        )
+        return 1
     print(
         f"[collector] listening on http://localhost:{args.port}"
         "/v1/traces, /v1/logs, and /v1/metrics"

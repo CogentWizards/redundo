@@ -113,6 +113,39 @@ def logs_document(records: list[LogRecord], resource_attributes: dict | None = N
     return {"resourceLogs": [{"resource": resource, "scopeLogs": [{"logRecords": raw_records}]}]}
 
 
+def gauge_metric_document(data_points: list[dict], name: str) -> dict:
+    """A minimal OTLP metrics document carrying one Gauge metric with the
+    given data points -- a point-in-time value with no cumulative
+    meaning, unlike cost_metric_document's Sum (see
+    sources.openclaw_localtrace's own docstring for why its turn-cost
+    metric is a Gauge, not a Sum). Each data point dict takes: value
+    (float), time (int), attributes (dict), and optionally start_time
+    (int, defaults to `time` -- a Gauge point has no real accumulation
+    window, so the two are equal unless a test needs otherwise).
+    """
+    raw_points = []
+    for dp in data_points:
+        raw_points.append({
+            "startTimeUnixNano": str(dp.get("start_time", dp.get("time", 0))),
+            "timeUnixNano": str(dp.get("time", 0)),
+            "asDouble": dp["value"],
+            "attributes": [
+                {"key": k, "value": _any_value(v)} for k, v in dp.get("attributes", {}).items()
+            ],
+        })
+    return {
+        "resourceMetrics": [{
+            "resource": {"attributes": []},
+            "scopeMetrics": [{
+                "metrics": [{
+                    "name": name,
+                    "gauge": {"dataPoints": raw_points},
+                }],
+            }],
+        }],
+    }
+
+
 def cost_metric_document(
     data_points: list[dict], name: str = "openclaw.cost.usd"
 ) -> dict:

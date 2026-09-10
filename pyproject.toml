@@ -34,10 +34,11 @@ Issues = "https://github.com/CogentWizards/redundo/issues"
 redundo = "redundo.cli:main"
 
 [project.entry-points."redundo.adapter.sources"]
-claude-code   = "redundo.adapter.sources.claude_code:ClaudeCodeSource"
-cowork        = "redundo.adapter.sources.cowork:CoworkSource"
-openclaw      = "redundo.adapter.sources.openclaw:OpenClawSource"
-openinference = "redundo.adapter.sources.openinference:OpenInferenceSource"
+claude-code         = "redundo.adapter.sources.claude_code:ClaudeCodeSource"
+cowork              = "redundo.adapter.sources.cowork:CoworkSource"
+openclaw            = "redundo.adapter.sources.openclaw:OpenClawSource"
+openclaw-localtrace = "redundo.adapter.sources.openclaw_localtrace:OpenClawLocaltraceSource"
+openinference       = "redundo.adapter.sources.openinference:OpenInferenceSource"
 
 [project.entry-points."redundo.analyzer.analyses"]
 waste = "redundo.analyzer.analyses.waste:WasteAnalysis"

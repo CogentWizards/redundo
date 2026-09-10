@@ -42,7 +42,7 @@ def test_adapt_subcommand_dispatches_on_a_missing_directory(tmp_path, capsys):
     missing = tmp_path / "does-not-exist"
     exit_code = main(["adapt", str(missing)])
     assert exit_code == 1
-    assert "not a directory" in capsys.readouterr().err
+    assert "no such directory" in capsys.readouterr().err
 
 
 def test_adapt_piped_into_analyze_end_to_end(tmp_path, capsys, monkeypatch):

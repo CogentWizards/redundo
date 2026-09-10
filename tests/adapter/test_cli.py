@@ -100,7 +100,29 @@ def test_cli_ignores_unrecognized_json_files(tmp_path, capsys):
 def test_cli_fails_on_missing_directory(tmp_path, capsys):
     exit_code = main([str(tmp_path / "does-not-exist")])
     assert exit_code == 1
-    assert "not a directory" in capsys.readouterr().err
+    assert "no such directory" in capsys.readouterr().err
+
+
+def test_cli_fails_with_a_clearer_message_when_path_is_a_file_not_a_directory(tmp_path, capsys):
+    file_path = tmp_path / "not-a-directory.json"
+    file_path.write_text("{}", encoding="utf-8")
+    exit_code = main([str(file_path)])
+    assert exit_code == 1
+    assert "expected a directory, got a file" in capsys.readouterr().err
+
+
+def test_cli_fails_with_a_clear_message_when_output_path_is_unwritable(tmp_path, capsys):
+    doc = traces_document([
+        span("s1", start=0, attributes={"openinference.span.kind": "LLM", "input.value": "hi"}),
+    ])
+    _write(tmp_path, "traces-1.json", doc)
+    bad_output = tmp_path / "no-such-parent-dir" / "out.jsonl"
+
+    exit_code = main([str(tmp_path), "--output", str(bad_output)])
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "could not write" in err
+    assert str(bad_output) in err
 
 
 def test_cli_fails_on_empty_directory(tmp_path, capsys):

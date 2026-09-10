@@ -34,6 +34,26 @@ def test_trace_arg_path_still_reads_a_file(tmp_path, capsys):
     assert "Candidate redundant-repeat pairs: 1" in capsys.readouterr().out
 
 
+def test_missing_trace_file_fails_with_a_clear_message_not_a_traceback(tmp_path, capsys):
+    exit_code = main([str(tmp_path / "does-not-exist.jsonl")])
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "file not found" in err
+    # --lenient only helps with malformed rows, not a missing file --
+    # showing it here would be misleading advice, not a helpful hint.
+    assert "--lenient" not in err
+
+
+def test_output_path_with_no_parent_directory_fails_with_a_clear_message(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO(TRACE))
+    bad_output = tmp_path / "no-such-parent-dir" / "report.txt"
+    exit_code = main(["-", "-o", str(bad_output)])
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "could not write" in err
+    assert str(bad_output) in err
+
+
 def test_unknown_format_fails_with_dynamic_name_list(monkeypatch, capsys):
     # --format's choices come from ReportFormatRegistry.names() now, not a
     # hardcoded tuple -- argparse still rejects an unknown one before

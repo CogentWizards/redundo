@@ -61,7 +61,7 @@ def test_detect_raises_when_nothing_recognizes_the_corpus():
 
 def test_real_discovery_finds_the_built_in_sources():
     registry = SourceRegistry(discover=True)
-    for name in ("claude-code", "cowork", "openclaw", "openinference"):
+    for name in ("claude-code", "cowork", "openclaw", "openclaw-localtrace", "openinference"):
         assert name in registry.names()
 
 
