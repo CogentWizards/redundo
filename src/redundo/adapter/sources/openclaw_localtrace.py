@@ -112,6 +112,15 @@ _TOKENS_IN_CACHE_ATTRS = (
 )
 _TOKENS_OUT_ATTRS = ("gen_ai.usage.output_tokens",)
 _COST_USD_ATTR = "gen_ai.usage.cost_usd"
+# Always attached by the plugin alongside _COST_USD_ATTR (see its own
+# spans.ts) -- this plugin's OWN pricing snapshot's age, unrelated to
+# whatever pricing catalog OpenClaw itself uses internally. A missing
+# model visibly produces no cost_usd; a provider quietly changing a rate
+# produces a confident, plausible-looking dollar figure indistinguishable
+# from a correct one -- surfacing this age is what keeps that risk
+# visible instead of silent. See docs/openclaw-localtrace.md.
+_PRICING_GENERATED_AT_ATTR = "openclaw.pricingTableGeneratedAt"
+_PRICING_STALENESS_WARNING_DAYS = 30  # matches the plugin's own Gateway-startup threshold
 
 _MUTATING_ACTION_ATTR = "openclaw.mutatingAction"
 _ERROR_ATTR = "openclaw.error"
@@ -141,6 +150,12 @@ class ConversionSummary:
     # estimate on a paired llm.call span (see _llm_event) -- takes
     # priority over the turn-level apportionment below.
     llm_calls_with_direct_cost: int = 0
+    # The most recent (latest) pricing-table generatedAt timestamp seen
+    # across every direct-cost record -- the plugin's OWN pricing
+    # snapshot's age, unrelated to whatever pricing catalog OpenClaw
+    # itself uses internally. None means no direct-cost record carried
+    # one (an older plugin version, or no direct cost estimates at all).
+    pricing_table_generated_at: str | None = None
 
     # Cost apportionment (see _apportion_cost) -- 0/0 means no
     # openclaw.turn.cost.usd points were captured, or none carried a
@@ -200,6 +215,7 @@ class ConversionSummary:
                 "every llm_call -- only the calls the plugin's own llm.call span pairing "
                 "reached (see the note above, if any spans were unpaired)."
             )
+            out.append(_pricing_table_age_note(self.pricing_table_generated_at))
         remaining_for_apportionment = self.total_records - self.llm_calls_with_direct_cost
         if self.cost_points_found == 0:
             if remaining_for_apportionment > 0:
@@ -416,6 +432,45 @@ def _iso_timestamp(unix_nano: int) -> str:
     return datetime.fromtimestamp(unix_nano / 1e9, tz=timezone.utc).isoformat()
 
 
+def _parse_pricing_generated_at(value: str) -> datetime | None:
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _pricing_table_age_note(generated_at: str | None) -> str:
+    """Always shown (not just past the staleness threshold) alongside a
+    direct per-call cost estimate -- see module docstring point 3 and the
+    plugin's own README: a stale-but-present price is worse than a
+    missing one, so the age needs to be visible every time, not only when
+    it happens to be old. This plugin's OWN pricing snapshot's age, never
+    to be confused with any pricing OpenClaw itself uses internally.
+    """
+    if generated_at is None:
+        return (
+            "This plugin's own pricing-table age could not be determined (an older plugin "
+            "version, or no direct-cost records in this corpus) -- treat cost_usd estimates "
+            "with that in mind."
+        )
+    parsed = _parse_pricing_generated_at(generated_at)
+    if parsed is None:
+        return f"This plugin's own pricing table reports an unparseable generatedAt ({generated_at!r})."
+    age_days = (datetime.now(timezone.utc) - parsed).days
+    note = (
+        f"This plugin's OWN pricing table (not OpenClaw's built-in pricing) was generated "
+        f"{generated_at} ({age_days} day(s) ago)."
+    )
+    if age_days > _PRICING_STALENESS_WARNING_DAYS:
+        note += (
+            f" That's over {_PRICING_STALENESS_WARNING_DAYS} days -- provider rates may have "
+            "changed since then; refresh with: npx openclaw-localtrace-update-pricing (then "
+            "restart the Gateway and re-capture)."
+        )
+    return note
+
+
 def _opaque_hash(span: Span) -> tuple[str, int]:
     """A content_hash derived from the span's own id, not its content --
     unique per span by construction. Same idiom as sources.openclaw's
@@ -495,6 +550,14 @@ def _llm_event(
         # amount -- see docs/openclaw-localtrace.md.
         metadata["cost_basis"] = "estimated_from_bundled_pricing_table"
         summary.llm_calls_with_direct_cost += 1
+        generated_at = llm_call_span.attributes.get(_PRICING_GENERATED_AT_ATTR) if llm_call_span else None
+        if generated_at:
+            metadata["pricing_table_generated_at"] = str(generated_at)
+            # Track the latest (not just the first) -- ISO-8601 UTC
+            # timestamps compare correctly as plain strings, and a longer
+            # capture could span more than one pricing-table refresh.
+            if summary.pricing_table_generated_at is None or str(generated_at) > summary.pricing_table_generated_at:
+                summary.pricing_table_generated_at = str(generated_at)
 
     model = span.attributes.get("openclaw.model")
     outcome = "error" if span.attributes.get("openclaw.errorCategory") else ("ok" if span.end_time_unix_nano else None)

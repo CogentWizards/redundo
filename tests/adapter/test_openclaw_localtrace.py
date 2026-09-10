@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 from helpers import gauge_metric_document, span, traces_document
 from redundo.adapter.sources.openclaw_localtrace import (
@@ -34,6 +35,7 @@ def _turn(
     run_start=0,
     run_end=3,
     direct_cost_usd=None,
+    pricing_generated_at=None,
 ):
     """One realistic run: run span + model.call span (+ optional
     tool.execution and llm.call siblings), matching the real span shapes
@@ -64,6 +66,8 @@ def _turn(
             llm_attrs["gen_ai.usage.output_tokens"] = tokens_out
         if direct_cost_usd is not None:
             llm_attrs["gen_ai.usage.cost_usd"] = direct_cost_usd
+        if pricing_generated_at is not None:
+            llm_attrs["openclaw.pricingTableGeneratedAt"] = pricing_generated_at
         llm_attrs["gen_ai.input.messages"] = INPUT_MESSAGES
         llm_attrs["gen_ai.output.messages"] = OUTPUT_MESSAGES
         spans.append(
@@ -268,6 +272,57 @@ def test_direct_gen_ai_cost_usd_attribute_becomes_cost_usd_on_the_record():
     assert record["cost_usd"] == 0.0123
     assert record["metadata"]["cost_basis"] == "estimated_from_bundled_pricing_table"
     assert summary.llm_calls_with_direct_cost == 1
+
+
+# --- pricing-table age: this plugin's own, not OpenClaw's built-in one -----
+
+def test_pricing_table_generated_at_is_copied_into_metadata():
+    generated_at = "2026-01-01T00:00:00.000Z"
+    records, summary = convert(traces_document(
+        _turn("t1", llm_call=True, direct_cost_usd=0.05, pricing_generated_at=generated_at)
+    ))
+    record = next(r for r in records if r["event_type"] == "llm_call")
+    assert record["metadata"]["pricing_table_generated_at"] == generated_at
+    assert summary.pricing_table_generated_at == generated_at
+
+
+def test_notes_always_show_the_pricing_table_age_not_just_when_stale():
+    recent = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat().replace("+00:00", "Z")
+    _, summary = convert(traces_document(
+        _turn("t1", llm_call=True, direct_cost_usd=0.05, pricing_generated_at=recent)
+    ))
+    notes_text = " ".join(summary.notes())
+    assert "generated" in notes_text
+    assert "not OpenClaw's built-in pricing" in notes_text
+    assert "over 30 days" not in notes_text  # recent -- no staleness escalation
+
+
+def test_notes_escalate_past_the_30_day_staleness_threshold():
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat().replace("+00:00", "Z")
+    _, summary = convert(traces_document(
+        _turn("t1", llm_call=True, direct_cost_usd=0.05, pricing_generated_at=old)
+    ))
+    notes_text = " ".join(summary.notes())
+    assert "over 30 days" in notes_text
+    assert "npx openclaw-localtrace-update-pricing" in notes_text
+
+
+def test_no_direct_cost_records_means_no_pricing_age_note_at_all():
+    _, summary = convert(traces_document(_turn("t1", llm_call=False)))
+    assert summary.pricing_table_generated_at is None
+    notes_text = " ".join(summary.notes())
+    assert "pricing table" not in notes_text.lower() or "generated" not in notes_text
+
+
+def test_summary_tracks_the_latest_generated_at_across_multiple_direct_cost_records():
+    older = "2026-01-01T00:00:00.000Z"
+    newer = "2026-06-01T00:00:00.000Z"
+    spans_a = _turn("trace-a", session_id="sess-1", llm_call=True, direct_cost_usd=0.01,
+                     pricing_generated_at=newer, model_start=1, model_end=2, run_start=0, run_end=3)
+    spans_b = _turn("trace-b", session_id="sess-1", llm_call=True, direct_cost_usd=0.02,
+                     pricing_generated_at=older, model_start=10, model_end=11, run_start=9, run_end=12)
+    _, summary = convert(traces_document(spans_a + spans_b))
+    assert summary.pricing_table_generated_at == newer
 
 
 def test_direct_cost_takes_priority_over_turn_level_apportionment():
