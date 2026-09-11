@@ -19,6 +19,11 @@ def build(events):
 
 
 def test_html_is_self_contained_no_external_resources():
+    # "Self-contained" means no network request happens on open: no fetched
+    # image/script/stylesheet. It does not mean no hyperlink at all -- the
+    # footer links to GitHub, which is just a clickable <a>, not a resource
+    # the page loads. Distinguish the two explicitly rather than asserting
+    # no "https://" appears anywhere, which would also reject those links.
     events = [
         make_event(0, event_type="tool_call"),
         make_event(1, event_type="tool_result", content_hash="same"),
@@ -27,10 +32,11 @@ def test_html_is_self_contained_no_external_resources():
     ]
     page = to_html(build(events))
     assert "<!doctype html>" in page.lower()
-    assert "http://" not in page
-    assert "https://" not in page
     assert "cdn" not in page.lower()
     assert "<script" not in page.lower()
+    assert 'src="http' not in page  # no fetched image/script
+    assert "stylesheet" not in page.lower()  # no external CSS
+    assert '<img src="data:image/png;base64,' in page  # the header logo is embedded, not fetched
 
 
 def test_html_contains_all_four_bucket_labels():
