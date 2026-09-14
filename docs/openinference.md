@@ -71,3 +71,41 @@ Shared by every source, not implemented per-source -- see
 [docs/hashing.md](hashing.md) for the full procedure (algorithm,
 normalization, masking order, versioning, and a copyable ~15-line
 reference implementation).
+
+## cost_usd: a direct attribute first, an estimate second
+
+Cost is not a stable OpenInference/gen_ai convention. This adapter first
+looks for `llm.cost.total`/`cost.total_usd` directly on the span; when
+neither is present, it estimates `cost_usd` itself from real per-call
+token counts (`gen_ai.usage.input_tokens`/`output_tokens`, plus
+cache-read/cache-write variants when present) against a bundled,
+LiteLLM-derived pricing table, the same idea `openclaw-localtrace` already
+uses for OpenClaw. See [`pricing.py`](../src/redundo/adapter/pricing.py)'s
+own module docstring for exactly what the table is, how it's curated, and
+the two ways to refresh it (`scripts/update_pricing_table.py` for a repo
+checkout, `redundo update-pricing` for anyone with only the package
+installed).
+
+An unrecognized model gets no cost estimate, ever, not a guessed number:
+matching is by exact model string only (the same string LiteLLM's own
+pricing keys use for a direct-API call), never a fuzzy or
+provider-prefix-stripped match. When an estimate is used,
+`metadata.cost_basis` is set to `"estimated_from_bundled_pricing_table"`
+and `--summary` reports the active pricing table's age unconditionally,
+escalating past 30 days old, the same "staleness is shown, not hidden"
+discipline as everywhere else in this project.
+
+**Known gap, found against a real capture, not assumed**: this estimate
+only fires when a single span carries both `input.value` (or
+`output.value`) and the `gen_ai.usage.*` token attributes together. At
+least one real exporter (`hermes-otel`, feeding Hermes) splits these
+across two separate spans instead, an outer `LLM`-kind span carrying
+content with no token counts, and its own child `LLM`-kind span carrying
+token counts with no content. Neither span alone has enough to price
+correctly, and this adapter does not currently merge sibling/child spans
+to reunite them (unlike `sources/openclaw_localtrace.py`, which has to do
+exactly this for a structurally similar split, see its own docs). Until
+that merge is built, a source with this split gets no cost estimate at
+all, correctly falling back to no data rather than a wrong one, but it
+does mean the feature won't yet show real numbers for every OpenInference
+exporter shaped this way.

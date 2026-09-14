@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .. import hashing
+from .. import hashing, pricing
 from ..base import AdapterSource, Detection
 from ..otlp import Span, is_trace_document, parse_spans
 
@@ -43,9 +43,21 @@ _TOOL_NAME_ATTRS = ("tool.name",)
 _MODEL_ATTRS = ("llm.model_name", "gen_ai.request.model")
 _TOKENS_IN_ATTRS = ("llm.token_count.prompt", "gen_ai.usage.input_tokens")
 _TOKENS_OUT_ATTRS = ("llm.token_count.completion", "gen_ai.usage.output_tokens")
+_CACHE_READ_TOKEN_ATTRS = (
+    "llm.token_count.prompt_details.cache_read",
+    "gen_ai.usage.cache_read_input_tokens",
+    "gen_ai.usage.cache_read.input_tokens",
+)
+_CACHE_WRITE_TOKEN_ATTRS = (
+    "llm.token_count.prompt_details.cache_write",
+    "gen_ai.usage.cache_creation_input_tokens",
+    "gen_ai.usage.cache_creation.input_tokens",
+)
 # Cost is not a stable OpenInference/gen_ai convention as of this writing;
-# these are best-effort and will usually be absent. That's fine -- the
-# analyzer falls back to token counts when cost_usd is None.
+# these are best-effort and will usually be absent. When absent, this
+# adapter estimates cost_usd itself from token counts against a bundled
+# pricing table (see pricing.py) rather than leaving it None whenever
+# both a recognized model and real token counts are present.
 _COST_ATTRS = ("llm.cost.total", "cost.total_usd")
 
 
@@ -66,6 +78,11 @@ class ConversionSummary:
     masked_span_total: int = 0
 
     hash_spec: str = hashing.HASH_SPEC
+    # Set whenever at least one record's cost_usd was estimated from the
+    # bundled/override pricing table (see pricing.py) rather than read
+    # directly off the trace. None means no estimate was ever used,
+    # nothing to report on the table's age.
+    pricing_table_generated_at: str | None = None
 
     @property
     def mask_fraction(self) -> float:
@@ -99,6 +116,9 @@ class ConversionSummary:
                 f"skipped {self.skipped_missing_content} LLM/TOOL span(s) with no "
                 f"{_INPUT_ATTR} to hash -- no content, no candidate for repeat detection."
             )
+        pricing_note = pricing.pricing_staleness_note(self.pricing_table_generated_at)
+        if pricing_note:
+            out.append(f"cost_usd was estimated for one or more records; {pricing_note}.")
         if self.total_records == 0:
             out.append("no records produced -- nothing below is meaningful.")
         elif self.records_with_any_mask == 0:
@@ -119,6 +139,8 @@ class ConversionSummary:
 
 def convert_openinference(
     documents: list[dict[str, Any]],
+    *,
+    pricing_context: pricing.PricingContext | None = None,
 ) -> tuple[list[dict[str, Any]], ConversionSummary]:
     """documents: one or more parsed OTLP traces JSON export documents.
     A source's own exporter typically flushes on an interval, producing
@@ -126,7 +148,14 @@ def convert_openinference(
     accepting a list (rather than a single document, as earlier versions
     of this function did) is what lets a whole captured directory be
     converted in one call.
+
+    pricing_context: injectable for tests; defaults to
+    pricing.load_pricing_context() (the bundled table, overlaid by
+    ~/.redundo/pricing-table.json if present) when not given.
     """
+    if pricing_context is None:
+        pricing_context = pricing.load_pricing_context()
+
     spans: list[Span] = []
     for document in documents:
         spans.extend(parse_spans(document))
@@ -210,7 +239,8 @@ def convert_openinference(
 
             if kind == "LLM":
                 record = _llm_event(
-                    span, task_id, used_conversation_id, step, parent_step, span_by_id, summary
+                    span, task_id, used_conversation_id, step, parent_step, span_by_id,
+                    summary, pricing_context,
                 )
                 if record is None:
                     summary.skipped_missing_content += 1
@@ -381,6 +411,7 @@ def _llm_event(
     parent_step: int | None,
     span_by_id: dict[str, Span],
     summary: ConversionSummary,
+    pricing_context: pricing.PricingContext,
 ) -> dict[str, Any] | None:
     raw_input = _first_present(span.attributes, (_INPUT_ATTR,))
     if raw_input is None:
@@ -395,6 +426,24 @@ def _llm_event(
     tokens_out = _first_present(span.attributes, _TOKENS_OUT_ATTRS)
     cost = _first_present(span.attributes, _COST_ATTRS)
 
+    metadata = _base_metadata(span, mask_count, used_conversation_id)
+    cost_usd = float(cost) if cost is not None else None
+    if cost_usd is None:
+        cache_read = _first_present(span.attributes, _CACHE_READ_TOKEN_ATTRS)
+        cache_write = _first_present(span.attributes, _CACHE_WRITE_TOKEN_ATTRS)
+        estimated = pricing.estimate_cost_usd(
+            pricing_context.entries,
+            model,
+            tokens_in=int(tokens_in) if tokens_in is not None else None,
+            tokens_out=int(tokens_out) if tokens_out is not None else None,
+            cache_read_tokens=int(cache_read) if cache_read is not None else None,
+            cache_write_tokens=int(cache_write) if cache_write is not None else None,
+        )
+        if estimated is not None:
+            cost_usd = estimated
+            metadata["cost_basis"] = "estimated_from_bundled_pricing_table"
+            summary.pricing_table_generated_at = pricing_context.generated_at
+
     return {
         "task_id": task_id,
         "step_index": step,
@@ -405,11 +454,11 @@ def _llm_event(
         "tokens_out": int(tokens_out) if tokens_out is not None else None,
         "outcome": _outcome(span.status_code),
         "timestamp": _iso_timestamp(span.start_time_unix_nano),
-        "cost_usd": float(cost) if cost is not None else None,
+        "cost_usd": cost_usd,
         "model": model,
         "parent_id": parent_step,
         "workflow": _workflow_of(span, span_by_id),
-        "metadata": _base_metadata(span, mask_count, used_conversation_id),
+        "metadata": metadata,
     }
 
 

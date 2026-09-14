@@ -24,7 +24,7 @@ def test_unknown_subcommand_fails_with_a_clear_message(capsys):
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "unknown subcommand 'frobnicate'" in err
-    assert "adapt, analyze, or collect" in err
+    assert "adapt, analyze, collect, or update-pricing" in err
 
 
 def test_analyze_subcommand_dispatches_with_no_events_error(tmp_path, capsys):
@@ -43,6 +43,14 @@ def test_adapt_subcommand_dispatches_on_a_missing_directory(tmp_path, capsys):
     exit_code = main(["adapt", str(missing)])
     assert exit_code == 1
     assert "no such directory" in capsys.readouterr().err
+
+
+def test_update_pricing_subcommand_dispatches(capsys):
+    # --help needs no network access, unlike a real run -- just proving
+    # dispatch reaches update_pricing_cli.main, not exercising the fetch.
+    exit_code = main(["update-pricing", "--help"])
+    assert exit_code == 0
+    assert "update-pricing" in capsys.readouterr().out
 
 
 def test_adapt_piped_into_analyze_end_to_end(tmp_path, capsys, monkeypatch):

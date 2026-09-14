@@ -1,8 +1,10 @@
-"""Top-level `redundo` entry point: dispatches to one of three
+"""Top-level `redundo` entry point: dispatches to one of four
 subcommands. `adapt` and `analyze` are the core pipeline and have zero
 dependencies; `collect` is a convenience local OTLP receiver gated behind
 the `collector` extra, imported lazily so installing redundo for just
 `adapt`/`analyze` never pulls in protobuf/opentelemetry-proto.
+`update-pricing` is the one command that makes a network call, and only
+when a user runs it by hand; see pricing.py's module docstring.
 
     redundo adapt --source openinference traces/ | redundo analyze > report.html
 """
@@ -17,9 +19,10 @@ redundo: adapt agent traces to a common schema, then analyze them.
     redundo adapt --source openinference traces/ | redundo analyze > report.html
 
 Subcommands:
-  adapt     Convert captured OTLP traces into the schema (redundo adapt -h)
-  analyze   Classify redundant calls in a schema trace   (redundo analyze -h)
-  collect   Run a local OTLP receiver for capture         (redundo collect -h)
+  adapt           Convert captured OTLP traces into the schema (redundo adapt -h)
+  analyze         Classify redundant calls in a schema trace   (redundo analyze -h)
+  collect         Run a local OTLP receiver for capture         (redundo collect -h)
+  update-pricing  Refresh the bundled per-model pricing table   (redundo update-pricing -h)
 """
 
 
@@ -47,9 +50,16 @@ def main(argv: "list[str] | None" = None) -> int:
         from .adapter.collector import main as collect_main
 
         return collect_main(rest)
+    if command == "update-pricing":
+        from .adapter.update_pricing_cli import main as update_pricing_main
 
-    print(f"redundo: unknown subcommand {command!r} (expected adapt, analyze, or collect)\n",
-          file=sys.stderr)
+        return update_pricing_main(rest)
+
+    print(
+        f"redundo: unknown subcommand {command!r} "
+        "(expected adapt, analyze, collect, or update-pricing)\n",
+        file=sys.stderr,
+    )
     print(USAGE, file=sys.stderr)
     return 1
 

@@ -121,26 +121,36 @@ signal.
 
 ### Hermes
 
-Hermes (and any other framework instrumented with an
-OpenInference-compatible library) doesn't need source-specific flags to
-unlock content the way Claude Code or OpenClaw do. An OpenInference
-`LLM`/`TOOL` span carries its full `input.value`/`output.value` by
-default. Standard OTel export, pointed at the collector, is enough:
+Hermes doesn't emit OpenInference spans on its own. It needs the
+community [hermes-otel](https://github.com/briancaffey/hermes-otel)
+plugin installed first, verified against a real desktop app capture, not
+just its docs:
 
 ```bash
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-# then run Hermes (or your OpenInference-instrumented app) as usual
-```
+hermes plugins install briancaffey/hermes-otel/hermes_otel
+# import into the SAME venv that runs `hermes`. Check `hermes --version`'s
+# "Install directory" for the real path if this doesn't match yours:
+/path/to/hermes-agent/venv/bin/pip install -r ~/.hermes/plugins/hermes_otel/requirements.txt
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318/v1/traces"   # note the /v1/traces suffix, unlike the other sources here
 
-```bash
+# restart Hermes, drive real turns through it, then:
 redundo adapt ./otlp_traces --source openinference --summary | redundo analyze --format html > report.html
 ```
 
-`task_id` prefers `gen_ai.conversation.id`. If a trace's spans never
-carry it, grouping falls back to the trace ID and that fallback is
-reported, not silently assumed. See
-[docs/openinference.md](docs/openinference.md).
+Confirmed against a real capture: full content and a real
+conversation-scoped `task_id` (`gen_ai.conversation.id`) both work out of
+the box, no permission opt-in needed, unlike OpenClaw's official exporter.
+If a trace's spans never carry it, grouping falls back to the trace ID and
+that fallback is reported, not silently assumed.
+
+`cost_usd` is estimated from real token counts against a bundled pricing
+table when a source provides both content and token counts on the same
+span, see [docs/openinference.md](docs/openinference.md) for how. Not yet
+for Hermes specifically, though: `hermes-otel` splits a call's content and
+its token counts across two separate spans, and this adapter doesn't
+merge them yet, so `cost_usd` stays `None` for this source until that's
+built. Any other OpenInference-compatible library that puts both on one
+span already gets a real estimate today.
 
 ### Claude CLI
 
