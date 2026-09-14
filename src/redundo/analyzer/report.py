@@ -1,6 +1,6 @@
 """Render an AnalysisResult as text, JSON, or a self-contained HTML page.
 
-Generic over any analysis's output -- this module doesn't know what a
+Generic over any analysis's output. This module doesn't know what a
 `Verdict` is, or what "waste" means. It only knows the `AnalysisResult`/
 `Bucket`/`Slice`/`CoverageStats` shapes from `analysis.py`/`metrics.py`.
 Any analysis that produces a conforming `AnalysisResult` gets all three
@@ -40,13 +40,13 @@ def _coverage_lines(coverage: CoverageStats) -> list[str]:
     pct = coverage.pricing_coverage_fraction * 100
     lines = [
         f"Coverage: {coverage.priced_events}/{coverage.total_events} events priced "
-        f"({pct:.0f}%) -- {_fmt_usd(coverage.total_priced_cost_usd)} of tracked spend "
+        f"({pct:.0f}%). {_fmt_usd(coverage.total_priced_cost_usd)} of tracked spend "
         "is what this analysis actually covers."
     ]
     if coverage.unpriced_events:
         lines.append(
             f"  {coverage.unpriced_events} event(s) had no cost_usd and are excluded "
-            "from every dollar figure below -- the percentages are computed on the "
+            "from every dollar figure below. Percentages are computed on the "
             "priced subset, not your total spend."
         )
     conf = coverage.task_id_confidence_fraction
@@ -71,7 +71,7 @@ def to_text(result: AnalysisResult, *, max_reasons: int = 20) -> str:
 
     for bucket in result.buckets:
         s = bucket.slice
-        lines.append(f"{s.count} {bucket.key} -- {bucket.rule_text}")
+        lines.append(f"{s.count} {bucket.key}: {bucket.rule_text}")
         lines.append(f"  cost_usd:   {s.cost_usd:.6f}" + (
             f"  ({s.unpriced_count} repeat(s) had no cost_usd)" if s.unpriced_count else ""
         ))
@@ -129,7 +129,7 @@ def to_text(result: AnalysisResult, *, max_reasons: int = 20) -> str:
 # analysis can have any number of buckets with any keys, so there's no
 # fixed enum to hang a color mapping off.
 #
-# All dollar figures in this report are USD, always -- that's a property
+# All dollar figures in this report are USD, always. That's a property
 # of cost_usd itself (every source computes it from a provider's own
 # USD-denominated rate), not a display default. This renderer never
 # converts currency: a live exchange-rate fetch would contradict the
@@ -144,7 +144,7 @@ def to_text(result: AnalysisResult, *, max_reasons: int = 20) -> str:
 # no <script> tag, anywhere in this file.
 # ---------------------------------------------------------------------------
 
-# (accent, accent-fill-light, accent-fill-dark) -- oklch, cycled by bucket
+# (accent, accent-fill-light, accent-fill-dark): oklch, cycled by bucket
 # POSITION the same way the old hex _PALETTE was. accent-fill is the bar's
 # own background tint; accent is its border/dot/text color.
 _PALETTE: tuple[tuple[str, str, str], ...] = (
@@ -262,13 +262,17 @@ def _number_word(n: int) -> str:
 
 def _headline(result: AnalysisResult) -> tuple[str, str]:
     """The report's opening sentence: how many pairs were evaluated, and
-    how many landed in the analysis's own most prominent bucket (position
-    0 in result.buckets -- the analysis orders its own buckets, this
-    renderer just trusts that order, same as everywhere else it uses
-    bucket position). Returns (eyebrow, headline) so the caller doesn't
-    also have to know analysis_name's fallback.
+    how many landed in the analysis's own most prominent bucket (position 0
+    in result.buckets: the analysis orders its own buckets, this renderer
+    just trusts that order, same as everywhere else it uses bucket
+    position). Returns (eyebrow, headline).
+
+    The eyebrow is always the generic "Event analysis", not
+    result.analysis_name ("waste"): the bucket labels and the headline
+    itself already say what kind of finding this is, so repeating that in
+    the eyebrow too just adds noise above the actual sentence.
     """
-    eyebrow = html.escape(result.analysis_name or "Event analysis")
+    eyebrow = "Event analysis"
     total = result.total_candidates
     if total == 0 or not result.buckets:
         return eyebrow, "No repeated calls found."
@@ -289,7 +293,7 @@ def _coverage_html(coverage: CoverageStats) -> str:
     pct = coverage.pricing_coverage_fraction * 100
     parts = [
         f"<p>{coverage.priced_events} of {coverage.total_events} events carried a price "
-        f"({pct:.0f}%) -- <strong>{html.escape(_fmt_usd(coverage.total_priced_cost_usd))}</strong> "
+        f"({pct:.0f}%). <strong>{html.escape(_fmt_usd(coverage.total_priced_cost_usd))}</strong> "
         "of tracked spend is what this analysis actually covers. "
         "<strong>All amounts are USD</strong>, as reported by each event's own "
         "<code>cost_usd</code>; this report never converts or estimates a currency.</p>"
@@ -297,7 +301,7 @@ def _coverage_html(coverage: CoverageStats) -> str:
     if coverage.unpriced_events:
         parts.append(
             f"<p>{coverage.unpriced_events} event(s) had no <code>cost_usd</code> and are "
-            "excluded from every dollar figure above and below -- percentages are computed "
+            "excluded from every dollar figure above and below. Percentages are computed "
             "on the priced subset, not the total.</p>"
         )
     conf = coverage.task_id_confidence_fraction
@@ -315,7 +319,7 @@ def _coverage_html(coverage: CoverageStats) -> str:
 
 def _spend_rows(buckets: list[Bucket]) -> str:
     """One row per bucket: a colored dot, label, count, an inline
-    proportional bar, and a dollar (or pair-count) figure -- replaces what
+    proportional bar, and a dollar (or pair-count) figure. Replaces what
     used to be a separate cards grid and SVG bar chart with a single list,
     each row linking to that bucket's own detail section below.
     """
@@ -384,20 +388,28 @@ def _breakdown_tabs(key: str, by_model: dict[str, Slice], by_workflow: dict[str,
     return model_table or workflow_table
 
 
+def _sample_cases_html(reasons: list[str], *, label: str = "Sample cases to spot-check by hand") -> str:
+    """The collapsible "spot-check these by hand" list, shared between a
+    bucket's own sample reasons and the unpriced-events samples in the
+    "Events with no cost" section below. Empty input renders nothing.
+    """
+    if not reasons:
+        return ""
+    items = "".join(f'<li class="case">{html.escape(r)}</li>' for r in reasons)
+    return f"""
+<details class="cases">
+  <summary><span class="chev2">&#9656;</span> {html.escape(label)} ({len(reasons)})</summary>
+  <ul class="caselist">{items}</ul>
+</details>"""
+
+
 def _bucket_section(result: AnalysisResult, bucket: Bucket, *, index: int, max_reasons: int) -> str:
     by_model = result.by_bucket_and_model.get(bucket.key, {})
     by_workflow = result.by_bucket_and_workflow.get(bucket.key, {})
     reasons = result.reasons.get(bucket.key, [])[:max_reasons]
     accent, *_ = _palette_for(index)
 
-    reasons_html = ""
-    if reasons:
-        items = "".join(f'<li class="case">{html.escape(r)}</li>' for r in reasons)
-        reasons_html = f"""
-<details class="cases">
-  <summary><span class="chev2">&#9656;</span> Sample cases to spot-check by hand ({len(reasons)})</summary>
-  <ul class="caselist">{items}</ul>
-</details>"""
+    reasons_html = _sample_cases_html(reasons)
 
     action_html = ""
     if bucket.action_text:
@@ -441,13 +453,14 @@ def _header_html() -> str:
     <span class="brand-name">redundo</span>
     <span class="brand-version">v{version}</span>
   </div>
-  <div class="sw noprint" role="group" aria-label="Theme">
-    <input type="radio" name="theme" id="theme-auto" checked>
-    <label for="theme-auto" title="Match system theme">Auto</label>
-    <input type="radio" name="theme" id="theme-light">
-    <label for="theme-light" title="Light theme">Light</label>
-    <input type="radio" name="theme" id="theme-dark">
-    <label for="theme-dark" title="Dark theme">Dark</label>
+  <div class="sw noprint">
+    <input type="checkbox" id="theme">
+    <label for="theme" title="Toggle dark mode" aria-label="Toggle dark mode">
+      <span class="knob">
+        <svg class="ico ico-sun" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"></circle><path d="M12 1.8v2.4M12 19.8v2.4M1.8 12h2.4M19.8 12h2.4M4.8 4.8l1.7 1.7M17.5 17.5l1.7 1.7M19.2 4.8l-1.7 1.7M6.5 17.5l-1.7 1.7"></path></svg>
+        <svg class="ico ico-moon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 14.6A8.8 8.8 0 019.4 3.5a8.8 8.8 0 1011.1 11.1z"></path></svg>
+      </span>
+    </label>
   </div>
 </header>"""
 
@@ -487,24 +500,14 @@ _HTML_TEMPLATE = """<!doctype html>
   --line:rgba(17,17,16,0.11); --hair:rgba(17,17,16,0.055); --track:#edebe4;
   --sel:rgba(17,17,16,0.05);
 }}
-@media (prefers-color-scheme: dark) {{
-  :root {{
-    --bg:#121211; --panel:#191918; --ink:#f2f0ec; --ink2:#b8b5ac; --ink3:#83807a;
-    --line:rgba(255,255,255,0.12); --hair:rgba(255,255,255,0.06); --track:#262624;
-    --sel:rgba(255,255,255,0.06);
-  }}
-}}
-/* Manual override, wins over prefers-color-scheme either direction because
-   a body:has() selector is more specific than a bare :root rule -- needed
-   both ways, not just toward dark: with "Auto" the resting default already
-   follows the system preference, so a system-dark reader needs an explicit
-   path back to light too, not just a way to force dark on top of dark. */
-body:has(#theme-light:checked) {{
-  --bg:#fbfaf8; --panel:#ffffff; --ink:#111110; --ink2:#56534d; --ink3:#8d8a82;
-  --line:rgba(17,17,16,0.11); --hair:rgba(17,17,16,0.055); --track:#edebe4;
-  --sel:rgba(17,17,16,0.05);
-}}
-body:has(#theme-dark:checked) {{
+/* Deliberately no @media (prefers-color-scheme) block: the default is
+   always light, the checkbox is the only way to get dark. A resting
+   default that already follows the system preference plus a checkbox
+   that can only add "force dark" has a real gap for a system-dark
+   reader: dark on top of dark, with no path back to light. A single
+   checkbox can only offer one real override direction, so it gets the
+   one that's unambiguous: always-light by default, dark on demand. */
+body:has(#theme:checked) {{
   --bg:#121211; --panel:#191918; --ink:#f2f0ec; --ink2:#b8b5ac; --ink3:#83807a;
   --line:rgba(255,255,255,0.12); --hair:rgba(255,255,255,0.06); --track:#262624;
   --sel:rgba(255,255,255,0.06);
@@ -529,18 +532,22 @@ code {{ font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-s
 .brand-mark {{ border-radius: 6px; display: block; }}
 .brand-name {{ font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }}
 .brand-version {{ font-size: 12px; color: var(--ink3); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }}
-/* theme switch: a 3-way Auto/Light/Dark segmented pill, not a single
-   on-off switch -- see the body:has() rules above for why a binary
-   checkbox can't offer a real "back to light" path when the system
-   default is already dark. */
-.sw {{ display: flex; gap: 2px; background: var(--track); border-radius: 999px; padding: 2px; }}
+/* theme switch */
 .sw input {{ position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }}
 .sw label {{
-  cursor: pointer; font-size: 12px; color: var(--ink3); padding: 4px 10px; border-radius: 999px; user-select: none;
+  display: flex; align-items: center; width: 46px; height: 26px; padding: 3px; border-radius: 999px;
+  background: var(--track); cursor: pointer; position: relative; box-shadow: inset 0 0 0 1px var(--hair);
 }}
-.sw input#theme-auto:checked ~ label[for="theme-auto"],
-.sw input#theme-light:checked ~ label[for="theme-light"],
-.sw input#theme-dark:checked ~ label[for="theme-dark"] {{ background: var(--panel); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.12); }}
+.knob {{
+  position: absolute; left: 3px; top: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--panel);
+  box-shadow: 0 1px 3px rgba(0,0,0,.18); display: grid; place-items: center; color: var(--ink2);
+  transition: transform .3s cubic-bezier(.2,.8,.25,1);
+}}
+.sw input:checked + label .knob {{ transform: translateX(20px); }}
+.ico {{ position: absolute; transition: opacity .2s ease, transform .3s cubic-bezier(.2,.8,.25,1); }}
+.ico-moon {{ opacity: 0; transform: rotate(-45deg) scale(.6); }}
+.sw input:checked + label .ico-sun {{ opacity: 0; transform: rotate(45deg) scale(.6); }}
+.sw input:checked + label .ico-moon {{ opacity: 1; transform: none; }}
 main {{ padding-top: 32px; padding-bottom: 56px; }}
 section {{ padding: 44px 0; border-top: 1px solid var(--line); }}
 section:first-child {{ padding-top: 0; border-top: none; }}
@@ -572,8 +579,8 @@ h2 .info {{ margin-left: 4px; }}
 .row:last-child {{ border-bottom: 1px solid var(--hair); }}
 .row-name {{ display: flex; align-items: center; gap: 10px; min-width: 0; }}
 .dot {{ width: 7px; height: 7px; border-radius: 50%; flex: none; }}
-/* Wrap rather than truncate -- the label is the data, not decoration.
-   Ellipsis-truncating a bucket name is exactly the kind of information
+/* Wrap rather than truncate. The label is the data, not decoration, and
+   ellipsis-truncating a bucket name is exactly the kind of information
    loss this whole report exists to avoid. */
 .rowname {{ font-size: 14.5px; overflow-wrap: break-word; }}
 .row-count {{ font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; color: var(--ink3); flex: none; }}
@@ -582,8 +589,9 @@ h2 .info {{ margin-left: 4px; }}
 .row-value {{ text-align: right; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; font-variant-numeric: tabular-nums; }}
 .rowgo {{ color: var(--ink3); font-size: 13px; text-align: right; }}
 /* Below ~560px the 4-column grid doesn't have room for a full label next
-   to a bar next to a dollar figure without truncating one of them --
-   stack name+value on top, the bar spanning full width beneath, instead. */
+   to a bar next to a dollar figure without truncating one of them, so
+   stack name+value on top instead, with the bar spanning full width
+   beneath. */
 @media (max-width: 560px) {{
   .row {{ grid-template-columns: 1fr auto; grid-template-areas: "name value" "bar bar"; row-gap: 10px; }}
   .row-name {{ grid-area: name; }}
@@ -714,18 +722,20 @@ _UNPRICED_SECTION_TEMPLATE = """
   <div class="rule-block">
     <p class="rule">{unpriced} event(s) carried no price, so no dollar figure in this report includes them. A repeat among them is invisible, not free.</p>
     <p class="action"><span class="action-label">Action</span> Set <code>cost_usd</code> on every span. Coverage under 80% makes totals indicative, not auditable.</p>
+    {samples}
   </div>
 </section>"""
 
 
 def _stat_cell(label: str, value: str, sub: str, *, bar_pct: float | None = None) -> str:
-    """`sub` is taken as already-safe HTML, not escaped here -- same
+    """`sub` is taken as already-safe HTML, not escaped here, same
     contract as `value`. A caller composing `sub` from more than one part
     (see the "Pairs evaluated" cell below) must escape each part itself
-    before joining; escaping the joined string here would double-escape
-    any literal entity already in it (e.g. "&middot;" -> "&amp;middot;",
-    which renders as the literal text "&middot;" instead of a middle dot --
-    a bug that shipped once already for exactly this reason).
+    before joining. Escaping the joined string here would double-escape
+    any literal entity already in it (e.g. "&middot;" becomes
+    "&amp;middot;", which renders as the literal text "&middot;" instead
+    of a middle dot, a bug that shipped once already for exactly this
+    reason).
     """
     bar = f'<div class="stat-bar"><span style="width:{bar_pct:.0f}%"></span></div>' if bar_pct is not None else ""
     return (
@@ -737,7 +747,7 @@ def _stat_cell(label: str, value: str, sub: str, *, bar_pct: float | None = None
 
 def to_html(result: AnalysisResult, *, max_reasons: int = 20) -> str:
     """Render a self-contained HTML page: no CDN assets, no webfonts, no JS.
-    Safe to open directly from disk or attach anywhere -- every value pulled
+    Safe to open directly from disk or attach anywhere. Every value pulled
     from the trace is HTML-escaped before being interpolated. The header,
     theme toggle, per-bucket tabs, and collapsible sections are all CSS-only
     interactivity; there is no <script> tag anywhere in the output.
@@ -776,10 +786,15 @@ def to_html(result: AnalysisResult, *, max_reasons: int = 20) -> str:
 
     unpriced_section = ""
     if result.coverage.unpriced_events:
+        unpriced_samples_html = _sample_cases_html(
+            result.coverage.unpriced_samples[:max_reasons],
+            label="Sample unpriced events to spot-check by hand",
+        )
         unpriced_section = _UNPRICED_SECTION_TEMPLATE.format(
             total=result.coverage.total_events,
             priced=result.coverage.priced_events,
             unpriced=result.coverage.unpriced_events,
+            samples=unpriced_samples_html,
         )
 
     return _HTML_TEMPLATE.format(

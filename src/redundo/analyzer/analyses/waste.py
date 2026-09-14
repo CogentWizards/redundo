@@ -45,19 +45,20 @@ _NEAR_DUPLICATE_LABEL = "Near duplicate"
 # it's prose describing that logic, not a separate source of truth.
 RULE_TEXT: dict[Verdict, str] = {
     Verdict.CONFIRMED_WASTE: (
-        "repeated call, unchanged result, no intervening write, task failed. "
-        "All four, confirmed -- drop any one and it's a guess, not a finding."
+        "The call repeated, the result didn't change, nothing wrote to state in "
+        "between, and the task still failed. All four have to be true. Drop any "
+        "one and this is a guess, not a finding."
     ),
     Verdict.LIKELY_LEGITIMATE: (
-        "a specific reason it's not waste: result changed (polling worked), "
+        "A specific reason it's not waste: the result changed (polling worked), "
         "a write intervened (verification), or the task succeeded and neither "
-        "the result nor the write status is already confirmed waste on its own"
+        "the result nor the write status already confirms waste on its own."
     ),
     Verdict.UNCLASSIFIED: (
-        "everything else -- a required signal (result, write status, or "
-        "outcome) was missing from the trace, or the call confirms waste on "
-        "its own and task-level success can't settle whether it mattered. "
-        "No verdict, on purpose"
+        "Everything else. A required signal (the result, the write status, or "
+        "the outcome) was missing from the trace, or the call already looks "
+        "wasteful on its own and the task's overall success can't settle "
+        "whether it actually mattered. No verdict here, and that's on purpose."
     ),
 }
 
@@ -65,9 +66,9 @@ RULE_TEXT: dict[Verdict, str] = {
 # bucket only claims similarity, at a threshold someone chose (see
 # near_duplicates.DEFAULT_SIMILARITY_THRESHOLD), never an outcome.
 NEAR_DUPLICATE_RULE_TEXT = (
-    "arguments are similar but not identical to an earlier call on the same "
-    "execution path (SimHash fingerprint comparison, not exact content_hash "
-    "equality) -- surfaced for manual review, not a waste/legitimate verdict. "
+    "Arguments are similar but not identical to an earlier call on the same "
+    "execution path (a SimHash fingerprint comparison, not exact content_hash "
+    "equality). Surfaced for manual review, not a waste or legitimate verdict. "
     "See docs/hashing.md for what a similarity fingerprint can and can't "
     "support."
 )
@@ -148,7 +149,7 @@ class WasteAnalysis(Analysis):
                     f"({repeat.event_type}/{repeat.name}): similar to step="
                     f"{pair.original.step_index} (Hamming distance "
                     f"{pair.hamming_distance}/64 bits, threshold "
-                    f"{self._near_duplicate_threshold}) -- similar, not identical; "
+                    f"{self._near_duplicate_threshold}): similar, not identical; "
                     "not a waste verdict"
                 )
 
@@ -177,7 +178,7 @@ class WasteAnalysis(Analysis):
                 "Most candidate pairs are unclassified. That means the trace is missing "
                 "signal (write flags, result correlation, or terminal outcome), not that "
                 "this tool is being conservative for its own sake. A large unclassified "
-                "bucket is the honest answer, not a defect -- see the project README."
+                "bucket is the honest answer, not a defect. See the project README."
             )
         else:
             footnote = (
@@ -233,10 +234,11 @@ class WasteAnalysis(Analysis):
         cost_text = f"${cost_without:,.4f}" if cost_without < 1 else f"${cost_without:,.2f}"
         coverage.extra_notes.append(
             f"{tasks_with_pairs}/{tasks_total} tasks ({pct:.0f}%) had at least one "
-            "repeated call for redundancy detection to examine. The rest -- "
-            f"{cost_text} of tracked spend, {events_without} event(s) -- had nothing "
-            "that repeated at all, so nothing appears for them in the buckets below. "
-            "That's not a gap in the data; every call in those tasks was simply unique."
+            "repeated call for redundancy detection to examine. The rest, "
+            f"{cost_text} of tracked spend across {events_without} event(s), had "
+            "nothing that repeated at all, so nothing appears for them in the "
+            "buckets below. That's not a gap in the data; every call in those "
+            "tasks was simply unique."
         )
 
     @staticmethod
@@ -257,7 +259,7 @@ class WasteAnalysis(Analysis):
         pct = (tasks_with_near_pairs / tasks_total * 100) if tasks_total else 0.0
         coverage.extra_notes.append(
             f"{tasks_with_near_pairs}/{tasks_total} tasks ({pct:.0f}%) also had at least "
-            f"one near-duplicate call ({len(near_pairs)} such pair(s) total) -- similar, "
+            f"one near-duplicate call ({len(near_pairs)} such pair(s) total): similar, "
             "not identical, arguments to an earlier call on the same execution path. A "
             "separate, lower-confidence signal from the exact-match note above; see the "
             "near_duplicate bucket below."

@@ -103,7 +103,7 @@ def test_html_shows_rule_text_next_to_each_bucket_not_just_the_count():
 
 def test_text_shows_rule_text_next_to_the_count():
     output = to_text(build(_confirmed_waste_events()))
-    assert f"1 confirmed_waste -- {RULE_TEXT[Verdict.CONFIRMED_WASTE]}" in output
+    assert f"1 confirmed_waste: {RULE_TEXT[Verdict.CONFIRMED_WASTE]}" in output
 
 
 def test_html_shows_coverage_line():
