@@ -5,12 +5,13 @@ from redundo.analyzer.schema import Event
 
 
 def make_event(step_index, event_type="tool_call", name="search", content_hash="h1",
-                outcome=None, cost_usd=None, model=None, workflow=None, task_id="t1"):
+                outcome=None, cost_usd=None, model=None, workflow=None, task_id="t1",
+                metadata=None):
     return Event(
         task_id=task_id, step_index=step_index, event_type=event_type, name=name,
         content_hash=content_hash, tokens_in=None, tokens_out=None, outcome=outcome,
         timestamp=None, cost_usd=cost_usd, model=model, parent_id=None, workflow=workflow,
-        metadata={},
+        metadata=metadata or {},
     )
 
 
@@ -51,6 +52,26 @@ def test_html_contains_all_four_bucket_labels():
     assert "Likely legitimate" in page
     assert "Unclassified" in page
     assert "Near duplicate" in page
+
+
+def test_html_shows_sample_cases_for_the_near_duplicate_bucket_too():
+    # Sample cases aren't special-cased per bucket in report.py -- every
+    # bucket's own result.reasons get the same collapsible treatment. This
+    # pins that near_duplicate specifically (not just the three exact-match
+    # verdicts) actually gets it, since it's easy to eyeball a demo trace
+    # with zero near-duplicates and assume the section is missing rather
+    # than just empty.
+    zero_fp = "0" * 16
+    close_fp = "f" * 2 + "0" * 14  # Hamming distance 8, within default threshold
+    events = [
+        make_event(0, task_id="t2", content_hash="a", cost_usd=0.03, model="gpt-5.6",
+                   metadata={"similarity_fingerprint": zero_fp}),
+        make_event(1, task_id="t2", content_hash="b", cost_usd=0.04, model="gpt-5.6",
+                   metadata={"similarity_fingerprint": close_fp}),
+    ]
+    page = to_html(build(events))
+    assert "Sample cases to spot-check by hand (1)" in page
+    assert "Hamming distance 8/64 bits" in page
 
 
 def test_fourth_bucket_gets_its_own_palette_color_not_a_wraparound():

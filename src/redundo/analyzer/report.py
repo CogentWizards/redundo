@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
+from pathlib import Path
 from urllib.parse import quote
 
 from .analysis import AnalysisResult, Bucket
@@ -234,7 +236,52 @@ _LOGO_BASE64 = (
 )
 
 
+def _source_checkout_version(start: Path | None = None) -> str | None:
+    """If this file is running from a source checkout (an editable
+    install, `uv run` inside the repo, etc.), read the version straight
+    out of its pyproject.toml instead of trusting installed package
+    metadata. Package metadata is only refreshed on the next
+    reinstall/sync, so it can drift from a locally-edited version field
+    (confirmed: `uv run --no-sync` after bumping pyproject.toml's version
+    by hand still reports the old one via importlib.metadata). Plain
+    `uv run` auto-syncs and doesn't hit this, but a pip editable install,
+    a frozen/offline environment, or any workflow that skips the sync
+    step can. Returns None (fall back to installed metadata) when no
+    pyproject.toml is found nearby, or when one is found but isn't
+    redundo's own. For example, this package installed as a dependency inside
+    some other project's tree, where an ancestor directory's
+    pyproject.toml belongs to that other project, not this one.
+
+    No TOML parser: adapt/analyze proper have zero dependencies (see
+    README), a real constraint this shouldn't spend on a cosmetic version
+    string. This only ever needs one well-known field out of a file this
+    project fully controls the shape of.
+
+    `start` defaults to this file's own location; a test passes a fake
+    path to exercise the lookup without needing a real second checkout.
+    """
+    here = (start or Path(__file__)).resolve()
+    for parent in list(here.parents)[:8]:
+        candidate = parent / "pyproject.toml"
+        if not candidate.is_file():
+            continue
+        try:
+            text = candidate.read_text()
+        except OSError:
+            return None
+        name_match = re.search(r'(?m)^name\s*=\s*"([^"]+)"', text)
+        if not name_match or name_match.group(1) != "redundo":
+            return None  # a real pyproject.toml, just not this project's
+        version_match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
+        return version_match.group(1) if version_match else None
+    return None
+
+
 def _redundo_version() -> str:
+    return _source_checkout_version() or _installed_version()
+
+
+def _installed_version() -> str:
     try:
         return _pkg_version("redundo")
     except PackageNotFoundError:
