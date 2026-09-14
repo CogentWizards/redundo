@@ -76,6 +76,13 @@ class CoverageStats:
     events_degraded_task_id: int = 0
 
     extra_notes: list[str] = field(default_factory=list)
+    # A handful of the actual unpriced events, formatted the same way a
+    # bucket's own sample reasons are ("task=... step=... (type/name)"),
+    # so a reader can go spot-check specific rows instead of just trusting
+    # the count. Capped at collection time (see max_samples on
+    # compute_generic_coverage), the same reason WasteAnalysis caps its
+    # own reasons lists rather than keeping every one for a large corpus.
+    unpriced_samples: list[str] = field(default_factory=list)
 
     @property
     def pricing_coverage_fraction(self) -> float:
@@ -92,7 +99,7 @@ class CoverageStats:
         return self.events_confident_task_id / self.events_with_task_id_source_reported
 
 
-def compute_generic_coverage(events: list[Event]) -> CoverageStats:
+def compute_generic_coverage(events: list[Event], *, max_samples: int = 20) -> CoverageStats:
     """The two dimensions every analysis can speak to, regardless of what
     that analysis actually looks for. `events` is the full loaded corpus,
     not just the ones a specific analysis found interesting -- coverage is
@@ -108,6 +115,11 @@ def compute_generic_coverage(events: list[Event]) -> CoverageStats:
             coverage.total_priced_cost_usd += event.cost_usd
         else:
             coverage.unpriced_events += 1
+            if len(coverage.unpriced_samples) < max_samples:
+                coverage.unpriced_samples.append(
+                    f"task={event.task_id} step={event.step_index} "
+                    f"({event.event_type}/{event.name}): no cost_usd recorded"
+                )
 
         source = event.metadata.get("task_id_source") if isinstance(event.metadata, dict) else None
         if source == "conversation_id":

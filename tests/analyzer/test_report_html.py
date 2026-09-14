@@ -5,12 +5,13 @@ from redundo.analyzer.schema import Event
 
 
 def make_event(step_index, event_type="tool_call", name="search", content_hash="h1",
-                outcome=None, cost_usd=None, model=None, workflow=None, task_id="t1"):
+                outcome=None, cost_usd=None, model=None, workflow=None, task_id="t1",
+                metadata=None):
     return Event(
         task_id=task_id, step_index=step_index, event_type=event_type, name=name,
         content_hash=content_hash, tokens_in=None, tokens_out=None, outcome=outcome,
         timestamp=None, cost_usd=cost_usd, model=model, parent_id=None, workflow=workflow,
-        metadata={},
+        metadata=metadata or {},
     )
 
 
@@ -19,6 +20,11 @@ def build(events):
 
 
 def test_html_is_self_contained_no_external_resources():
+    # "Self-contained" means no network request happens on open: no fetched
+    # image/script/stylesheet. It does not mean no hyperlink at all -- the
+    # footer links to GitHub, which is just a clickable <a>, not a resource
+    # the page loads. Distinguish the two explicitly rather than asserting
+    # no "https://" appears anywhere, which would also reject those links.
     events = [
         make_event(0, event_type="tool_call"),
         make_event(1, event_type="tool_result", content_hash="same"),
@@ -27,10 +33,11 @@ def test_html_is_self_contained_no_external_resources():
     ]
     page = to_html(build(events))
     assert "<!doctype html>" in page.lower()
-    assert "http://" not in page
-    assert "https://" not in page
     assert "cdn" not in page.lower()
     assert "<script" not in page.lower()
+    assert 'src="http' not in page  # no fetched image/script
+    assert "stylesheet" not in page.lower()  # no external CSS
+    assert '<img src="data:image/png;base64,' in page  # the header logo is embedded, not fetched
 
 
 def test_html_contains_all_four_bucket_labels():
@@ -45,6 +52,26 @@ def test_html_contains_all_four_bucket_labels():
     assert "Likely legitimate" in page
     assert "Unclassified" in page
     assert "Near duplicate" in page
+
+
+def test_html_shows_sample_cases_for_the_near_duplicate_bucket_too():
+    # Sample cases aren't special-cased per bucket in report.py -- every
+    # bucket's own result.reasons get the same collapsible treatment. This
+    # pins that near_duplicate specifically (not just the three exact-match
+    # verdicts) actually gets it, since it's easy to eyeball a demo trace
+    # with zero near-duplicates and assume the section is missing rather
+    # than just empty.
+    zero_fp = "0" * 16
+    close_fp = "f" * 2 + "0" * 14  # Hamming distance 8, within default threshold
+    events = [
+        make_event(0, task_id="t2", content_hash="a", cost_usd=0.03, model="gpt-5.6",
+                   metadata={"similarity_fingerprint": zero_fp}),
+        make_event(1, task_id="t2", content_hash="b", cost_usd=0.04, model="gpt-5.6",
+                   metadata={"similarity_fingerprint": close_fp}),
+    ]
+    page = to_html(build(events))
+    assert "Sample cases to spot-check by hand (1)" in page
+    assert "Hamming distance 8/64 bits" in page
 
 
 def test_fourth_bucket_gets_its_own_palette_color_not_a_wraparound():
@@ -71,7 +98,7 @@ def test_html_escapes_untrusted_trace_content():
 
 def test_html_renders_with_no_candidate_pairs():
     page = to_html(build([make_event(0)]))
-    assert "0 candidate redundant-repeat pair" in page
+    assert "No repeated calls found." in page
 
 
 def _confirmed_waste_events():
@@ -97,15 +124,19 @@ def test_html_shows_rule_text_next_to_each_bucket_not_just_the_count():
 
 def test_text_shows_rule_text_next_to_the_count():
     output = to_text(build(_confirmed_waste_events()))
-    assert f"1 confirmed_waste -- {RULE_TEXT[Verdict.CONFIRMED_WASTE]}" in output
+    assert f"1 confirmed_waste: {RULE_TEXT[Verdict.CONFIRMED_WASTE]}" in output
 
 
 def test_html_shows_coverage_line():
     page = to_html(build(_confirmed_waste_events()))
-    assert "Coverage" in page
+    assert "Trace coverage" in page
     # 2 of 4 events are priced ($1.00 each) -- the reader needs this number
     # before trusting any dollar figure below it.
-    assert "2/4 events priced" in page
+    assert "2 of 4 events carried a price" in page
+    # A bare "$" is ambiguous outside the US; this report never converts
+    # currency (see report.py's own module docstring for why), so it says
+    # explicitly, once, that every figure is USD instead of leaving it implicit.
+    assert "All amounts are USD" in page
 
 
 def test_text_shows_coverage_line():
