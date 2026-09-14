@@ -227,7 +227,7 @@ exporter to speak of and nothing for `redundo collect` to receive. Point
 ## Recommended setup
 
 ```bash
-openclaw plugins install openclaw-localtrace
+openclaw plugins install clawhub:@cogentwizards/openclaw-localtrace
 openclaw plugins enable openclaw-localtrace
 openclaw config set plugins.entries.openclaw-localtrace.config.enabled true
 openclaw config set plugins.entries.openclaw-localtrace.config.captureIdentifiers true
