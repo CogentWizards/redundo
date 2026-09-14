@@ -77,7 +77,7 @@ def test_html_escapes_untrusted_trace_content():
 
 def test_html_renders_with_no_candidate_pairs():
     page = to_html(build([make_event(0)]))
-    assert "0 candidate redundant-repeat pair" in page
+    assert "No repeated calls found." in page
 
 
 def _confirmed_waste_events():
@@ -108,10 +108,14 @@ def test_text_shows_rule_text_next_to_the_count():
 
 def test_html_shows_coverage_line():
     page = to_html(build(_confirmed_waste_events()))
-    assert "Coverage" in page
+    assert "Trace coverage" in page
     # 2 of 4 events are priced ($1.00 each) -- the reader needs this number
     # before trusting any dollar figure below it.
-    assert "2/4 events priced" in page
+    assert "2 of 4 events carried a price" in page
+    # A bare "$" is ambiguous outside the US; this report never converts
+    # currency (see report.py's own module docstring for why), so it says
+    # explicitly, once, that every figure is USD instead of leaving it implicit.
+    assert "All amounts are USD" in page
 
 
 def test_text_shows_coverage_line():

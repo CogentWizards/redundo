@@ -35,6 +35,13 @@ class Bucket:
     label: str
     rule_text: str
     slice: Slice
+    # A short, prescriptive "what to do about this" line -- optional, and
+    # deliberately NOT required: it's specific advice about what a bucket
+    # *means*, which only the analysis that defines the bucket can write.
+    # Renderers must treat an absent action_text as "nothing to show", not
+    # a gap to fill in -- that's what keeps report.py generic over any
+    # analysis, not just the one that happens to set this.
+    action_text: str | None = None
 
 
 @dataclass

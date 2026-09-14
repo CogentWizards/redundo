@@ -72,6 +72,16 @@ NEAR_DUPLICATE_RULE_TEXT = (
     "support."
 )
 
+# One short, prescriptive line per bucket -- optional on Bucket itself (see
+# analysis.py), populated here because only this analysis knows what its
+# own buckets mean well enough to recommend anything.
+ACTION_TEXT: dict[Verdict, str] = {
+    Verdict.CONFIRMED_WASTE: "Cache the result or guard the retry. This spend bought nothing.",
+    Verdict.LIKELY_LEGITIMATE: "Leave these alone. Cache them and you'll break polling and verification.",
+    Verdict.UNCLASSIFIED: "Emit result hashes and task outcome, then re-run to get a verdict.",
+}
+NEAR_DUPLICATE_ACTION_TEXT = "Nothing to do. When these appear, read them by hand."
+
 _ORDER = (Verdict.CONFIRMED_WASTE, Verdict.LIKELY_LEGITIMATE, Verdict.UNCLASSIFIED)
 _LABELS = {
     Verdict.CONFIRMED_WASTE: "Confirmed waste",
@@ -143,7 +153,10 @@ class WasteAnalysis(Analysis):
                 )
 
         buckets = [
-            Bucket(key=v.value, label=_LABELS[v], rule_text=RULE_TEXT[v], slice=slices[v])
+            Bucket(
+                key=v.value, label=_LABELS[v], rule_text=RULE_TEXT[v], slice=slices[v],
+                action_text=ACTION_TEXT[v],
+            )
             for v in _ORDER
         ]
         buckets.append(
@@ -152,6 +165,7 @@ class WasteAnalysis(Analysis):
                 label=_NEAR_DUPLICATE_LABEL,
                 rule_text=NEAR_DUPLICATE_RULE_TEXT,
                 slice=near_dup_slice,
+                action_text=NEAR_DUPLICATE_ACTION_TEXT,
             )
         )
 
