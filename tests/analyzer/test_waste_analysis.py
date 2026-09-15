@@ -4,7 +4,7 @@ from redundo.analyzer.schema import Event
 
 def make_event(step_index, event_type="tool_call", name="search", content_hash="h1",
                 outcome=None, cost_usd=None, tokens_in=None, tokens_out=None,
-                model=None, workflow=None, task_id="t1", metadata=None):
+                model=None, workflow=None, task_id="t1", metadata=None, timestamp=None):
     return Event(
         task_id=task_id,
         step_index=step_index,
@@ -14,7 +14,7 @@ def make_event(step_index, event_type="tool_call", name="search", content_hash="
         tokens_in=tokens_in,
         tokens_out=tokens_out,
         outcome=outcome,
-        timestamp=None,
+        timestamp=timestamp,
         cost_usd=cost_usd,
         model=model,
         parent_id=None,
@@ -103,6 +103,7 @@ def test_result_as_dict_is_json_serializable_shape():
     assert d["total_candidates"] == 1
     assert set(d["by_bucket"].keys()) == {
         "confirmed_waste", "likely_legitimate", "unclassified", "near_duplicate",
+        "cross_task_redundancy", "recurring_pattern",
     }
     assert d["by_bucket"]["confirmed_waste"]["count"] == 1
 
@@ -237,3 +238,85 @@ def test_near_duplicate_threshold_is_configurable():
     lenient_result = WasteAnalysis(near_duplicate_threshold=20).run(events)
     assert bucket(strict_result, "near_duplicate").slice.count == 0
     assert bucket(lenient_result, "near_duplicate").slice.count == 1
+
+
+# --- cross_task_redundancy / recurring_pattern ---------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+_T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _t(minutes):
+    return _T0 + timedelta(minutes=minutes)
+
+
+def test_linked_tasks_land_in_cross_task_redundancy():
+    events = [
+        make_event(0, task_id="parent", timestamp=_t(0)),
+        make_event(
+            0, task_id="child", timestamp=_t(10),
+            metadata={"parent_task_id": "parent"},
+        ),
+    ]
+    result = run(events)
+    assert bucket(result, "cross_task_redundancy").slice.count == 1
+    assert bucket(result, "recurring_pattern").slice.count == 0
+
+
+def test_unrelated_tasks_land_in_recurring_pattern_not_cross_task_redundancy():
+    events = [
+        make_event(0, task_id="t1", timestamp=_t(0)),
+        make_event(0, task_id="t2", timestamp=_t(10)),
+    ]
+    result = run(events)
+    assert bucket(result, "recurring_pattern").slice.count == 1
+    assert bucket(result, "cross_task_redundancy").slice.count == 0
+
+
+def test_cross_task_pairs_never_double_count_same_task_repeats():
+    # A same-task exact repeat must stay in confirmed_waste/etc., never
+    # also show up in the two cross-task buckets.
+    events = [
+        make_event(0, event_type="tool_call", cost_usd=0.01, timestamp=_t(0)),
+        make_event(1, event_type="tool_result", content_hash="same", timestamp=_t(1)),
+        make_event(
+            2, event_type="tool_call", cost_usd=0.02, outcome="error", timestamp=_t(2)
+        ),
+        make_event(
+            3, event_type="tool_result", content_hash="same", outcome="error", timestamp=_t(3)
+        ),
+    ]
+    result = run(events)
+    assert bucket(result, "confirmed_waste").slice.count >= 1
+    assert bucket(result, "cross_task_redundancy").slice.count == 0
+    assert bucket(result, "recurring_pattern").slice.count == 0
+
+
+def test_total_candidates_includes_cross_task_pairs():
+    events = [
+        make_event(0, task_id="t1", timestamp=_t(0)),
+        make_event(0, task_id="t2", timestamp=_t(10)),
+    ]
+    result = run(events)
+    assert result.total_candidates == 1
+
+
+def test_cross_task_coverage_notes_are_separate_and_silent_when_absent():
+    linked = [
+        make_event(0, task_id="parent", timestamp=_t(0)),
+        make_event(0, task_id="child", timestamp=_t(10), metadata={"parent_task_id": "parent"}),
+    ]
+    result = run(linked)
+    notes = result.coverage.extra_notes
+    assert any("same real workflow" in n for n in notes)
+    assert not any("no confirmed relationship" in n for n in notes)
+
+    unrelated = [
+        make_event(0, task_id="t1", timestamp=_t(0)),
+        make_event(0, task_id="t2", timestamp=_t(10)),
+    ]
+    result2 = run(unrelated)
+    notes2 = result2.coverage.extra_notes
+    assert any("no confirmed relationship" in n for n in notes2)
+    assert not any("same real workflow" in n for n in notes2)

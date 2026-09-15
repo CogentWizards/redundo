@@ -55,16 +55,27 @@ delegated from, set only when the source itself reports a real
 delegation relationship, never inferred from timing, content, or
 anything else.
 
-Confirmed real and read today for one source: `hermes-otel` emits
-`hermes.subagent.parent_session_id` on every subagent span. No other
-source currently exposes an equivalent (checked directly: OpenClaw's own
-internal session state tracks a comparable `parentSessionKey`, but it
-isn't on any hook payload a plugin can read today; Claude Code's
-in-process subagent delegation is already real span nesting under the
-parent `Task` call, so it needs no separate link at all).
+`redundo.analyzer.task_graph.build_task_graph` reads this key to build a
+task-level graph across the whole corpus (union-find over the
+`parent_task_id` edges), and `WasteAnalysis` uses it to tell two
+otherwise-identical findings apart: a same-or-similar call across a
+*confirmed* task boundary lands in the `cross_task_redundancy` bucket, a
+same-or-similar call across tasks with no confirmed relationship lands
+in `recurring_pattern` instead, a frequency observation, never a waste
+claim. See `cross_task_candidates.py`'s own module docstring for how
+that search works without ever re-litigating a same-task decision
+`cycles.py`/`near_duplicates.py` already made.
 
-Nothing in the analyzer consumes this key yet, it's an adapter-level,
-schema-documented signal only for now.
+Per-source status, checked directly against each product's own source,
+not assumed from docs:
+
+| Source | Status |
+|---|---|
+| Hermes | done: `hermes-otel` emits `hermes.subagent.parent_session_id` on every subagent span, read today |
+| OpenClaw | blocked upstream: its own internal session state tracks a comparable `parentSessionKey`, but it isn't on any hook payload a plugin can read today |
+| Claude Code / Claude Agent SDK | in-process subagent delegation is already real span nesting under the parent `Task` call, no separate link needed at all; separate CLI processes per agent have no known signal |
+| OpenAI Agents SDK | in-trace handoffs already work via the existing OpenInference translator's own span reparenting, no link needed; cross-trace linking (`group_id`, the SDK's own mechanism) is dropped by that same translator today, an upstream fix, not this adapter's to make |
+| Google ADK | subagent delegation via `AgentTool` explicitly reuses the parent's own session id (confirmed in `openinference-instrumentation-google-adk`'s source), so it needs no separate link type at all |
 
 ## Span kind -> event_type
 
