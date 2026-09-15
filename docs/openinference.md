@@ -95,17 +95,28 @@ and `--summary` reports the active pricing table's age unconditionally,
 escalating past 30 days old, the same "staleness is shown, not hidden"
 discipline as everywhere else in this project.
 
-**Known gap, found against a real capture, not assumed**: this estimate
-only fires when a single span carries both `input.value` (or
-`output.value`) and the `gen_ai.usage.*` token attributes together. At
-least one real exporter (`hermes-otel`, feeding Hermes) splits these
-across two separate spans instead, an outer `LLM`-kind span carrying
-content with no token counts, and its own child `LLM`-kind span carrying
-token counts with no content. Neither span alone has enough to price
-correctly, and this adapter does not currently merge sibling/child spans
-to reunite them (unlike `sources/openclaw_localtrace.py`, which has to do
-exactly this for a structurally similar split, see its own docs). Until
-that merge is built, a source with this split gets no cost estimate at
-all, correctly falling back to no data rather than a wrong one, but it
-does mean the feature won't yet show real numbers for every OpenInference
-exporter shaped this way.
+## Content and token counts split across two spans (hermes-otel)
+
+Found against a real capture, not assumed: at least one real exporter
+(`hermes-otel`, feeding Hermes) doesn't put `input.value` and
+`gen_ai.usage.*` on the same span. It emits an outer `LLM`-kind span
+carrying full content with no token counts, and its own direct child
+`LLM`-kind span carrying token counts with no content. Neither span
+alone has enough to price correctly.
+
+`_find_llm_token_donor_child` reunites them: when a kept `LLM` span has
+content but no token counts of its own, it looks for a direct child span
+that is itself `LLM`-kind, has no content, and does carry token counts
+(including cache-read/cache-write), and borrows those onto the parent's
+record. `ConversionSummary.merged_token_child_spans` counts how often
+this happened, surfaced in `--summary`.
+
+This is a real OTLP parent/child relationship here (confirmed via
+`parentSpanId` against a live capture), not two siblings that only
+overlap in time, so a direct child lookup is enough. That's simpler than
+`sources/openclaw_localtrace.py`'s structurally similar split
+(`model.call`/`llm.call`), which needs a temporal-overlap heuristic
+because those two spans are true siblings that bracket rather than
+nest. A source where one span already carries both content and tokens is
+untouched by this: the donor lookup only fires when the parent's own
+token attributes are absent.

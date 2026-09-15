@@ -144,13 +144,13 @@ If a trace's spans never carry it, grouping falls back to the trace ID and
 that fallback is reported, not silently assumed.
 
 `cost_usd` is estimated from real token counts against a bundled pricing
-table when a source provides both content and token counts on the same
-span, see [docs/openinference.md](docs/openinference.md) for how. Not yet
-for Hermes specifically, though: `hermes-otel` splits a call's content and
-its token counts across two separate spans, and this adapter doesn't
-merge them yet, so `cost_usd` stays `None` for this source until that's
-built. Any other OpenInference-compatible library that puts both on one
-span already gets a real estimate today.
+table, matched to a recognized model, never a guessed one for an
+unrecognized one. `hermes-otel` splits a call's content and its token
+counts across two separate spans rather than one; this adapter merges
+them back together via the real parent/child relationship between the
+two, verified end to end against a real capture. See
+[docs/openinference.md](docs/openinference.md) for exactly how both the
+pricing estimate and the span merge work.
 
 ### Claude CLI
 
