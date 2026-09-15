@@ -42,6 +42,21 @@ META_SYNTHESIZED_COST_ONLY_KEY = "synthesized_cost_only"
 # hermes.subagent.parent_session_id). Absent means "this source doesn't
 # expose one," not "there is no such relationship."
 META_PARENT_TASK_ID_KEY = "parent_task_id"
+# str: "continuation" or "delegation", which kind of relationship
+# metadata.parent_task_id represents. "continuation" means this task is
+# a later chapter of the SAME logical thread of work (a session resumed
+# or rolled over, e.g. OpenClaw's own internal previousSessionId, not
+# yet exposed by any source today). "delegation" means this task was
+# spawned BY the parent as a distinct sub-agent, not a continuation of
+# it (e.g. hermes-otel's hermes.subagent.parent_session_id, the only
+# real parent_task_id source populates today). Absent means the source
+# hasn't said; treated as "not continuation" everywhere that distinction
+# matters (see context_drift.py), never guessed either way. The two
+# relationships need different treatment: walking a delegation edge and
+# calling the distance "drift" would compare an orchestrator to a
+# subagent it spawned, which was never one continuous thread to begin
+# with.
+META_PARENT_TASK_LINK_KIND_KEY = "parent_task_link_kind"
 
 
 class SchemaError(ValueError):

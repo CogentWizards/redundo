@@ -2,10 +2,12 @@ from redundo.analyzer.schema import Event
 from redundo.analyzer.task_graph import build_task_graph, same_component
 
 
-def make_event(task_id, step_index=0, parent_task_id=None):
+def make_event(task_id, step_index=0, parent_task_id=None, link_kind=None):
     metadata = {}
     if parent_task_id is not None:
         metadata["parent_task_id"] = parent_task_id
+    if link_kind is not None:
+        metadata["parent_task_link_kind"] = link_kind
     return Event(
         task_id=task_id, step_index=step_index, event_type="tool_call", name="x",
         content_hash="h", tokens_in=None, tokens_out=None, outcome=None,
@@ -69,3 +71,48 @@ def test_unrelated_task_never_mentioned_is_never_considered_same_component():
     events = [make_event("t1"), make_event("t2", parent_task_id="t1")]
     graph = build_task_graph(events)
     assert not same_component(graph, "t2", "t3")
+
+
+# --- continuation_parent_of: a strict subset of parent_of -----------------
+
+def test_delegation_link_never_appears_in_continuation_parent_of():
+    events = [
+        make_event("parent"),
+        make_event("child", parent_task_id="parent", link_kind="delegation"),
+    ]
+    graph = build_task_graph(events)
+    assert graph.parent_of["child"] == "parent"  # still a real, related edge
+    assert graph.continuation_parent_of.get("child") is None
+
+
+def test_unmarked_link_never_appears_in_continuation_parent_of():
+    # No link_kind at all -- e.g. hermes-otel's real parent_task_id today,
+    # which never sets one. Absence must not be treated as continuation.
+    events = [
+        make_event("parent"),
+        make_event("child", parent_task_id="parent"),
+    ]
+    graph = build_task_graph(events)
+    assert graph.parent_of["child"] == "parent"
+    assert graph.continuation_parent_of.get("child") is None
+
+
+def test_continuation_link_appears_in_both_parent_of_and_continuation_parent_of():
+    events = [
+        make_event("session-1"),
+        make_event("session-2", parent_task_id="session-1", link_kind="continuation"),
+    ]
+    graph = build_task_graph(events)
+    assert graph.parent_of["session-2"] == "session-1"
+    assert graph.continuation_parent_of["session-2"] == "session-1"
+
+
+def test_continuation_chain_of_three():
+    events = [
+        make_event("session-1"),
+        make_event("session-2", parent_task_id="session-1", link_kind="continuation"),
+        make_event("session-3", parent_task_id="session-2", link_kind="continuation"),
+    ]
+    graph = build_task_graph(events)
+    assert graph.continuation_parent_of["session-2"] == "session-1"
+    assert graph.continuation_parent_of["session-3"] == "session-2"
