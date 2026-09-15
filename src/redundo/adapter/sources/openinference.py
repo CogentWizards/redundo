@@ -5,10 +5,13 @@ on the analyzer).
 Three rules that aren't obvious from the code and are easy to silently
 violate while extending this:
 
-1. task_id: gen_ai.conversation.id when a trace's spans agree on one
-   value, otherwise the trace ID. Never anything else. A synthesized
-   grouping key produces confidently wrong repeat counts instead of a
-   visible gap -- see docs/openinference.md.
+1. task_id: gen_ai.conversation.id (or session.id, the same concept
+   under OpenInference's own separate attribute name, confirmed real
+   for Google ADK, which sets it directly to its own session id, never
+   both disagreeing on purpose) when a trace's spans agree on one value,
+   otherwise the trace ID. Never anything else. A synthesized grouping
+   key produces confidently wrong repeat counts instead of a visible gap
+   -- see docs/openinference.md.
 2. Only openinference.span.kind == LLM or TOOL become Events. Every other
    kind (CHAIN, AGENT, RETRIEVER, ...) doesn't map cleanly onto
    llm_call/tool_call/tool_result and is skipped, counted, and reported --
@@ -34,7 +37,17 @@ SUPPORTED_KINDS = frozenset({"LLM", "TOOL"})
 _WORKFLOW_KINDS = frozenset({"AGENT", "CHAIN"})
 
 _KIND_ATTR = "openinference.span.kind"
-_CONVERSATION_ID_ATTR = "gen_ai.conversation.id"
+# gen_ai.conversation.id is the primary attribute; session.id is
+# OpenInference's own separate convention for the identical concept,
+# confirmed real for Google ADK (openinference-instrumentation-google-adk
+# maps ADK's own session id onto session.id, never onto
+# gen_ai.conversation.id at all), not a guessed synonym.
+_CONVERSATION_ID_ATTRS = ("gen_ai.conversation.id", "session.id")
+# A real, source-confirmed link to another task this one was delegated
+# from, never inferred from timing or content similarity. Confirmed
+# real and already on the wire for hermes-otel's subagent spans; absent
+# for every other source until one exposes an equivalent.
+_PARENT_TASK_ID_ATTRS = ("hermes.subagent.parent_session_id",)
 _INPUT_ATTR = "input.value"
 _OUTPUT_ATTR = "output.value"
 _INPUT_MIME_ATTR = "input.mime_type"
@@ -292,13 +305,17 @@ def convert_openinference(
 
 def _resolve_task_id(trace_id: str, trace_spans: list[Span]) -> tuple[str, bool, bool]:
     """(task_id, used_conversation_id, ambiguous). Scans every span in the
-    trace for gen_ai.conversation.id -- OTel context propagation means it's
-    common for only the root span, or only some spans, to carry it.
+    trace for gen_ai.conversation.id or session.id. OTel context
+    propagation means it's common for only the root span, or only some
+    spans, to carry it. A span carrying both is not expected in practice
+    (they're the same source's own choice of one attribute name, not two
+    independent signals that could disagree); _first_present takes
+    gen_ai.conversation.id first if it somehow did.
     """
     values = {
-        span.attributes[_CONVERSATION_ID_ATTR]
+        _first_present(span.attributes, _CONVERSATION_ID_ATTRS)
         for span in trace_spans
-        if span.attributes.get(_CONVERSATION_ID_ATTR)
+        if _first_present(span.attributes, _CONVERSATION_ID_ATTRS) is not None
     }
     if len(values) == 1:
         return next(iter(values)), True, False
@@ -404,7 +421,7 @@ def _iso_timestamp(unix_nano: int) -> str:
 
 
 def _base_metadata(span: Span, masked_spans: int, used_conversation_id: bool) -> dict[str, Any]:
-    return {
+    metadata = {
         "hash_spec": hashing.HASH_SPEC,
         "masked_spans": masked_spans,
         "otlp_span_id": span.span_id,
@@ -416,6 +433,14 @@ def _base_metadata(span: Span, masked_spans: int, used_conversation_id: bool) ->
         # grouping before reading percentages off it.
         "task_id_source": "conversation_id" if used_conversation_id else "trace_id_fallback",
     }
+    # A real, source-confirmed reference to another task this one was
+    # delegated from, see _PARENT_TASK_ID_ATTRS. Absent for every
+    # source that doesn't expose one; never guessed from timing or
+    # content, only ever a value the source itself reported.
+    parent_task_id = _first_present(span.attributes, _PARENT_TASK_ID_ATTRS)
+    if parent_task_id is not None:
+        metadata["parent_task_id"] = parent_task_id
+    return metadata
 
 
 def _find_llm_token_donor_child(

@@ -75,6 +75,79 @@ def test_never_synthesizes_a_task_id():
     assert records[0]["task_id"] == "exact-trace-id-value"
 
 
+def test_session_id_used_as_a_conversation_id_fallback():
+    # Real for Google ADK: openinference-instrumentation-google-adk maps
+    # ADK's own session id onto session.id, never gen_ai.conversation.id.
+    spans = [
+        span("s1", trace_id="trace-1", start=0,
+             attributes={"openinference.span.kind": "LLM", "input.value": "hi",
+                         "session.id": "adk-session-1"}),
+    ]
+    records, summary = convert(traces_document(spans))
+    assert records[0]["task_id"] == "adk-session-1"
+    assert summary.traces_with_conversation_id == 1
+
+
+def test_conversation_id_preferred_over_session_id_when_both_present():
+    spans = [
+        span("s1", trace_id="trace-1", start=0,
+             attributes={"openinference.span.kind": "LLM", "input.value": "hi",
+                         "gen_ai.conversation.id": "conv-1", "session.id": "sess-1"}),
+    ]
+    records, _ = convert(traces_document(spans))
+    assert records[0]["task_id"] == "conv-1"
+
+
+def test_conflicting_session_id_and_conversation_id_across_spans_falls_back():
+    spans = [
+        span("s1", trace_id="trace-1", start=0,
+             attributes={"openinference.span.kind": "LLM", "input.value": "hi",
+                         "gen_ai.conversation.id": "conv-1"}),
+        span("s2", trace_id="trace-1", start=1,
+             attributes={"openinference.span.kind": "LLM", "input.value": "bye",
+                         "session.id": "sess-2"}),
+    ]
+    records, summary = convert(traces_document(spans))
+    assert all(r["task_id"] == "trace-1" for r in records)
+    assert summary.traces_ambiguous_conversation_id == 1
+
+
+# --- parent_task_id (real cross-task delegation link) ---------------------
+
+def test_parent_task_id_read_from_hermes_subagent_attribute():
+    spans = [
+        span("s1", start=0, attributes={
+            "openinference.span.kind": "LLM", "input.value": "hi",
+            "hermes.subagent.parent_session_id": "parent-session-1",
+        }),
+    ]
+    records, _ = convert(traces_document(spans))
+    assert records[0]["metadata"]["parent_task_id"] == "parent-session-1"
+
+
+def test_parent_task_id_absent_when_source_never_reports_one():
+    spans = [
+        span("s1", start=0, attributes={
+            "openinference.span.kind": "LLM", "input.value": "hi",
+        }),
+    ]
+    records, _ = convert(traces_document(spans))
+    assert "parent_task_id" not in records[0]["metadata"]
+
+
+def test_parent_task_id_also_carried_on_tool_call_and_result():
+    spans = [
+        span("s1", start=0, attributes={
+            "openinference.span.kind": "TOOL", "tool.name": "search",
+            "input.value": "{}", "output.value": "{}",
+            "hermes.subagent.parent_session_id": "parent-session-1",
+        }),
+    ]
+    records, _ = convert(traces_document(spans))
+    assert records[0]["metadata"]["parent_task_id"] == "parent-session-1"
+    assert records[1]["metadata"]["parent_task_id"] == "parent-session-1"
+
+
 # --- span kind mapping ---------------------------------------------------
 
 def test_llm_kind_produces_one_record():
