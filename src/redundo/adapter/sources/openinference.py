@@ -83,6 +83,11 @@ class ConversionSummary:
     # directly off the trace. None means no estimate was ever used,
     # nothing to report on the table's age.
     pricing_table_generated_at: str | None = None
+    # Count of LLM-kind child spans whose token counts were borrowed into
+    # their parent LLM span's record -- see _find_llm_token_donor_child.
+    # Some exporters (hermes-otel, confirmed against a real capture) split
+    # content and token usage across two spans instead of one.
+    merged_token_child_spans: int = 0
 
     @property
     def mask_fraction(self) -> float:
@@ -115,6 +120,12 @@ class ConversionSummary:
             out.append(
                 f"skipped {self.skipped_missing_content} LLM/TOOL span(s) with no "
                 f"{_INPUT_ATTR} to hash -- no content, no candidate for repeat detection."
+            )
+        if self.merged_token_child_spans:
+            out.append(
+                f"merged token counts from {self.merged_token_child_spans} child "
+                "span(s) into their parent llm_call record; some exporters split "
+                "content and token usage across two spans instead of one."
             )
         pricing_note = pricing.pricing_staleness_note(self.pricing_table_generated_at)
         if pricing_note:
@@ -178,6 +189,10 @@ def convert_openinference(
             summary.traces_ambiguous_conversation_id += 1
 
         span_by_id = {s.span_id: s for s in trace_spans}
+        children_by_parent: dict[str, list[Span]] = {}
+        for s in trace_spans:
+            if s.parent_span_id:
+                children_by_parent.setdefault(s.parent_span_id, []).append(s)
         kept = [s for s in trace_spans if _kind_of(s) in SUPPORTED_KINDS]
         for s in trace_spans:
             kind = _kind_of(s)
@@ -240,7 +255,7 @@ def convert_openinference(
             if kind == "LLM":
                 record = _llm_event(
                     span, task_id, used_conversation_id, step, parent_step, span_by_id,
-                    summary, pricing_context,
+                    summary, pricing_context, children_by_parent,
                 )
                 if record is None:
                     summary.skipped_missing_content += 1
@@ -403,6 +418,36 @@ def _base_metadata(span: Span, masked_spans: int, used_conversation_id: bool) ->
     }
 
 
+def _find_llm_token_donor_child(
+    span: Span, children_by_parent: dict[str, list[Span]]
+) -> Span | None:
+    """A direct child span carrying token usage but no content of its own.
+    The shape at least one real exporter produces (hermes-otel, confirmed
+    against a real capture): an outer LLM-kind span with full content and
+    no gen_ai.usage.* attributes, and its own LLM-kind child span with
+    token counts and no content. Both are real OTLP parent/child, not
+    siblings needing the temporal-overlap heuristic
+    sources/openclaw_localtrace.py's similar split requires. A direct
+    child lookup is enough here.
+
+    None whenever no such child exists, which is a no-op for any source
+    where a single span already carries both (the common case this
+    adapter was built for).
+    """
+    for child in children_by_parent.get(span.span_id, ()):
+        if _kind_of(child) != "LLM":
+            continue
+        if _first_present(child.attributes, (_INPUT_ATTR,)) is not None:
+            continue
+        if (
+            _first_present(child.attributes, _TOKENS_IN_ATTRS) is None
+            and _first_present(child.attributes, _TOKENS_OUT_ATTRS) is None
+        ):
+            continue
+        return child
+    return None
+
+
 def _llm_event(
     span: Span,
     task_id: str,
@@ -412,6 +457,7 @@ def _llm_event(
     span_by_id: dict[str, Span],
     summary: ConversionSummary,
     pricing_context: pricing.PricingContext,
+    children_by_parent: dict[str, list[Span]],
 ) -> dict[str, Any] | None:
     raw_input = _first_present(span.attributes, (_INPUT_ATTR,))
     if raw_input is None:
@@ -424,13 +470,24 @@ def _llm_event(
     model = _first_present(span.attributes, _MODEL_ATTRS)
     tokens_in = _first_present(span.attributes, _TOKENS_IN_ATTRS)
     tokens_out = _first_present(span.attributes, _TOKENS_OUT_ATTRS)
-    cost = _first_present(span.attributes, _COST_ATTRS)
+    cache_read = _first_present(span.attributes, _CACHE_READ_TOKEN_ATTRS)
+    cache_write = _first_present(span.attributes, _CACHE_WRITE_TOKEN_ATTRS)
 
+    if tokens_in is None and tokens_out is None:
+        donor = _find_llm_token_donor_child(span, children_by_parent)
+        if donor is not None:
+            tokens_in = _first_present(donor.attributes, _TOKENS_IN_ATTRS)
+            tokens_out = _first_present(donor.attributes, _TOKENS_OUT_ATTRS)
+            cache_read = _first_present(donor.attributes, _CACHE_READ_TOKEN_ATTRS)
+            cache_write = _first_present(donor.attributes, _CACHE_WRITE_TOKEN_ATTRS)
+            if model is None:
+                model = _first_present(donor.attributes, _MODEL_ATTRS)
+            summary.merged_token_child_spans += 1
+
+    cost = _first_present(span.attributes, _COST_ATTRS)
     metadata = _base_metadata(span, mask_count, used_conversation_id)
     cost_usd = float(cost) if cost is not None else None
     if cost_usd is None:
-        cache_read = _first_present(span.attributes, _CACHE_READ_TOKEN_ATTRS)
-        cache_write = _first_present(span.attributes, _CACHE_WRITE_TOKEN_ATTRS)
         estimated = pricing.estimate_cost_usd(
             pricing_context.entries,
             model,
