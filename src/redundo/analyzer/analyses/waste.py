@@ -1,25 +1,39 @@
 """The one analysis this project ships with: classify repeated LLM/tool
-calls as confirmed waste, likely legitimate, unclassified, or -- a fourth,
-lower-confidence bucket -- near-duplicate.
+calls as confirmed waste, likely legitimate, unclassified, or three
+further, lower-confidence buckets: near-duplicate, cross-task
+redundancy, and recurring pattern.
 
 Everything candidate-pair-specific (`classify.py`, `cycles.py`) stays
-exactly where it was -- this module is just the `Analysis` wrapper around
+exactly where it was. This module is just the `Analysis` wrapper around
 that existing, unmodified pipeline, translating its `Verdict`-keyed
 results into the generic `Bucket`/`AnalysisResult` shape `report.py`
 actually renders. `RULE_TEXT` lives here, not in `report.py`: it's
 analysis-specific prose describing *this* analysis's decision logic, not
 renderer data.
 
-The near-duplicate bucket is deliberately NOT folded into `Verdict` --
-that enum is specifically the exact-match decision output (`classify_pair`
-requires an identical `content_hash` to even consider a pair), and a
-similarity-threshold-based finding is a different, fuzzier kind of claim.
-Giving it its own bucket with its own rule text keeps that distinction
-visible in the report rather than overstating confidence in something a
-SimHash fingerprint comparison alone can't support. See
-`near_duplicates.py`'s module docstring for how double-counting with the
-three exact-match buckets is structurally prevented, not just avoided by
-convention.
+None of the three extra buckets are folded into `Verdict`. That enum is
+specifically the exact-match, same-task decision output (`classify_pair`
+requires an identical `content_hash` *and* a real lineage relationship
+within one task to even consider a pair), and each of these is a
+different, fuzzier kind of claim:
+
+- `near_duplicate`: a similarity-threshold-based finding, not an exact
+  one. See `near_duplicates.py`'s module docstring for how double
+  counting with the three exact-match buckets is structurally prevented,
+  not just avoided by convention.
+- `cross_task_redundancy`: a same-or-similar call across a real,
+  source-confirmed task boundary (see `task_graph.py`), never inferred
+  from timing or content. Lighter than `classify_pair`'s four-signal
+  logic on purpose: write/outcome semantics don't have an unambiguous
+  cross-task meaning yet.
+- `recurring_pattern`: a same-or-similar call across *unrelated* tasks
+  (no confirmed link at all). Explicitly never a waste claim, a
+  frequency observation, kept separate so it's never misread as the same
+  kind of finding as the other five buckets.
+
+See `cross_task_candidates.py`'s module docstring for how the last two
+are found without ever re-litigating a same-task decision `cycles.py`/
+`near_duplicates.py` already made.
 """
 
 from __future__ import annotations
@@ -28,11 +42,13 @@ from collections import defaultdict
 
 from ..analysis import Analysis, AnalysisResult, Bucket
 from ..classify import Verdict, classify_pair
+from ..cross_task_candidates import CrossTaskPair, find_cross_task_pairs
 from ..cycles import find_candidate_pairs
 from ..lineage import group_by_task
 from ..metrics import Slice, compute_generic_coverage
 from ..near_duplicates import DEFAULT_SIMILARITY_THRESHOLD, find_near_duplicate_pairs
 from ..schema import Event
+from ..task_graph import build_task_graph, same_component
 
 _NEAR_DUPLICATE_KEY = "near_duplicate"
 _NEAR_DUPLICATE_LABEL = "Near duplicate"
@@ -73,6 +89,30 @@ NEAR_DUPLICATE_RULE_TEXT = (
     "support."
 )
 
+_CROSS_TASK_REDUNDANCY_KEY = "cross_task_redundancy"
+_CROSS_TASK_REDUNDANCY_LABEL = "Cross-task redundancy"
+_RECURRING_PATTERN_KEY = "recurring_pattern"
+_RECURRING_PATTERN_LABEL = "Recurring pattern"
+
+# Also not phrased as a verdict: a real, source-confirmed link connects
+# the two tasks (see task_graph.py), but whether the repeat actually
+# wasted anything isn't checked here, see the module docstring.
+CROSS_TASK_REDUNDANCY_RULE_TEXT = (
+    "Same or near-identical call as an earlier one in a different task, and the "
+    "two tasks are confirmed related (a source-reported delegation link, never "
+    "inferred from timing or content). Surfaced for review, not a waste "
+    "verdict: what changed between the two calls isn't checked here yet."
+)
+# Deliberately not phrased as a finding about the two tasks at all: no
+# link connects them, so this is purely a statement about how often this
+# content recurs, never a claim that it's related, wasteful, or legitimate.
+RECURRING_PATTERN_RULE_TEXT = (
+    "Same or near-identical call recurring across tasks with no confirmed "
+    "relationship to each other. Not a waste or legitimate verdict, and not "
+    "evidence the two tasks are related, most likely a common or generic "
+    "operation, not redundant work."
+)
+
 # One short, prescriptive line per bucket -- optional on Bucket itself (see
 # analysis.py), populated here because only this analysis knows what its
 # own buckets mean well enough to recommend anything.
@@ -82,6 +122,14 @@ ACTION_TEXT: dict[Verdict, str] = {
     Verdict.UNCLASSIFIED: "Emit result hashes and task outcome, then re-run to get a verdict.",
 }
 NEAR_DUPLICATE_ACTION_TEXT = "Nothing to do. When these appear, read them by hand."
+CROSS_TASK_REDUNDANCY_ACTION_TEXT = (
+    "Read these by hand. A confirmed link exists between the two tasks, but not "
+    "yet enough signal here to call it waste or legitimate."
+)
+RECURRING_PATTERN_ACTION_TEXT = (
+    "Nothing to do by default. If this recurs a lot, it may be worth caching or "
+    "memoizing globally, but it isn't evidence of wasted spend on its own."
+)
 
 _ORDER = (Verdict.CONFIRMED_WASTE, Verdict.LIKELY_LEGITIMATE, Verdict.UNCLASSIFIED)
 _LABELS = {
@@ -114,9 +162,24 @@ class WasteAnalysis(Analysis):
             threshold=self._near_duplicate_threshold,
         )
 
+        task_graph = build_task_graph(events)
+        cross_task_pairs = find_cross_task_pairs(
+            events, exact_pairs=pairs, near_pairs=near_pairs,
+            threshold=self._near_duplicate_threshold,
+        )
+        cross_task_redundancy_pairs = [
+            p for p in cross_task_pairs
+            if same_component(task_graph, p.original.task_id, p.repeat.task_id)
+        ]
+        recurring_pattern_pairs = [
+            p for p in cross_task_pairs
+            if not same_component(task_graph, p.original.task_id, p.repeat.task_id)
+        ]
+
         coverage = compute_generic_coverage(events)
         self._add_comparability_note(coverage, events, classifications)
         self._add_near_duplicate_comparability_note(coverage, events, near_pairs)
+        self._add_cross_task_notes(coverage, cross_task_redundancy_pairs, recurring_pattern_pairs)
 
         slices = {v: Slice() for v in _ORDER}
         by_model = {v: defaultdict(Slice) for v in _ORDER}
@@ -134,24 +197,29 @@ class WasteAnalysis(Analysis):
                     f"({repeat.event_type}/{repeat.name}): {c.reason}"
                 )
 
-        near_dup_slice = Slice()
-        near_dup_by_model: dict[str, Slice] = defaultdict(Slice)
-        near_dup_by_workflow: dict[str, Slice] = defaultdict(Slice)
-        near_dup_reasons: list[str] = []
-        for pair in near_pairs:
-            repeat = pair.repeat
-            near_dup_slice.add(repeat)
-            near_dup_by_model[repeat.model or "(unknown model)"].add(repeat)
-            near_dup_by_workflow[repeat.workflow or "(unlabeled workflow)"].add(repeat)
-            if len(near_dup_reasons) < self._keep_reasons:
-                near_dup_reasons.append(
-                    f"task={pair.task_id} step={repeat.step_index} "
-                    f"({repeat.event_type}/{repeat.name}): similar to step="
+        near_dup_slice, near_dup_by_model, near_dup_by_workflow, near_dup_reasons = (
+            self._similarity_bucket_data(
+                near_pairs, self._keep_reasons,
+                lambda pair: (
+                    f"task={pair.task_id} step={pair.repeat.step_index} "
+                    f"({pair.repeat.event_type}/{pair.repeat.name}): similar to step="
                     f"{pair.original.step_index} (Hamming distance "
                     f"{pair.hamming_distance}/64 bits, threshold "
                     f"{self._near_duplicate_threshold}): similar, not identical; "
                     "not a waste verdict"
-                )
+                ),
+            )
+        )
+        cross_task_slice, cross_task_by_model, cross_task_by_workflow, cross_task_reasons = (
+            self._similarity_bucket_data(
+                cross_task_redundancy_pairs, self._keep_reasons, self._cross_task_reason,
+            )
+        )
+        recurring_slice, recurring_by_model, recurring_by_workflow, recurring_reasons = (
+            self._similarity_bucket_data(
+                recurring_pattern_pairs, self._keep_reasons, self._cross_task_reason,
+            )
+        )
 
         buckets = [
             Bucket(
@@ -167,6 +235,24 @@ class WasteAnalysis(Analysis):
                 rule_text=NEAR_DUPLICATE_RULE_TEXT,
                 slice=near_dup_slice,
                 action_text=NEAR_DUPLICATE_ACTION_TEXT,
+            )
+        )
+        buckets.append(
+            Bucket(
+                key=_CROSS_TASK_REDUNDANCY_KEY,
+                label=_CROSS_TASK_REDUNDANCY_LABEL,
+                rule_text=CROSS_TASK_REDUNDANCY_RULE_TEXT,
+                slice=cross_task_slice,
+                action_text=CROSS_TASK_REDUNDANCY_ACTION_TEXT,
+            )
+        )
+        buckets.append(
+            Bucket(
+                key=_RECURRING_PATTERN_KEY,
+                label=_RECURRING_PATTERN_LABEL,
+                rule_text=RECURRING_PATTERN_RULE_TEXT,
+                slice=recurring_slice,
+                action_text=RECURRING_PATTERN_ACTION_TEXT,
             )
         )
 
@@ -188,10 +274,16 @@ class WasteAnalysis(Analysis):
 
         by_bucket_and_model = {v.value: dict(by_model[v]) for v in _ORDER}
         by_bucket_and_model[_NEAR_DUPLICATE_KEY] = dict(near_dup_by_model)
+        by_bucket_and_model[_CROSS_TASK_REDUNDANCY_KEY] = dict(cross_task_by_model)
+        by_bucket_and_model[_RECURRING_PATTERN_KEY] = dict(recurring_by_model)
         by_bucket_and_workflow = {v.value: dict(by_workflow[v]) for v in _ORDER}
         by_bucket_and_workflow[_NEAR_DUPLICATE_KEY] = dict(near_dup_by_workflow)
+        by_bucket_and_workflow[_CROSS_TASK_REDUNDANCY_KEY] = dict(cross_task_by_workflow)
+        by_bucket_and_workflow[_RECURRING_PATTERN_KEY] = dict(recurring_by_workflow)
         all_reasons = {v.value: reasons[v] for v in _ORDER}
         all_reasons[_NEAR_DUPLICATE_KEY] = near_dup_reasons
+        all_reasons[_CROSS_TASK_REDUNDANCY_KEY] = cross_task_reasons
+        all_reasons[_RECURRING_PATTERN_KEY] = recurring_reasons
 
         return AnalysisResult(
             coverage=coverage,
@@ -199,7 +291,9 @@ class WasteAnalysis(Analysis):
             by_bucket_and_model=by_bucket_and_model,
             by_bucket_and_workflow=by_bucket_and_workflow,
             reasons=all_reasons,
-            total_candidates=len(classifications) + len(near_pairs),
+            total_candidates=(
+                len(classifications) + len(near_pairs) + len(cross_task_pairs)
+            ),
             analysis_name=self.name,
             footnote=footnote,
         )
@@ -263,4 +357,59 @@ class WasteAnalysis(Analysis):
             "not identical, arguments to an earlier call on the same execution path. A "
             "separate, lower-confidence signal from the exact-match note above; see the "
             "near_duplicate bucket below."
+        )
+
+    @staticmethod
+    def _add_cross_task_notes(coverage, cross_task_redundancy_pairs, recurring_pattern_pairs) -> None:
+        """Two more separate notes, same reasoning as
+        _add_near_duplicate_comparability_note above: each is its own
+        distinct claim, at its own confidence level, and conflating either
+        with the others would blur what's actually being reported. Silent
+        for whichever finding had zero pairs.
+        """
+        if cross_task_redundancy_pairs:
+            coverage.extra_notes.append(
+                f"{len(cross_task_redundancy_pairs)} pair(s) found across tasks confirmed "
+                "to be part of the same real workflow (a source-reported delegation link, "
+                "never inferred from timing or content); see the cross_task_redundancy "
+                "bucket below."
+            )
+        if recurring_pattern_pairs:
+            coverage.extra_notes.append(
+                f"{len(recurring_pattern_pairs)} pair(s) found across tasks with no "
+                "confirmed relationship to each other. Not a waste claim, see the "
+                "recurring_pattern bucket below."
+            )
+
+    @staticmethod
+    def _similarity_bucket_data(pairs, keep_reasons: int, reason_fn):
+        """Shared Slice/by_model/by_workflow/reasons assembly for any bucket
+        built from a flat list of (original, repeat, ...) pairs rather than
+        classify.py Classifications. near_duplicate,
+        cross_task_redundancy, and recurring_pattern all have this same
+        shape.
+        """
+        slice_ = Slice()
+        by_model: dict[str, Slice] = defaultdict(Slice)
+        by_workflow: dict[str, Slice] = defaultdict(Slice)
+        reasons: list[str] = []
+        for pair in pairs:
+            repeat = pair.repeat
+            slice_.add(repeat)
+            by_model[repeat.model or "(unknown model)"].add(repeat)
+            by_workflow[repeat.workflow or "(unlabeled workflow)"].add(repeat)
+            if len(reasons) < keep_reasons:
+                reasons.append(reason_fn(pair))
+        return slice_, by_model, by_workflow, reasons
+
+    def _cross_task_reason(self, pair: CrossTaskPair) -> str:
+        match_desc = (
+            "exact match" if pair.hamming_distance == 0
+            else f"similar (Hamming distance {pair.hamming_distance}/64 bits, "
+                 f"threshold {self._near_duplicate_threshold})"
+        )
+        return (
+            f"task={pair.repeat.task_id} step={pair.repeat.step_index} "
+            f"({pair.repeat.event_type}/{pair.repeat.name}): {match_desc} to "
+            f"task={pair.original.task_id} step={pair.original.step_index}"
         )

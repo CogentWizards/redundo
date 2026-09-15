@@ -20,12 +20,12 @@ redundo analyze examples/demo_trace.jsonl
 ```
 
 ```
-Coverage: 16/25 events priced (64%) -- $0.1060 of tracked spend is what this analysis actually covers.
-  9 event(s) had no cost_usd and are excluded from every dollar figure below -- the percentages are computed on the priced subset, not your total spend.
+Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analysis actually covers.
+  9 event(s) had no cost_usd and are excluded from every dollar figure below. Percentages are computed on the priced subset, not your total spend.
 
 Candidate redundant-repeat pairs: 8
 
-3 confirmed_waste -- repeated call, unchanged result, no intervening write, task failed. All four, confirmed -- drop any one and it's a guess, not a finding.
+3 confirmed_waste: The call repeated, the result didn't change, nothing wrote to state in between, and the task still failed. All four have to be true. Drop any one and this is a guess, not a finding.
   cost_usd:   0.028000
   by model:
     gpt-5.6: count=3 cost_usd=0.028000 tokens_in=3240 tokens_out=230
@@ -33,9 +33,11 @@ Candidate redundant-repeat pairs: 8
     - task=session-001 step=2 (tool_call/web_search): result identical; no intervening write; task terminated in failure
     - task=session-006 step=1 (llm_call/gpt-5.6): result identical; no intervening write; task terminated in failure
 
-3 likely_legitimate -- a specific reason it's not waste: result changed (polling worked), a write intervened (verification), or the task succeeded and neither the result nor the write status is already confirmed waste on its own
-2 unclassified -- everything else -- a required signal (result, write status, or outcome) was missing from the trace, or the call confirms waste on its own and task-level success can't settle whether it mattered. No verdict, on purpose
-0 near_duplicate -- arguments are similar but not identical to an earlier call on the same execution path (SimHash fingerprint comparison, not exact content_hash equality) -- surfaced for manual review, not a waste/legitimate verdict.
+3 likely_legitimate: a specific reason it's not waste: result changed (polling worked), a write intervened (verification), or the task succeeded and neither the result nor the write status is already confirmed waste on its own
+2 unclassified: everything else: a required signal (result, write status, or outcome) was missing from the trace, or the call confirms waste on its own and task-level success can't settle whether it mattered. No verdict, on purpose
+0 near_duplicate: arguments are similar but not identical to an earlier call on the same execution path (SimHash fingerprint comparison, not exact content_hash equality), surfaced for manual review, not a waste/legitimate verdict.
+0 cross_task_redundancy: same or near-identical call as an earlier one in a different, confirmed-related task, surfaced for review, not a waste verdict.
+0 recurring_pattern: same or near-identical call recurring across unrelated tasks, a frequency observation, never a waste claim.
 ```
 
 Every number above traces back to a `sample case` you can check by hand
@@ -303,7 +305,7 @@ chains of repeats get handled, are resolved explicitly, not left
 ambiguous. See [docs/schema.md](docs/schema.md) for exactly what each
 one decides and why.
 
-## The four buckets
+## The six buckets
 
 Given a candidate pair (an original call and a later, identical repeat of
 it in the same execution path):
@@ -333,6 +335,27 @@ it in the same execution path):
   double-counted against an exact match already in one of the three
   buckets above. See [docs/hashing.md](docs/hashing.md) for what a
   similarity fingerprint can and can't support.
+- **cross_task_redundancy**: a same-or-similar call as an earlier one in
+  a *different* task, where the two tasks are confirmed related, a
+  real, source-reported delegation link connects them (see
+  [docs/openinference.md](docs/openinference.md)'s `parent_task_id`
+  section), never inferred from timing or content. Surfaced for review,
+  not a waste verdict: what changed between the two calls isn't checked
+  yet, that needs cross-task write/outcome semantics this analysis
+  doesn't have.
+- **recurring_pattern**: a same-or-similar call recurring across tasks
+  with *no* confirmed relationship to each other, pure content
+  coincidence at corpus scale. Never a waste or legitimate claim, and not
+  evidence the two tasks are related, a frequency observation, most
+  likely a common or generic operation. Kept in its own bucket
+  specifically so it's never misread as the same kind of finding as the
+  other five.
+
+The last two search the *whole* corpus, not one task's own execution
+path, which is what makes them able to catch redundant work spanning
+separate runs of the same long-lived workflow, or separate agents
+delegated to from the same one, neither of which the first four buckets
+can see at all (they're scoped to a single task by design).
 
 The rule itself is printed next to every count in the actual report
 output, not left implicit in a label. `"42 confirmed_waste"` is a claim;
@@ -343,7 +366,7 @@ classification is worse than a large unclassified bucket, because the
 first time someone spot-checks a "confirmed waste" case by hand and finds
 it wasn't, the tool stops being trusted.
 
-There's a fifth bucket this analysis deliberately doesn't attempt:
+There's a further bucket this analysis deliberately doesn't attempt:
 **silent-wrong** (identical call, identical-looking success, wrong answer
 both times). That's not computable from a trace alone. It needs a
 correctness oracle external to the trace itself. A different analysis
