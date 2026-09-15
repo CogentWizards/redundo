@@ -80,6 +80,8 @@ class AnalysisResult:
                 "events_confident_task_id": self.coverage.events_confident_task_id,
                 "events_degraded_task_id": self.coverage.events_degraded_task_id,
                 "task_id_confidence_fraction": self.coverage.task_id_confidence_fraction,
+                "synthesized_cost_only_events": self.coverage.synthesized_cost_only_events,
+                "synthesized_cost_only_usd": round(self.coverage.synthesized_cost_only_usd, 6),
                 "extra_notes": list(self.coverage.extra_notes),
             },
             "by_bucket": {

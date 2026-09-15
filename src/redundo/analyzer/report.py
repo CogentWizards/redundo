@@ -109,6 +109,18 @@ def to_text(result: AnalysisResult, *, max_reasons: int = 20) -> str:
     if result.footnote:
         lines.append(result.footnote)
 
+    if result.coverage.synthesized_cost_only_events:
+        lines.append("")
+        lines.append("Spend outside the trace structure:")
+        lines.append(
+            f"  {result.coverage.synthesized_cost_only_events} event(s) "
+            f"({_fmt_usd(result.coverage.synthesized_cost_only_usd)}) have real "
+            "cost_usd but no matching span at all: billing-only records, "
+            "synthesized so this spend isn't silently missing from the totals "
+            "above. None of them can appear in any bucket, they have no content "
+            "and no repeat to classify."
+        )
+
     return "\n".join(lines)
 
 
@@ -751,6 +763,8 @@ a.quiet {{
 
 {unpriced_section}
 
+{untraceable_spend_section}
+
 </main>
 {footer}
 </body>
@@ -770,6 +784,19 @@ _UNPRICED_SECTION_TEMPLATE = """
     <p class="rule">{unpriced} event(s) carried no price, so no dollar figure in this report includes them. A repeat among them is invisible, not free.</p>
     <p class="action"><span class="action-label">Action</span> Set <code>cost_usd</code> on every span. Coverage under 80% makes totals indicative, not auditable.</p>
     {samples}
+  </div>
+</section>"""
+
+_UNTRACEABLE_SPEND_SECTION_TEMPLATE = """
+<section>
+  <h2 class="serif">Spend outside the trace structure</h2>
+  <p class="section-sub">Real cost with no matching span at all.</p>
+  <div class="stat-grid" style="margin-bottom:26px;">
+    <div class="stat"><p class="stat-label">Event(s)</p><p class="stat-value serif">{count}</p></div>
+    <div class="stat"><p class="stat-label">Spend</p><p class="stat-value serif">{cost}</p></div>
+  </div>
+  <div class="rule-block">
+    <p class="rule">A billing-only record: <code>cost_usd</code> is real, but there was no span to attach it to, so it was synthesized rather than silently dropped. Already included in the totals above. It can never appear in a bucket, it has no content and no repeat to classify.</p>
   </div>
 </section>"""
 
@@ -844,6 +871,13 @@ def to_html(result: AnalysisResult, *, max_reasons: int = 20) -> str:
             samples=unpriced_samples_html,
         )
 
+    untraceable_spend_section = ""
+    if result.coverage.synthesized_cost_only_events:
+        untraceable_spend_section = _UNTRACEABLE_SPEND_SECTION_TEMPLATE.format(
+            count=result.coverage.synthesized_cost_only_events,
+            cost=html.escape(_fmt_usd(result.coverage.synthesized_cost_only_usd)),
+        )
+
     return _HTML_TEMPLATE.format(
         header=_header_html(),
         footer=_footer_html(),
@@ -855,4 +889,5 @@ def to_html(result: AnalysisResult, *, max_reasons: int = 20) -> str:
         sections=sections,
         footnote=html.escape(result.footnote or ""),
         unpriced_section=unpriced_section,
+        untraceable_spend_section=untraceable_spend_section,
     )

@@ -28,6 +28,13 @@ META_RESPONSE_HASH_KEY = "response_hash"  # str: hash of an llm_call's completio
 # metadata key -- never treated as "definitely no near-duplicate."
 META_SIMILARITY_FINGERPRINT_KEY = "similarity_fingerprint"
 META_SIMILARITY_SPEC_KEY = "similarity_spec"  # str: version of the fingerprint procedure used
+# bool: this record was synthesized from cost-bearing telemetry alone (a
+# billing/usage signal with no matching span or trace event at all), real
+# spend that would otherwise be silently invisible to every dollar figure
+# in a report. Never a candidate for repeat detection: no comparable
+# content, no real position in any lineage. Absent or False means "not
+# this," same convention as every other metadata key.
+META_SYNTHESIZED_COST_ONLY_KEY = "synthesized_cost_only"
 
 
 class SchemaError(ValueError):
