@@ -339,6 +339,43 @@ overlapping counts) -- `cost_usd` is used as-provided, never computed from
 a price table, consistent with `redundo.adapter.sources.openinference`'s "no price table"
 design.
 
+## Some real cost has no span at all: synthesized, not dropped
+
+Found against a real capture, not assumed: two categories of
+`claude_code.api_request` log record (real `cost_usd`, real money) have
+no matching `claude_code.llm_request` span, so the `request_id` join
+above never fires for them.
+
+1. **Claude Code's own session-title-generation call**
+   (`query_source=generate_session_title`). A real, billed API call the
+   CLI issues on its own to name the session, e.g. `{"title": "News
+   digest compilation"}`, never wrapped in the interaction span tree at
+   all, by design.
+2. **A session's very first call under Agent SDK/streaming transport**,
+   dispatched before span instrumentation starts. Confirmed in a live
+   capture: its own timestamp preceded the session's earliest span by
+   19ms, and its token shape (`input_tokens` near zero, a large
+   `cache_creation_tokens`) matches the call that writes the system
+   prompt into the cache, the opening call of the session.
+
+Neither of these has anywhere to attach in the schema without a span, so
+without a fix that real spend would simply never appear anywhere: not
+counted, not even reported as unpriced. Instead, `convert_claude_code()`
+synthesizes a degraded `llm_call` record straight from the orphaned log
+once every session has been converted (`_synthesize_orphaned_cost_records`):
+real `cost_usd`, real token counts, but `content_hash` derived from the
+log's own `request_id` (unique by construction, never real content), so
+it can never become a candidate pair. `metadata.content_basis =
+"log_only_no_span"` and `metadata.synthesized_cost_only = True` mark it
+explicitly; `redundo.analyzer`'s generic `CoverageStats` recognizes the
+latter and reports these events and their dollar total in their own
+report section, separate from the ordinary coverage figures, so a reader
+can see exactly how much of "tracked spend" rests on a real span versus
+a billing record alone.
+
+`--summary` reports how often this fires and the total dollar amount
+recovered by it.
+
 ## `metadata.write` is never set
 
 No signal indicates whether a tool call mutated anything. Inferring it

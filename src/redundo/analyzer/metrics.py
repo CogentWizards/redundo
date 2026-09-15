@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .schema import Event
+from .schema import META_SYNTHESIZED_COST_ONLY_KEY, Event
 
 
 @dataclass
@@ -84,6 +84,14 @@ class CoverageStats:
     # own reasons lists rather than keeping every one for a large corpus.
     unpriced_samples: list[str] = field(default_factory=list)
 
+    # Real spend synthesized from cost-only telemetry with no matching
+    # span at all (see schema.py's META_SYNTHESIZED_COST_ONLY_KEY).
+    # Already included in priced_events/total_priced_cost_usd above,
+    # tracked separately so a reader can see how much of "tracked spend"
+    # rests on a real span versus a billing record alone.
+    synthesized_cost_only_events: int = 0
+    synthesized_cost_only_usd: float = 0.0
+
     @property
     def pricing_coverage_fraction(self) -> float:
         return self.priced_events / self.total_events if self.total_events else 0.0
@@ -120,6 +128,11 @@ def compute_generic_coverage(events: list[Event], *, max_samples: int = 20) -> C
                     f"task={event.task_id} step={event.step_index} "
                     f"({event.event_type}/{event.name}): no cost_usd recorded"
                 )
+
+        if isinstance(event.metadata, dict) and event.metadata.get(META_SYNTHESIZED_COST_ONLY_KEY):
+            coverage.synthesized_cost_only_events += 1
+            if event.cost_usd is not None:
+                coverage.synthesized_cost_only_usd += event.cost_usd
 
         source = event.metadata.get("task_id_source") if isinstance(event.metadata, dict) else None
         if source == "conversation_id":

@@ -190,3 +190,28 @@ def test_max_reasons_truncates_at_render_time():
     assert len(result.reasons["confirmed_waste"]) == 6  # WasteAnalysis kept all 6
     output = to_text(result, max_reasons=2)
     assert output.count("step=2 (tool_call/search)") == 2
+
+
+def test_synthesized_cost_only_events_get_their_own_section_at_the_end():
+    events = [
+        make_event(0, event_type="llm_call", cost_usd=0.5,
+                    metadata={"synthesized_cost_only": True}),
+    ]
+    result = build(events)
+    text = to_text(result)
+    assert text.rstrip().endswith(
+        "None of them can appear in any bucket, they have no content and "
+        "no repeat to classify."
+    )
+    assert "Spend outside the trace structure:" in text
+
+    page = to_html(result)
+    assert "Spend outside the trace structure" in page
+    assert page.index("Spend outside the trace structure") > page.index("The verdicts")
+
+
+def test_no_synthesized_cost_only_section_when_there_are_none():
+    events = [make_event(0, event_type="llm_call", cost_usd=0.5)]
+    result = build(events)
+    assert "Spend outside the trace structure" not in to_text(result)
+    assert "Spend outside the trace structure" not in to_html(result)

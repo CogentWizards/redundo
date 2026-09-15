@@ -82,3 +82,34 @@ def test_extra_notes_starts_empty():
     # here -- compute_generic_coverage() never populates this.
     c = coverage([make_event(cost_usd=1.0)])
     assert c.extra_notes == []
+
+
+def _synthesized_event(cost_usd):
+    return Event(
+        task_id="t1", step_index=0, event_type="llm_call", name="x",
+        content_hash="h", tokens_in=None, tokens_out=None, outcome=None,
+        timestamp=None, cost_usd=cost_usd, model=None, parent_id=None,
+        workflow=None, metadata={"synthesized_cost_only": True},
+    )
+
+
+def test_synthesized_cost_only_events_tracked_separately():
+    c = coverage([_synthesized_event(0.5), make_event(cost_usd=1.0)])
+    assert c.synthesized_cost_only_events == 1
+    assert c.synthesized_cost_only_usd == 0.5
+    # Still counted in the ordinary totals too -- this is additive
+    # tracking, not a separate, exclusive bucket.
+    assert c.priced_events == 2
+    assert c.total_priced_cost_usd == 1.5
+
+
+def test_synthesized_cost_only_with_no_cost_still_counts_the_event_not_the_dollars():
+    c = coverage([_synthesized_event(None)])
+    assert c.synthesized_cost_only_events == 1
+    assert c.synthesized_cost_only_usd == 0.0
+
+
+def test_ordinary_events_never_count_as_synthesized_cost_only():
+    c = coverage([make_event(cost_usd=1.0)])
+    assert c.synthesized_cost_only_events == 0
+    assert c.synthesized_cost_only_usd == 0.0

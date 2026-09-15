@@ -60,6 +60,19 @@ the conversion strategy, not just the attribute names:
    Signal.UNKNOWN in the analyzer for every record from this adapter,
    consistent with "absence is not a claim of a default value."
 
+6. Some `claude_code.api_request` log records (real cost_usd, joined by
+   request_id, see point 4) have no matching `claude_code.llm_request`
+   span at all, confirmed against a real capture, not assumed: Claude
+   Code's own session-title-generation call, and a session's very first
+   call under Agent SDK/streaming transport, dispatched before span
+   instrumentation starts. Rather than let that real spend silently
+   vanish (no span means no record, means the cost never enters any
+   total), a degraded llm_call record is synthesized directly from the
+   log alone (`metadata.content_basis = "log_only_no_span"`,
+   `metadata.synthesized_cost_only = True`), always appended after every
+   span-derived record in its task since it has no real position in the
+   span tree. See _synthesized_cost_only_event.
+
 See docs/claude-code.md for the full written contract.
 """
 
@@ -113,6 +126,13 @@ class ConversionSummary:
     mcp_tool_calls_total: int = 0
     mcp_tool_calls_with_arguments: int = 0
     sessions_without_interaction_span: int = 0
+    # api_request log records with real cost_usd but no matching
+    # claude_code.llm_request span at all. See
+    # _synthesized_cost_only_event's own docstring for the two confirmed
+    # causes. Synthesized as their own llm_call record rather than
+    # silently dropped.
+    records_synthesized_from_log_only: int = 0
+    cost_usd_synthesized_from_log_only: float = 0.0
 
     def notes(self) -> list[str]:
         out = []
@@ -142,6 +162,16 @@ class ConversionSummary:
                 "prompt content via time-window correlation against the logs signal's "
                 "user_prompt events instead (metadata.content_basis='prompt_windowed') -- "
                 "a heuristic, not an exact match; see docs/claude-code.md for what can break it."
+            )
+        if self.records_synthesized_from_log_only:
+            out.append(
+                f"{self.records_synthesized_from_log_only} llm_call record(s) synthesized "
+                "from an api_request log with no matching claude_code.llm_request span at "
+                f"all ({self.cost_usd_synthesized_from_log_only:.4f} of real cost that would "
+                "otherwise be invisible). Observed causes: Claude Code's own session-title "
+                "generation call, and a session's very first call under Agent SDK/streaming "
+                "transport, dispatched before span instrumentation starts. See "
+                "metadata.content_basis='log_only_no_span'."
             )
         return out
 
@@ -181,12 +211,14 @@ def convert_claude_code(
         by_session.setdefault(session_id or f"__no_session__:{span.trace_id}", []).append(span)
 
     records: list[dict[str, Any]] = []
+    task_id_by_session_id: dict[str, str] = {}
     for session_id, session_spans in by_session.items():
         used_real_session_id = not session_id.startswith("__no_session__:")
         summary.sessions_total += 1
         if used_real_session_id:
             summary.sessions_with_session_id += 1
         task_id = session_id if used_real_session_id else session_spans[0].trace_id
+        task_id_by_session_id[session_id] = task_id
         ordered_tool_results = tool_results_by_session.get(session_id, [])
         ordered_user_prompts = user_prompts_by_session.get(session_id, [])
         records.extend(
@@ -196,8 +228,49 @@ def convert_claude_code(
             )
         )
 
+    records.extend(
+        _synthesize_orphaned_cost_records(records, api_requests_by_request_id, task_id_by_session_id, summary)
+    )
+
     summary.total_records = len(records)
     return records, summary
+
+
+def _synthesize_orphaned_cost_records(
+    records: list[dict[str, Any]],
+    api_requests_by_request_id: dict[str, LogRecord],
+    task_id_by_session_id: dict[str, str],
+    summary: ConversionSummary,
+) -> list[dict[str, Any]]:
+    """An api_request log carries real cost_usd; every llm_call record
+    already produced above carries its own source api_request's
+    request_id in metadata regardless of whether a match was found (see
+    _llm_event). So any request_id in api_requests_by_request_id that
+    never appears in metadata.request_id across all of `records` was never
+    matched to a span at all. See _synthesized_cost_only_event for the
+    two confirmed causes and why this is synthesized rather than dropped.
+    """
+    consumed_request_ids = {
+        r["metadata"].get("request_id")
+        for r in records
+        if r.get("event_type") == "llm_call" and r["metadata"].get("request_id")
+    }
+    next_step_by_task: dict[str, int] = {}
+    for r in records:
+        next_step_by_task[r["task_id"]] = max(
+            next_step_by_task.get(r["task_id"], 0), r["step_index"] + 1
+        )
+
+    synthesized: list[dict[str, Any]] = []
+    for request_id, rec in api_requests_by_request_id.items():
+        if request_id in consumed_request_ids:
+            continue
+        session_id = rec.attributes.get(_SESSION_ID_ATTR)
+        task_id = task_id_by_session_id.get(session_id, session_id) if session_id else request_id
+        step = next_step_by_task.get(task_id, 0)
+        synthesized.append(_synthesized_cost_only_event(rec, task_id, step, summary))
+        next_step_by_task[task_id] = step + 1
+    return synthesized
 
 
 def _log_record_sort_key(rec: LogRecord) -> tuple[int, str]:
@@ -551,6 +624,77 @@ def _opaque_hash(span: Span) -> tuple[str, int]:
     """
     digest, masks = hashing.content_hash(span.span_id, structured=False)
     return digest, masks
+
+
+def _synthesized_cost_only_event(
+    rec: LogRecord, task_id: str, step: int, summary: ConversionSummary
+) -> dict[str, Any]:
+    """A degraded llm_call record for an api_request log whose cost_usd is
+    real but which has no matching claude_code.llm_request span at all.
+    Confirmed against a real capture, two distinct causes so far:
+
+    1. Claude Code's own session-title-generation call
+       (query_source=generate_session_title), a real, billed API call
+       the CLI issues on its own to name the session, never wrapped in
+       the interaction span tree by design.
+    2. A session's very first call under Agent SDK/streaming transport,
+       dispatched before span instrumentation starts. Confirmed by a
+       live capture where its own timestamp preceded the session's
+       earliest span by milliseconds, and its token shape (near-zero
+       input_tokens, a large cache_creation_tokens) matches "the call
+       that writes the system prompt into the cache," i.e. the opening
+       call of the session.
+
+    Synthesized (see module docstring point 6) so this real spend enters
+    CoverageStats.total_priced_cost_usd instead of silently vanishing.
+    Never a candidate for redundant-pair matching: content_hash is
+    derived from the log's own request_id (unique by construction, same
+    idiom as _opaque_hash), never real content. Always appended after
+    every span-derived record already assigned to this task_id, since it
+    has no real position in the span tree to place it against.
+    """
+    request_id = rec.attributes.get("request_id") or ""
+    digest, masks = hashing.content_hash(request_id, structured=False)
+
+    input_tokens = rec.attributes.get("input_tokens")
+    output_tokens = rec.attributes.get("output_tokens")
+    cache_read = rec.attributes.get("cache_read_tokens") or 0
+    cache_creation = rec.attributes.get("cache_creation_tokens") or 0
+    tokens_in = (
+        (input_tokens or 0) + cache_read + cache_creation
+        if input_tokens is not None
+        else None
+    )
+    cost_usd = rec.attributes.get("cost_usd")
+
+    summary.records_synthesized_from_log_only += 1
+    if cost_usd is not None:
+        summary.cost_usd_synthesized_from_log_only += float(cost_usd)
+
+    return {
+        "task_id": task_id,
+        "step_index": step,
+        "event_type": "llm_call",
+        "name": rec.attributes.get("model") or "unknown",
+        "content_hash": digest,
+        "tokens_in": int(tokens_in) if tokens_in is not None else None,
+        "tokens_out": int(output_tokens) if output_tokens is not None else None,
+        "outcome": None,
+        "timestamp": _iso_timestamp(rec.time_unix_nano),
+        "cost_usd": float(cost_usd) if cost_usd is not None else None,
+        "model": rec.attributes.get("model"),
+        "parent_id": None,
+        "workflow": None,
+        "metadata": {
+            "hash_spec": hashing.HASH_SPEC,
+            "masked_spans": masks,
+            "task_id_source": "session_id",
+            "content_basis": "log_only_no_span",
+            "request_id": request_id,
+            "query_source": rec.attributes.get("query_source"),
+            "synthesized_cost_only": True,
+        },
+    }
 
 
 def _llm_event(
