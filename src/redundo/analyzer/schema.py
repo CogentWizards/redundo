@@ -35,6 +35,13 @@ META_SIMILARITY_SPEC_KEY = "similarity_spec"  # str: version of the fingerprint 
 # content, no real position in any lineage. Absent or False means "not
 # this," same convention as every other metadata key.
 META_SYNTHESIZED_COST_ONLY_KEY = "synthesized_cost_only"
+# str: the task_id of another task this one was delegated from (a real
+# subagent/handoff relationship), when a source can confirm one. Never
+# inferred from timing, content similarity, or any other guess, only
+# ever a value the source itself reported (e.g. hermes-otel's
+# hermes.subagent.parent_session_id). Absent means "this source doesn't
+# expose one," not "there is no such relationship."
+META_PARENT_TASK_ID_KEY = "parent_task_id"
 
 
 class SchemaError(ValueError):

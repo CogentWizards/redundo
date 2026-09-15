@@ -8,12 +8,19 @@ behavior, not just "close enough."
 
 ## task_id
 
-Prefer `gen_ai.conversation.id` when present. Fall back to the OTLP trace
-ID. **Never synthesize a grouping key beyond that.**
+Prefer `gen_ai.conversation.id` when present, or `session.id` (the same
+concept under OpenInference's own separate attribute name; confirmed
+real for Google ADK, whose own OpenInference instrumentation maps ADK's
+session id onto `session.id` and never touches `gen_ai.conversation.id`
+at all). Fall back to the OTLP trace ID. **Never synthesize a grouping
+key beyond that.**
 
-Precisely: for each trace, collect the distinct `gen_ai.conversation.id`
-values across all of that trace's spans (OTel context propagation means
-it's common for only some spans -- often just the root -- to carry it).
+Precisely: for each trace, collect the distinct value each span reports
+under either attribute (preferring `gen_ai.conversation.id` if a single
+span somehow carried both; not expected in practice, since these are one
+source's own choice of attribute name, not two independent signals that
+could disagree). OTel context propagation means it's common for only
+some spans, often just the root, to carry it at all.
 
 - Exactly one distinct value found -> use it as `task_id` for every span
   in the trace.
@@ -37,6 +44,27 @@ genuinely unrelated tasks grouped under a made-up shared ID will show
 "repeats" that never happened. A trace-ID fallback that's honestly
 reported is a visible, explainable degradation instead -- worse recall,
 not wrong data.
+
+## `metadata.parent_task_id`: a real cross-task link, when a source has one
+
+`task_id` groups events within one conversation; it never crosses into a
+different task, even when that other task is a subagent this one
+delegated to. `metadata.parent_task_id` is a separate, additive signal
+for exactly that case: the `task_id` of another task this one was
+delegated from, set only when the source itself reports a real
+delegation relationship, never inferred from timing, content, or
+anything else.
+
+Confirmed real and read today for one source: `hermes-otel` emits
+`hermes.subagent.parent_session_id` on every subagent span. No other
+source currently exposes an equivalent (checked directly: OpenClaw's own
+internal session state tracks a comparable `parentSessionKey`, but it
+isn't on any hook payload a plugin can read today; Claude Code's
+in-process subagent delegation is already real span nesting under the
+parent `Task` call, so it needs no separate link at all).
+
+Nothing in the analyzer consumes this key yet, it's an adapter-level,
+schema-documented signal only for now.
 
 ## Span kind -> event_type
 
