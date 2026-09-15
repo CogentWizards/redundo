@@ -24,7 +24,7 @@ def test_unknown_subcommand_fails_with_a_clear_message(capsys):
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "unknown subcommand 'frobnicate'" in err
-    assert "adapt, analyze, collect, or update-pricing" in err
+    assert "adapt, analyze, collect, update-pricing, or drift" in err
 
 
 def test_analyze_subcommand_dispatches_with_no_events_error(tmp_path, capsys):
@@ -51,6 +51,17 @@ def test_update_pricing_subcommand_dispatches(capsys):
     exit_code = main(["update-pricing", "--help"])
     assert exit_code == 0
     assert "update-pricing" in capsys.readouterr().out
+
+
+def test_drift_subcommand_dispatches(tmp_path, capsys):
+    # An empty trace file is enough to prove `drift` (not some other code
+    # path) is what ran -- context_drift.py's own tests cover its
+    # behavior in depth.
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    exit_code = main(["drift", str(empty)])
+    assert exit_code == 1
+    assert "no events loaded" in capsys.readouterr().err
 
 
 def test_adapt_piped_into_analyze_end_to_end(tmp_path, capsys, monkeypatch):

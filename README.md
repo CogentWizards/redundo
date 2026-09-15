@@ -389,6 +389,21 @@ workflow labels, classification reasons) is HTML-escaped before being
 written, since that content is attacker-controlled if the trace comes
 from somewhere untrusted.
 
+### Context drift hints, a heuristic, not part of `analyze`
+
+```bash
+redundo drift trace.jsonl
+redundo drift trace.jsonl --format json
+```
+
+Separate from `analyze` on purpose: this looks for cross-run context
+drift along a real, source-confirmed continuation link between tasks
+(never a delegation link, and never inferred from timing or content), a
+signal no source currently emits, so nothing here has been checked
+against real data the way every bucket in `analyze` has. It prints
+measured distances and a literal diff, not a verdict. See
+[docs/context-drift.md](docs/context-drift.md).
+
 Or as a library:
 
 ```python

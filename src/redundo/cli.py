@@ -1,10 +1,12 @@
-"""Top-level `redundo` entry point: dispatches to one of four
+"""Top-level `redundo` entry point: dispatches to one of five
 subcommands. `adapt` and `analyze` are the core pipeline and have zero
 dependencies; `collect` is a convenience local OTLP receiver gated behind
 the `collector` extra, imported lazily so installing redundo for just
 `adapt`/`analyze` never pulls in protobuf/opentelemetry-proto.
 `update-pricing` is the one command that makes a network call, and only
-when a user runs it by hand; see pricing.py's module docstring.
+when a user runs it by hand; see pricing.py's module docstring. `drift`
+is a heuristic hint, deliberately separate from `analyze`'s own report,
+see context_drift.py's module docstring for why.
 
     redundo adapt --source openinference traces/ | redundo analyze > report.html
 """
@@ -23,6 +25,7 @@ Subcommands:
   analyze         Classify redundant calls in a schema trace   (redundo analyze -h)
   collect         Run a local OTLP receiver for capture         (redundo collect -h)
   update-pricing  Refresh the bundled per-model pricing table   (redundo update-pricing -h)
+  drift           Cross-run context-drift hints (heuristic)     (redundo drift -h)
 """
 
 
@@ -54,10 +57,14 @@ def main(argv: "list[str] | None" = None) -> int:
         from .adapter.update_pricing_cli import main as update_pricing_main
 
         return update_pricing_main(rest)
+    if command == "drift":
+        from .analyzer.drift_cli import main as drift_main
+
+        return drift_main(rest)
 
     print(
         f"redundo: unknown subcommand {command!r} "
-        "(expected adapt, analyze, collect, or update-pricing)\n",
+        "(expected adapt, analyze, collect, update-pricing, or drift)\n",
         file=sys.stderr,
     )
     print(USAGE, file=sys.stderr)

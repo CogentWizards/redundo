@@ -1,7 +1,7 @@
 """A task-level graph over the whole corpus, built only from
 metadata.parent_task_id (see schema.py's META_PARENT_TASK_ID_KEY), a
-real, source-confirmed delegation link, never inferred from timing or
-content similarity. This is what lets cross-task candidate detection
+real, source-confirmed link, never inferred from timing or content
+similarity. This is what lets cross-task candidate detection
 (cross_task_candidates.py) tell "these two tasks are actually related"
 from "these two tasks just happen to share some content," without ever
 guessing a relationship a source didn't report.
@@ -11,6 +11,19 @@ singleton component, the common case for most corpora today, since
 only one source (hermes-otel, via Hermes's own subagent delegation)
 currently populates this key at all. That's not a degraded case; it's
 the honest default until more sources expose an equivalent link.
+
+parent_task_id alone doesn't say what *kind* of relationship it is, and
+that distinction matters for anything that cares about ORDER, not just
+"are these related" (see context_drift.py). metadata.parent_task_link_kind
+(schema.py's META_PARENT_TASK_LINK_KIND_KEY) narrows this: only links
+explicitly marked "continuation" (this task is a later chapter of the
+same thread) show up in `continuation_parent_of`. A "delegation" link
+(hermes-otel's today) or an unmarked one never does, walking a
+delegation edge as if it were a continuation would compare an
+orchestrator to a subagent it spawned, never one continuous thread to
+begin with. `parent_of`/`component_of` are unaffected by this
+distinction: redundancy detection only needs "are these related," not
+"in what order."
 """
 
 from __future__ import annotations
@@ -22,24 +35,31 @@ from .schema import Event
 
 @dataclass(frozen=True, slots=True)
 class TaskGraph:
-    """parent_of: task_id -> the task_id it was reported delegated from, or
-    None. component_of: task_id -> an opaque connected-component id; two
-    tasks share a component id if and only if a chain of real
-    parent_task_id links connects them (directly or transitively).
+    """parent_of: task_id -> the task_id it was reported related to, or
+    None (either kind of link, see module docstring). component_of:
+    task_id -> an opaque connected-component id; two tasks share a
+    component id if and only if a chain of real parent_task_id links
+    connects them (directly or transitively). continuation_parent_of:
+    task_id -> the task_id it's a continuation of, or None. A strict
+    subset of parent_of, only the links explicitly marked
+    "continuation".
     """
 
     parent_of: dict[str, str | None]
     component_of: dict[str, int]
+    continuation_parent_of: dict[str, str | None]
 
 
 def build_task_graph(events: list[Event]) -> TaskGraph:
     parent_of: dict[str, str | None] = {}
+    link_kind_of: dict[str, str | None] = {}
     ambiguous: set[str] = set()
 
     for event in events:
         task_id = event.task_id
         if task_id not in parent_of:
             parent_of[task_id] = None
+            link_kind_of[task_id] = None
         if not isinstance(event.metadata, dict):
             continue
         reported = event.metadata.get("parent_task_id")
@@ -47,9 +67,11 @@ def build_task_graph(events: list[Event]) -> TaskGraph:
             continue
         if task_id in ambiguous:
             continue
+        reported_kind = event.metadata.get("parent_task_link_kind")
         current = parent_of.get(task_id)
         if current is None:
             parent_of[task_id] = reported
+            link_kind_of[task_id] = reported_kind
         elif current != reported:
             # This task's own events disagree on their parent, the same
             # "ambiguous, don't guess" rule sources.openinference's
@@ -58,9 +80,19 @@ def build_task_graph(events: list[Event]) -> TaskGraph:
             # the conflicting values; treat the link as absent instead.
             ambiguous.add(task_id)
             parent_of[task_id] = None
+            link_kind_of[task_id] = None
 
     component_of = _connected_components(parent_of)
-    return TaskGraph(parent_of=parent_of, component_of=component_of)
+    continuation_parent_of = {
+        task_id: parent
+        for task_id, parent in parent_of.items()
+        if parent is not None and link_kind_of.get(task_id) == "continuation"
+    }
+    return TaskGraph(
+        parent_of=parent_of,
+        component_of=component_of,
+        continuation_parent_of=continuation_parent_of,
+    )
 
 
 def _connected_components(parent_of: dict[str, str | None]) -> dict[str, int]:
