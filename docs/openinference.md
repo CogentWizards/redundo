@@ -15,21 +15,30 @@ session id onto `session.id` and never touches `gen_ai.conversation.id`
 at all). Fall back to the OTLP trace ID. **Never synthesize a grouping
 key beyond that.**
 
-Precisely: for each trace, collect the distinct value each span reports
-under either attribute (preferring `gen_ai.conversation.id` if a single
-span somehow carried both; not expected in practice, since these are one
-source's own choice of attribute name, not two independent signals that
-could disagree). OTel context propagation means it's common for only
-some spans, often just the root, to carry it at all.
+Resolved **per span, not once for the whole trace**:
 
-- Exactly one distinct value found -> use it as `task_id` for every span
-  in the trace.
-- Zero values found -> use the trace ID. Report this: "no
-  gen_ai.conversation.id found; grouped by trace -- cross-trace rework not
-  detected."
-- More than one distinct value found (spans disagree) -> use the trace ID
-  and report the ambiguity separately. Don't pick one of the conflicting
-  values; that would be a guess dressed up as a decision.
+- The span's own value, if it carries one (preferring
+  `gen_ai.conversation.id` if a single span somehow carried both; not
+  expected in practice, since these are one source's own choice of
+  attribute name, not two independent signals that could disagree).
+- Otherwise, the nearest ancestor's value, walking the real
+  `parent_span_id` chain. OTel context propagation means it's common for
+  only some spans, often just a root-ish one, to carry it at all.
+- Otherwise, that span's own trace ID.
+
+This used to be resolved once per trace (collect every span's value; if
+the whole trace agreed on one, use it, otherwise fall back to the trace
+ID as "ambiguous"). That was wrong for a real, confirmed shape: Hermes's
+`delegate_task` tool spawns subagents whose spans land in the *same* OTel
+trace as the parent conversation, each with their own distinct, genuinely
+real session id stamped directly on their own spans. Under the old
+whole-trace rule this read as "conflicting values, don't guess" and
+collapsed the parent and every subagent into one task_id -- silently
+defeating `metadata.parent_task_id` (below), since there was no second,
+distinct task left for it to point at. Per-span resolution has no
+remaining "conflicting values" case to guess at: once every span answers
+for itself, two spans reporting two different real ids is just two
+different real tasks sharing a trace, not ambiguity.
 
 Every emitted record's `metadata.task_id_source` is `"conversation_id"` or
 `"trace_id_fallback"`, naming which of the two happened for that specific
@@ -45,6 +54,22 @@ genuinely unrelated tasks grouped under a made-up shared ID will show
 reported is a visible, explainable degradation instead -- worse recall,
 not wrong data.
 
+**A task_id's own step numbering can span more than one physical trace.**
+A source that gives one CLI invocation its own trace per turn but a
+stable session id across turns (confirmed for Hermes: five separate
+`hermes --resume <session-id> -z "..."` invocations, five OTel traces,
+one real session id) needs its `step_index` sequence to stay one
+continuous, collision-free count across all of them -- assigning
+`step_index` per trace_id instead of per resolved task_id silently
+collides two different real events onto the same `(task_id, step_index)`
+key whenever a task spans more than one trace, corrupting
+`redundo.analyzer.lineage.TaskLineage`'s step-indexed internals (`_by_step`,
+`_effective_parent_step`) for every lineage method built on them. This
+adapter groups kept spans by resolved task_id first, then runs the
+step/chain-tail bookkeeping once per group, so this never happens
+regardless of how many physical traces (or, within one trace, how many
+distinct task_ids -- the subagent case above) a task is assembled from.
+
 ## `metadata.parent_task_id`: a real cross-task link, when a source has one
 
 `task_id` groups events within one conversation; it never crosses into a
@@ -54,6 +79,15 @@ for exactly that case: the `task_id` of another task this one was
 delegated from, set only when the source itself reports a real
 delegation relationship, never inferred from timing, content, or
 anything else.
+
+Resolved the same way `task_id` is: the span's own
+`hermes.subagent.parent_session_id` if present, else the nearest
+ancestor's, walking the real `parent_span_id` chain. This ancestor walk
+matters in practice, not just in theory -- confirmed against a real
+capture, the attribute lives on a subagent's own wrapping AGENT-kind span
+(never converted into an Event itself, see "Span kind -> event_type"
+below), not on the LLM/TOOL spans nested inside it that actually need to
+carry it forward.
 
 `redundo.analyzer.task_graph.build_task_graph` reads this key to build a
 task-level graph across the whole corpus (union-find over the
@@ -71,7 +105,7 @@ not assumed from docs:
 
 | Source | Status |
 |---|---|
-| Hermes | done: `hermes-otel` emits `hermes.subagent.parent_session_id` on every subagent span, read today |
+| Hermes | done end to end, confirmed against a live `delegate_task` capture: `hermes-otel` emits `hermes.subagent.parent_session_id` on every subagent's own AGENT-kind span, read via the ancestor walk above, and (since the task_id-per-span fix) each subagent gets its own distinct task_id for it to point at -- `cross_task_redundancy` genuinely fires on real data |
 | OpenClaw | blocked upstream: its own internal session state tracks a comparable `parentSessionKey`, but it isn't on any hook payload a plugin can read today |
 | Claude Code / Claude Agent SDK | in-process subagent delegation is already real span nesting under the parent `Task` call, no separate link needed at all; separate CLI processes per agent have no known signal |
 | OpenAI Agents SDK | in-trace handoffs already work via the existing OpenInference translator's own span reparenting, no link needed; cross-trace linking (`group_id`, the SDK's own mechanism) is dropped by that same translator today, an upstream fix, not this adapter's to make |
