@@ -143,6 +143,47 @@ def test_openclaw_untrusted_content_wrapper_with_different_content_still_hashes_
     assert digest1 != digest2
 
 
+def _openclaw_tool_result_payload(marker_id: str) -> str:
+    """The real shape gen_ai.tool.call.result actually takes (confirmed
+    against a live capture), not the flat marker text alone: an outer
+    JSON object whose "text" field is *itself* a JSON-encoded string.
+    That extra layer matters -- canonicalize_json's json.loads/json.dumps
+    round-trip re-escapes whatever's already inside a nested JSON string,
+    so the marker's quotes don't stay bare `"` the way a naively
+    constructed test fixture would suggest.
+    """
+    import json as _json
+
+    inner = _json.dumps({
+        "results": [{
+            "title": f'\n<<<EXTERNAL_UNTRUSTED_CONTENT id="{marker_id}">>>\n'
+                     f'Why Do Cats Knead? - PetMD\n'
+                     f'<<<END_EXTERNAL_UNTRUSTED_CONTENT id="{marker_id}">>>',
+        }],
+    })
+    return _json.dumps({"content": [{"type": "text", "text": inner}]})
+
+
+def test_openclaw_untrusted_content_wrapper_masked_through_real_nested_json_shape():
+    # Regression test for a real bug in an earlier version of this mask:
+    # a lookbehind/lookahead expecting a bare `"` around the id matched
+    # fine against a flat test string, but never matched the real,
+    # doubly-JSON-encoded shape gen_ai.tool.call.result actually takes in
+    # production (confirmed against a live capture: the quotes show up
+    # escaped, with a number of backslashes that depends on how many JSON-
+    # string layers happen to sit in between, not one fixed depth) --
+    # so two genuinely identical real payloads kept hashing differently
+    # even after the mask "existed."
+    first = _openclaw_tool_result_payload("700e7848e8030891")
+    second = _openclaw_tool_result_payload("9be145d20cc31af6")
+    assert first != second
+    digest1, masks1 = content_hash(first, structured=True)
+    digest2, masks2 = content_hash(second, structured=True)
+    assert digest1 == digest2
+    assert masks1 > 0
+    assert masks2 > 0
+
+
 def test_duration_masked():
     text, count = mask_volatile("completed in 1.23s")
     assert "<DUR>" in text
