@@ -2,16 +2,31 @@
 see docs/openinference.md, not a shared class -- the adapter has no runtime dependency
 on the analyzer).
 
-Three rules that aren't obvious from the code and are easy to silently
+Four rules that aren't obvious from the code and are easy to silently
 violate while extending this:
 
-1. task_id: gen_ai.conversation.id (or session.id, the same concept
-   under OpenInference's own separate attribute name, confirmed real
-   for Google ADK, which sets it directly to its own session id, never
-   both disagreeing on purpose) when a trace's spans agree on one value,
-   otherwise the trace ID. Never anything else. A synthesized grouping
-   key produces confidently wrong repeat counts instead of a visible gap
-   -- see docs/openinference.md.
+1. task_id is resolved **per span**, not once for the whole trace:
+   gen_ai.conversation.id (or session.id, the same concept under
+   OpenInference's own separate attribute name, confirmed real for
+   Google ADK, which sets it directly to its own session id) if the
+   span carries one itself, else the nearest ancestor's (walking the
+   real parent_span_id chain), else that span's own trace ID. Never
+   anything else. A synthesized grouping key produces confidently wrong
+   repeat counts instead of a visible gap -- see docs/openinference.md.
+
+   This used to be resolved once per trace, requiring every span in a
+   trace to agree on a single value or falling the whole trace back to
+   its trace ID. That was wrong for a real, confirmed shape: hermes-otel
+   puts a parent conversation and each of its `delegate_task`-spawned
+   subagents in *one* OTel trace, each with its own distinct, genuinely
+   real session id stamped directly on its own spans -- not a data
+   quality problem to distrust, just multiple real tasks sharing one
+   trace. Per-span resolution handles this for free: each span's own
+   stated identity is trusted directly, never overridden by what an
+   unrelated span elsewhere in the same trace happens to say about
+   itself. There is no remaining "conflicting values" case to guess at:
+   once every span answers for itself, two different spans reporting two
+   different real ids is simply two different real tasks, not ambiguity.
 2. Only openinference.span.kind == LLM or TOOL become Events. Every other
    kind (CHAIN, AGENT, RETRIEVER, ...) doesn't map cleanly onto
    llm_call/tool_call/tool_result and is skipped, counted, and reported --
@@ -20,7 +35,24 @@ violate while extending this:
    over skipped-kind spans to find the nearest ancestor that was actually
    converted. This is real branch structure, not the analyzer's linear
    fallback -- that fallback only kicks in for spans with no kept ancestor
-   at all.
+   at all. Critically, this lineage-chaining bookkeeping (step_index,
+   the sibling-chaining tail) is scoped **per resolved task_id, not per
+   trace_id**: a task_id can legitimately span more than one physical
+   trace (a source that gives one CLI invocation its own trace per turn
+   but a stable session id across turns, confirmed for Hermes), and a
+   single trace can legitimately contain more than one task_id (the
+   subagent-delegation shape above). Grouping by resolved task_id first,
+   then running one continuous step counter per group, is what keeps
+   step_index unique within a task_id no matter how many physical traces
+   or subagents it's assembled from -- see convert_openinference()'s own
+   two-phase structure.
+4. metadata.parent_task_id (a real, source-confirmed delegation link,
+   e.g. hermes-otel's hermes.subagent.parent_session_id) is *also*
+   resolved via an ancestor walk, not just the span's own attributes:
+   confirmed against a real capture, the attribute lives on the
+   subagent's own wrapping AGENT-kind span (never converted into an
+   Event itself), not on the LLM/TOOL spans nested inside it that
+   actually need it.
 """
 
 from __future__ import annotations
@@ -82,9 +114,12 @@ class ConversionSummary:
     skipped_missing_content: int = 0
 
     traces_total: int = 0
-    traces_with_conversation_id: int = 0
-    traces_fallback_to_trace_id: int = 0
-    traces_ambiguous_conversation_id: int = 0
+    # Resolved per span, not per trace -- see module docstring point 1.
+    # A single trace can contain a real mix of both (a parent
+    # conversation plus subagents that each carry their own id), so these
+    # count spans, not traces.
+    spans_with_conversation_id: int = 0
+    spans_fallback_to_trace_id: int = 0
 
     total_records: int = 0
     records_with_any_mask: int = 0
@@ -111,17 +146,11 @@ class ConversionSummary:
         the honest-degradation messages this adapter exists to produce.
         """
         out: list[str] = []
-        if self.traces_fallback_to_trace_id:
+        if self.spans_fallback_to_trace_id:
             out.append(
-                f"no gen_ai.conversation.id found for {self.traces_fallback_to_trace_id} "
-                "trace(s); grouped by trace ID instead -- cross-trace rework not detected "
-                "for these."
-            )
-        if self.traces_ambiguous_conversation_id:
-            out.append(
-                f"{self.traces_ambiguous_conversation_id} trace(s) had conflicting "
-                "gen_ai.conversation.id values across their own spans; fell back to "
-                "trace ID for those rather than guessing which value was right."
+                f"no gen_ai.conversation.id found for {self.spans_fallback_to_trace_id} "
+                "span(s) (on the span itself or any ancestor); grouped by trace ID "
+                "instead -- cross-trace rework not detected for these."
             )
         if self.skipped_by_kind:
             detail = ", ".join(f"{k}={v}" for k, v in sorted(self.skipped_by_kind.items()))
@@ -189,31 +218,67 @@ def convert_openinference(
     for span in spans:
         by_trace.setdefault(span.trace_id, []).append(span)
 
-    records: list[dict[str, Any]] = []
+    # Phase 1 (per trace): resolve each span's own task_id/parent_task_id
+    # (own attribute, else nearest ancestor's -- a real task boundary, e.g.
+    # a Hermes subagent, can start partway through a trace) and build the
+    # ancestor-lookup structures every later step needs. span_by_id and
+    # children_by_parent are kept global (spanning every trace) rather
+    # than rebuilt per trace: parent_span_id references are only ever
+    # meaningful within the trace that produced them, so a lookup never
+    # accidentally crosses a trace boundary just because the dict is
+    # shared -- sharing it only saves rebuilding it per phase.
+    span_by_id: dict[str, Span] = {}
+    children_by_parent: dict[str, list[Span]] = {}
+    span_task_id: dict[str, str] = {}
+    span_used_conversation_id: dict[str, bool] = {}
+    span_parent_task_id: dict[str, str | None] = {}
 
     for trace_id, trace_spans in by_trace.items():
         summary.traces_total += 1
-        task_id, used_conversation_id, ambiguous = _resolve_task_id(trace_id, trace_spans)
-        if used_conversation_id:
-            summary.traces_with_conversation_id += 1
-        else:
-            summary.traces_fallback_to_trace_id += 1
-        if ambiguous:
-            summary.traces_ambiguous_conversation_id += 1
-
-        span_by_id = {s.span_id: s for s in trace_spans}
-        children_by_parent: dict[str, list[Span]] = {}
         for s in trace_spans:
+            span_by_id[s.span_id] = s
             if s.parent_span_id:
                 children_by_parent.setdefault(s.parent_span_id, []).append(s)
-        kept = [s for s in trace_spans if _kind_of(s) in SUPPORTED_KINDS]
+
         for s in trace_spans:
             kind = _kind_of(s)
             if kind not in SUPPORTED_KINDS:
                 key = kind or "(missing)"
                 summary.skipped_by_kind[key] = summary.skipped_by_kind.get(key, 0) + 1
-        kept.sort(key=lambda s: s.start_time_unix_nano)
-        summary.kept_spans += len(kept)
+
+        # A second pass, after span_by_id/children_by_parent above are
+        # fully populated for this trace, since the ancestor walk below
+        # needs the whole trace's spans indexed first.
+        for s in trace_spans:
+            task_id, used_conversation_id = _resolve_span_task_id(s, span_by_id)
+            span_task_id[s.span_id] = task_id
+            span_used_conversation_id[s.span_id] = used_conversation_id
+            span_parent_task_id[s.span_id] = _resolve_span_parent_task_id(s, span_by_id)
+            if used_conversation_id:
+                summary.spans_with_conversation_id += 1
+            else:
+                summary.spans_fallback_to_trace_id += 1
+
+    kept = [s for s in spans if _kind_of(s) in SUPPORTED_KINDS]
+    summary.kept_spans += len(kept)
+
+    # Phase 2 (per resolved task_id): group kept spans by the task_id
+    # resolved above -- which can span more than one trace_id (a source
+    # that gives one CLI invocation its own trace per turn but a stable
+    # session id across turns, confirmed for Hermes) -- and run the
+    # lineage-chaining bookkeeping once per task_id group instead of once
+    # per trace_id, so step_index stays one continuous, collision-free
+    # sequence for the whole task no matter how many physical traces (or,
+    # within one trace, how many distinct task_ids -- the subagent case)
+    # it's assembled from.
+    by_task: dict[str, list[Span]] = {}
+    for s in kept:
+        by_task.setdefault(span_task_id[s.span_id], []).append(s)
+
+    records: list[dict[str, Any]] = []
+
+    for task_id, task_spans in by_task.items():
+        task_spans.sort(key=lambda s: s.start_time_unix_nano)
 
         step = 0
         last_step_of_span: dict[str, int] = {}
@@ -251,8 +316,10 @@ def convert_openinference(
         # before and after the nested span, however far apart.
         chain_tail: dict[str, tuple[int, int, int]] = {}  # ancestor span_id -> (start, end, step)
 
-        for span in kept:
+        for span in task_spans:
             kind = _kind_of(span)
+            used_conversation_id = span_used_conversation_id[span.span_id]
+            parent_task_id = span_parent_task_id[span.span_id]
             ancestor_id = _resolve_kept_ancestor_span_id(span, span_by_id, last_step_of_span)
             span_end = span.end_time_unix_nano or span.start_time_unix_nano
 
@@ -267,8 +334,8 @@ def convert_openinference(
 
             if kind == "LLM":
                 record = _llm_event(
-                    span, task_id, used_conversation_id, step, parent_step, span_by_id,
-                    summary, pricing_context, children_by_parent,
+                    span, task_id, used_conversation_id, parent_task_id, step, parent_step,
+                    span_by_id, summary, pricing_context, children_by_parent,
                 )
                 if record is None:
                     summary.skipped_missing_content += 1
@@ -280,7 +347,8 @@ def convert_openinference(
 
             else:  # TOOL
                 call, result = _tool_events(
-                    span, task_id, used_conversation_id, step, parent_step, span_by_id, summary
+                    span, task_id, used_conversation_id, parent_task_id, step, parent_step,
+                    span_by_id, summary,
                 )
                 if call is None:
                     summary.skipped_missing_content += 1
@@ -303,25 +371,69 @@ def convert_openinference(
     return records, summary
 
 
-def _resolve_task_id(trace_id: str, trace_spans: list[Span]) -> tuple[str, bool, bool]:
-    """(task_id, used_conversation_id, ambiguous). Scans every span in the
-    trace for gen_ai.conversation.id or session.id. OTel context
-    propagation means it's common for only the root span, or only some
-    spans, to carry it. A span carrying both is not expected in practice
-    (they're the same source's own choice of one attribute name, not two
-    independent signals that could disagree); _first_present takes
-    gen_ai.conversation.id first if it somehow did.
+def _resolve_span_task_id(span: Span, span_by_id: dict[str, Span]) -> tuple[str, bool]:
+    """(task_id, used_conversation_id) for this one span: its own
+    gen_ai.conversation.id/session.id if present (preferring
+    gen_ai.conversation.id when a span somehow carries both -- not
+    expected in practice, they're the same source's own choice of one
+    attribute name, not two independent signals meant to disagree), else
+    the nearest ancestor's (walking the real parent_span_id chain --
+    OTel context propagation means it's common for only a root-ish span,
+    not every span, to carry one), else this span's own trace ID.
+
+    Resolved per span, not once for the whole trace -- see module
+    docstring point 1 for why (a real task boundary, e.g. a Hermes
+    subagent, can start partway through a trace, with every span inside
+    it carrying its own distinct, self-reported id). There is no
+    "multiple different values across the trace" ambiguity to guess at
+    once resolution is per span: each span's own stated identity (or its
+    own ancestor's) is trusted directly, never overridden by what an
+    unrelated span elsewhere in the trace happens to say about itself.
     """
-    values = {
-        _first_present(span.attributes, _CONVERSATION_ID_ATTRS)
-        for span in trace_spans
-        if _first_present(span.attributes, _CONVERSATION_ID_ATTRS) is not None
-    }
-    if len(values) == 1:
-        return next(iter(values)), True, False
-    if len(values) > 1:
-        return trace_id, False, True
-    return trace_id, False, False
+    own = _first_present(span.attributes, _CONVERSATION_ID_ATTRS)
+    if own is not None:
+        return str(own), True
+
+    current_id = span.parent_span_id
+    seen: set[str] = set()
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        parent = span_by_id.get(current_id)
+        if parent is None:
+            break
+        value = _first_present(parent.attributes, _CONVERSATION_ID_ATTRS)
+        if value is not None:
+            return str(value), True
+        current_id = parent.parent_span_id
+
+    return span.trace_id, False
+
+
+def _resolve_span_parent_task_id(span: Span, span_by_id: dict[str, Span]) -> str | None:
+    """The real, source-confirmed parent_task_id for this span (see
+    _PARENT_TASK_ID_ATTRS): its own value if present, else the nearest
+    ancestor's -- the same ancestor-walk pattern as _workflow_of.
+    Needed because the attribute lives on a subagent's own wrapping
+    AGENT-kind span in real captures (hermes-otel), never converted into
+    an Event itself, not on the LLM/TOOL spans nested inside it that
+    actually need to carry it forward.
+    """
+    value = _first_present(span.attributes, _PARENT_TASK_ID_ATTRS)
+    if value is not None:
+        return str(value)
+
+    current_id = span.parent_span_id
+    seen: set[str] = set()
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        parent = span_by_id.get(current_id)
+        if parent is None:
+            return None
+        value = _first_present(parent.attributes, _PARENT_TASK_ID_ATTRS)
+        if value is not None:
+            return str(value)
+        current_id = parent.parent_span_id
+    return None
 
 
 def _kind_of(span: Span) -> str | None:
@@ -420,7 +532,9 @@ def _iso_timestamp(unix_nano: int) -> str:
     return datetime.fromtimestamp(unix_nano / 1e9, tz=timezone.utc).isoformat()
 
 
-def _base_metadata(span: Span, masked_spans: int, used_conversation_id: bool) -> dict[str, Any]:
+def _base_metadata(
+    span: Span, masked_spans: int, used_conversation_id: bool, parent_task_id: str | None,
+) -> dict[str, Any]:
     metadata = {
         "hash_spec": hashing.HASH_SPEC,
         "masked_spans": masked_spans,
@@ -434,10 +548,10 @@ def _base_metadata(span: Span, masked_spans: int, used_conversation_id: bool) ->
         "task_id_source": "conversation_id" if used_conversation_id else "trace_id_fallback",
     }
     # A real, source-confirmed reference to another task this one was
-    # delegated from, see _PARENT_TASK_ID_ATTRS. Absent for every
+    # delegated from, already resolved (own attribute or nearest ancestor's
+    # -- see _resolve_span_parent_task_id) by the caller. Absent for every
     # source that doesn't expose one; never guessed from timing or
     # content, only ever a value the source itself reported.
-    parent_task_id = _first_present(span.attributes, _PARENT_TASK_ID_ATTRS)
     if parent_task_id is not None:
         metadata["parent_task_id"] = parent_task_id
     return metadata
@@ -477,6 +591,7 @@ def _llm_event(
     span: Span,
     task_id: str,
     used_conversation_id: bool,
+    parent_task_id: str | None,
     step: int,
     parent_step: int | None,
     span_by_id: dict[str, Span],
@@ -510,7 +625,7 @@ def _llm_event(
             summary.merged_token_child_spans += 1
 
     cost = _first_present(span.attributes, _COST_ATTRS)
-    metadata = _base_metadata(span, mask_count, used_conversation_id)
+    metadata = _base_metadata(span, mask_count, used_conversation_id, parent_task_id)
     cost_usd = float(cost) if cost is not None else None
     if cost_usd is None:
         estimated = pricing.estimate_cost_usd(
@@ -548,6 +663,7 @@ def _tool_events(
     span: Span,
     task_id: str,
     used_conversation_id: bool,
+    parent_task_id: str | None,
     step: int,
     parent_step: int | None,
     span_by_id: dict[str, Span],
@@ -578,7 +694,7 @@ def _tool_events(
         "model": None,
         "parent_id": parent_step,
         "workflow": workflow,
-        "metadata": _base_metadata(span, call_masks, used_conversation_id),
+        "metadata": _base_metadata(span, call_masks, used_conversation_id, parent_task_id),
     }
 
     raw_output = _first_present(span.attributes, (_OUTPUT_ATTR,))
@@ -603,7 +719,7 @@ def _tool_events(
         "model": None,
         "parent_id": None,  # filled in by convert()
         "workflow": workflow,
-        "metadata": _base_metadata(span, result_masks, used_conversation_id),
+        "metadata": _base_metadata(span, result_masks, used_conversation_id, parent_task_id),
     }
     return call, result
 

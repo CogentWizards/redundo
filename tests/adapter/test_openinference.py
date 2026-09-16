@@ -33,8 +33,8 @@ def test_conversation_id_used_when_present_on_any_span():
     ]
     records, summary = convert(traces_document(spans))
     assert records[0]["task_id"] == "conv-1"
-    assert summary.traces_with_conversation_id == 1
-    assert summary.traces_fallback_to_trace_id == 0
+    assert summary.spans_with_conversation_id == 1
+    assert summary.spans_fallback_to_trace_id == 0
 
 
 def test_falls_back_to_trace_id_when_conversation_id_absent():
@@ -44,11 +44,21 @@ def test_falls_back_to_trace_id_when_conversation_id_absent():
     ]
     records, summary = convert(traces_document(spans))
     assert records[0]["task_id"] == "trace-1"
-    assert summary.traces_fallback_to_trace_id == 1
+    assert summary.spans_fallback_to_trace_id == 1
     assert any("cross-trace rework not detected" in n for n in summary.notes())
 
 
-def test_conflicting_conversation_id_falls_back_and_is_flagged():
+def test_different_conversation_ids_on_unrelated_spans_each_get_their_own_task_id():
+    # Two root-level spans in one trace, no ancestor relationship between
+    # them, each with its own real, distinct conversation id. This used
+    # to force both back to the shared trace ID ("ambiguous, don't
+    # guess") -- but per-span resolution means there is nothing to guess:
+    # each span's own stated identity is a real answer, not a competing
+    # claim about the other's. Two different real ids on two unrelated
+    # spans is just two different real tasks, confirmed against a real
+    # capture (a Hermes subagent's spans carry their own session id
+    # directly, with no ancestor link to the parent conversation's own
+    # spans at all -- see docs/openinference.md).
     spans = [
         span("s1", trace_id="trace-1", start=0,
              attributes={"openinference.span.kind": "LLM", "input.value": "hi",
@@ -58,10 +68,9 @@ def test_conflicting_conversation_id_falls_back_and_is_flagged():
                          "gen_ai.conversation.id": "conv-b"}),
     ]
     records, summary = convert(traces_document(spans))
-    assert all(r["task_id"] == "trace-1" for r in records)
-    assert summary.traces_ambiguous_conversation_id == 1
-    assert summary.traces_fallback_to_trace_id == 1
-    assert any("conflicting" in n for n in summary.notes())
+    assert {r["task_id"] for r in records} == {"conv-a", "conv-b"}
+    assert summary.spans_with_conversation_id == 2
+    assert summary.spans_fallback_to_trace_id == 0
 
 
 def test_never_synthesizes_a_task_id():
@@ -85,7 +94,7 @@ def test_session_id_used_as_a_conversation_id_fallback():
     ]
     records, summary = convert(traces_document(spans))
     assert records[0]["task_id"] == "adk-session-1"
-    assert summary.traces_with_conversation_id == 1
+    assert summary.spans_with_conversation_id == 1
 
 
 def test_conversation_id_preferred_over_session_id_when_both_present():
@@ -98,7 +107,7 @@ def test_conversation_id_preferred_over_session_id_when_both_present():
     assert records[0]["task_id"] == "conv-1"
 
 
-def test_conflicting_session_id_and_conversation_id_across_spans_falls_back():
+def test_different_session_and_conversation_ids_on_unrelated_spans_each_get_their_own_task_id():
     spans = [
         span("s1", trace_id="trace-1", start=0,
              attributes={"openinference.span.kind": "LLM", "input.value": "hi",
@@ -108,8 +117,8 @@ def test_conflicting_session_id_and_conversation_id_across_spans_falls_back():
                          "session.id": "sess-2"}),
     ]
     records, summary = convert(traces_document(spans))
-    assert all(r["task_id"] == "trace-1" for r in records)
-    assert summary.traces_ambiguous_conversation_id == 1
+    assert {r["task_id"] for r in records} == {"conv-1", "sess-2"}
+    assert summary.spans_with_conversation_id == 2
 
 
 # --- parent_task_id (real cross-task delegation link) ---------------------
@@ -146,6 +155,109 @@ def test_parent_task_id_also_carried_on_tool_call_and_result():
     records, _ = convert(traces_document(spans))
     assert records[0]["metadata"]["parent_task_id"] == "parent-session-1"
     assert records[1]["metadata"]["parent_task_id"] == "parent-session-1"
+
+
+def test_subagent_delegation_gets_its_own_task_id_and_inherited_parent_task_id():
+    # The real shape confirmed against a live Hermes capture (delegate_task
+    # spawning two subagents): a parent conversation and two subagent
+    # branches, all inside ONE trace. Each subagent's own AGENT-kind
+    # wrapper span carries its own session id AND
+    # hermes.subagent.parent_session_id pointing at the parent's session
+    # id; the LLM/TOOL spans actually nested inside it carry their own
+    # session id too (matching the parent, i.e. their own subagent's), but
+    # NOT their own parent_session_id -- that has to be inherited from the
+    # AGENT wrapper via an ancestor walk. The AGENT wrapper's own real
+    # parent span is never captured in the real data either (confirmed:
+    # its parentSpanId pointed at a span id that appeared nowhere in the
+    # export), so this fixture deliberately leaves it unset (a root span)
+    # rather than inventing an uncaptured ancestor.
+    spans = [
+        span("parent-llm", trace_id="t1", start=0, attributes={
+            "openinference.span.kind": "LLM", "input.value": "delegate to two subagents",
+            "gen_ai.conversation.id": "parent-session",
+        }),
+        span("agent-a", trace_id="t1", start=10, attributes={
+            "openinference.span.kind": "AGENT",
+            "gen_ai.conversation.id": "subagent-a",
+            "hermes.subagent.parent_session_id": "parent-session",
+        }),
+        span("a-llm1", trace_id="t1", parent_span_id="agent-a", start=20, attributes={
+            "openinference.span.kind": "LLM", "input.value": "research battery manufacturing",
+            "gen_ai.conversation.id": "subagent-a",
+        }),
+        span("agent-b", trace_id="t1", start=10, attributes={
+            "openinference.span.kind": "AGENT",
+            "gen_ai.conversation.id": "subagent-b",
+            "hermes.subagent.parent_session_id": "parent-session",
+        }),
+        span("b-llm1", trace_id="t1", parent_span_id="agent-b", start=20, attributes={
+            "openinference.span.kind": "LLM", "input.value": "research battery environmental impact",
+            "gen_ai.conversation.id": "subagent-b",
+        }),
+    ]
+    records, _ = convert(traces_document(spans))
+    assert len(records) == 3  # the two AGENT wrappers are skipped, never converted
+
+    parent_record = next(r for r in records if r["task_id"] == "parent-session")
+    a_record = next(r for r in records if r["task_id"] == "subagent-a")
+    b_record = next(r for r in records if r["task_id"] == "subagent-b")
+
+    # (a) each subagent's events get their own distinct task_id, not the
+    # parent's and not each other's.
+    assert len({parent_record["task_id"], a_record["task_id"], b_record["task_id"]}) == 3
+
+    # (b) parent_task_id correctly resolves for LLM events nested under a
+    # subagent's AGENT wrapper, inherited from that wrapper, even though
+    # the LLM/TOOL span itself carries no hermes.subagent.parent_session_id.
+    assert "parent_task_id" not in parent_record["metadata"]
+    assert a_record["metadata"]["parent_task_id"] == "parent-session"
+    assert b_record["metadata"]["parent_task_id"] == "parent-session"
+
+
+# --- step_index does not collide across a task's own multiple traces -----
+
+def test_step_index_stays_unique_across_two_traces_sharing_one_task_id():
+    # A task_id can legitimately span more than one physical trace (e.g. a
+    # source that gives one CLI invocation its own trace per turn but a
+    # stable session id across turns, confirmed for Hermes). Before this
+    # fix, step_index was assigned per trace_id, so two traces sharing one
+    # task_id would each start their own step_index at 0 -- colliding
+    # within the task and silently corrupting lineage.TaskLineage's
+    # step-indexed internals (see redundo.analyzer.lineage.TaskLineage.build,
+    # which assumes step_index is unique per task_id).
+    spans = [
+        span("s1", trace_id="trace-a", start=0, attributes={
+            "openinference.span.kind": "TOOL", "tool.name": "calculate",
+            "input.value": '{"expr": "47*89"}',
+            "gen_ai.conversation.id": "task-x",
+        }),
+        span("s2", trace_id="trace-b", start=1000, attributes={
+            "openinference.span.kind": "TOOL", "tool.name": "calculate",
+            "input.value": '{"expr": "47*89"}',  # verbatim repeat, different trace
+            "gen_ai.conversation.id": "task-x",
+        }),
+    ]
+    records, _ = convert(traces_document(spans))
+    tool_calls = [r for r in records if r["event_type"] == "tool_call"]
+    assert len(tool_calls) == 2
+    assert all(r["task_id"] == "task-x" for r in tool_calls)
+
+    step_indices = [r["step_index"] for r in records]
+    assert len(step_indices) == len(set(step_indices)), (
+        f"step_index collided across traces sharing one task_id: {step_indices}"
+    )
+
+    # And the actual point of fixing this: a genuine repeat spanning the
+    # two traces is now findable as a real candidate pair, not silently
+    # lost to a corrupted lineage index.
+    from redundo.analyzer.cycles import find_candidate_pairs
+    from redundo.analyzer.schema import Event
+
+    events = [Event.from_dict(r) for r in records]
+    pairs = find_candidate_pairs(events)
+    assert len(pairs) == 1
+    assert pairs[0].original.task_id == "task-x"
+    assert pairs[0].repeat.task_id == "task-x"
 
 
 # --- span kind mapping ---------------------------------------------------
@@ -307,7 +419,10 @@ def test_fixture_document_produces_a_detectable_repeat():
     assert len(tool_calls) == 2
     # differently key-ordered but semantically identical JSON args must hash the same
     assert tool_calls[0]["content_hash"] == tool_calls[1]["content_hash"]
-    assert summary.traces_with_conversation_id == 1
+    # All 5 spans in the fixture (including the 2 skipped-by-kind ones --
+    # resolution runs over every span, not just kept ones) share one real
+    # conversation id.
+    assert summary.spans_with_conversation_id == 5
     assert summary.skipped_by_kind == {"AGENT": 1, "CHAIN": 1}
 
 
