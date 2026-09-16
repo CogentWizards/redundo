@@ -47,6 +47,7 @@ in this order:
 | Durations (`1.23s`, `450ms`) | `<DUR>` |
 | Hex addresses (`0x7f...`) | `<ADDR>` |
 | Temp paths (`/tmp/...`, `/var/folders/...`) | `<TMP>` |
+| OpenClaw's `EXTERNAL_UNTRUSTED_CONTENT id="..."` wrapper id | `<ID>` |
 | Bare integers (5+ digits) | `<NUM>` -- **opt-in only, off by default** |
 
 Volatile content, not whitespace, is what actually breaks the metric: if
@@ -55,7 +56,12 @@ ever hash the same and the non-productive-cycle signal silently returns
 zero -- not an error, just an empty result that looks like good news.
 CrewAI injects the current date into agent context and generates a fresh
 `call_id` per call via `llm_call_context()`; every framework has its own
-equivalent. Mask before you trust a zero.
+equivalent. OpenClaw's own prompt-injection defense wraps every piece of
+external tool content in `<<<EXTERNAL_UNTRUSTED_CONTENT id="...">>>`
+markers with a fresh random id on every call, confirmed live: two
+byte-identical `web_search` results seconds apart, served from cache,
+still hashed differently before this mask existed. Mask before you trust
+a zero.
 
 Numeric masking is opt-in because a bare integer is ambiguous -- it could
 be an epoch timestamp or an order ID, and masking order IDs collapses
