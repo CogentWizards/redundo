@@ -386,10 +386,26 @@ conservative default the schema already documents.
 
 ## Known gaps, stated plainly
 
-- **MCP tool call *results* are never observable**, on any signal, at any
-  logging level. Every MCP `tool_call` this adapter emits will have no
-  paired `tool_result` unless a future Claude Code version starts emitting
-  `tool.output` events for MCP tools too.
+- **MCP tool call *result content* is never observable**, on any signal,
+  at any logging level -- and the same is true for a built-in Bash call
+  whose shell command exits non-zero, confirmed empirically: Claude Code
+  never attaches a `tool.output` content event to a failed-exit-code
+  span, regardless of `OTEL_LOG_TOOL_CONTENT`. Neither case gets a
+  content_hash that can participate in result-identity comparison. But
+  as of this adapter's own fix for it, a `tool_result` record is still
+  emitted whenever the child `claude_code.tool.execution`/
+  `blocked_on_user` span reports a real outcome (`success`/`decision`),
+  carrying that outcome with an opaque, non-comparable content_hash
+  (`metadata.content_basis = "opaque"`) instead of being dropped
+  entirely -- so `lineage.terminal_outcome` (and therefore
+  `confirmed_waste`) can still see a real task-ending failure even when
+  its content couldn't be captured. `redundo/analyzer/classify.py`'s
+  `_correlated_result_hash()` explicitly refuses to use an
+  opaque-basis result for identity comparison, so this never manufactures
+  a false "result changed" or "result identical" signal -- it only
+  rescues outcome, never content. A tool_result is still genuinely absent
+  when there's no `tool.execution`/`blocked_on_user` child to read an
+  outcome from at all (true for every MCP call today).
 - **`tool.output`'s content attribute key varies per tool.** Confirmed
   empirically, not documented anywhere: Read uses `content`, Bash uses
   `output`. `_tool_result_content()` checks both (`_TOOL_OUTPUT_CONTENT_KEYS`);

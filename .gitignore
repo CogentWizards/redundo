@@ -6,3 +6,9 @@ __pycache__/
 dist/
 build/
 .DS_Store
+
+# Demo apps under examples/demo-apps/ create their own throwaway venvs
+# and (for the claude-code one) a per-run .venv pinned inside a copy of
+# their fixture repo -- never checked in.
+examples/demo-apps/*/venv/
+examples/demo-apps/*/fixture_repo_template/.venv/
