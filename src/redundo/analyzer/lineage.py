@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from .schema import Event
+from .schema import META_SYNTHESIZED_COST_ONLY_KEY, Event
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,13 +101,27 @@ class TaskLineage:
 
     @property
     def terminal_outcome(self) -> str | None:
-        """The outcome of the task's last event by step_index, or None if
-        that event has no outcome recorded. This is a task-wide proxy, not
-        branch-precise -- see module docstring and README for why that's
-        an acceptable default for a first pass, and a documented limitation
-        for genuinely parallel/multi-branch tasks.
+        """The outcome of the task's last real event by step_index, or
+        None if that event has no outcome recorded. This is a task-wide
+        proxy, not branch-precise -- see module docstring and README for
+        why that's an acceptable default for a first pass, and a
+        documented limitation for genuinely parallel/multi-branch tasks.
+
+        Skips trailing events flagged `META_SYNTHESIZED_COST_ONLY_KEY`:
+        schema.py's own docstring for that key says these have "no real
+        position in any lineage," and sources that emit them (see
+        claude_code.py's _synthesized_cost_only_event) always append them
+        after every span-derived record for the task, regardless of when
+        they actually happened. Left unskipped, one of these (a session-
+        title-generation call, say) would silently blank out an otherwise
+        perfectly informative terminal outcome on almost every real
+        capture from those sources.
         """
-        return self.events[-1].outcome
+        for event in reversed(self.events):
+            if event.metadata.get(META_SYNTHESIZED_COST_ONLY_KEY):
+                continue
+            return event.outcome
+        return None
 
 
 def group_by_task(events: list[Event]) -> dict[str, TaskLineage]:

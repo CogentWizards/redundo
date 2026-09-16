@@ -604,7 +604,11 @@ def _outcome_bool(value: Any) -> str | None:
 
 
 def _base_metadata(
-    span: Span, used_real_session_id: bool, content_basis: str, extra: dict[str, Any]
+    span: Span,
+    used_real_session_id: bool,
+    content_basis: str,
+    extra: dict[str, Any],
+    similarity_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     meta = {
         "hash_spec": hashing.HASH_SPEC,
@@ -613,6 +617,9 @@ def _base_metadata(
         "task_id_source": "session_id" if used_real_session_id else "trace_id_fallback",
         "content_basis": content_basis,
     }
+    if similarity_fingerprint is not None:
+        meta["similarity_fingerprint"] = similarity_fingerprint
+        meta["similarity_spec"] = hashing.SIMILARITY_SPEC
     meta.update(extra)
     return meta
 
@@ -742,8 +749,10 @@ def _llm_event(
         prompt = windowed_prompt
         content_basis = "prompt_windowed"
 
+    fingerprint = None
     if prompt is not None:
         digest, masks = hashing.content_hash(prompt, structured=False)
+        fingerprint = hashing.similarity_fingerprint(prompt, structured=False)
         summary.records_with_prompt_content += 1
         if content_basis == "prompt_windowed":
             summary.records_with_windowed_prompt_content += 1
@@ -769,6 +778,7 @@ def _llm_event(
         "metadata": _base_metadata(
             span, used_real_session_id, content_basis,
             {"masked_spans": masks, "request_id": span.attributes.get("request_id")},
+            similarity_fingerprint=fingerprint,
         ),
     }
 
@@ -816,8 +826,10 @@ def _tool_events(
                 tool_name = f"mcp__{parsed['mcp_server_name']}__{parsed['mcp_tool_name']}"
 
     call_content, call_basis = _tool_call_content(span, log_result)
+    call_fingerprint = None
     if call_content is not None:
         call_hash, call_masks = hashing.content_hash(call_content, structured=True)
+        call_fingerprint = hashing.similarity_fingerprint(call_content, structured=True)
     else:
         call_hash, call_masks = _opaque_hash(span)
     if call_basis == "tool_input":
@@ -844,28 +856,67 @@ def _tool_events(
         "metadata": _base_metadata(
             span, used_real_session_id, call_basis,
             {"masked_spans": call_masks, "tool_use_id": tool_use_id, "mcp": is_mcp},
+            similarity_fingerprint=call_fingerprint,
         ),
     }
 
     result_content = _tool_result_content(span)
     if result_content is None:
-        # No tool.output span event at all -- true for every MCP tool
-        # call, confirmed empirically: the logs-joined tool_result record
-        # carries tool_result_size_bytes (a byte count) but never the
-        # actual output, at any logging level. There is no way to emit a
-        # content_hash here that's *safe*: unlike an llm_call with no
-        # prompt (where a hash that never matches anything is a harmless
-        # non-claim), a tool_result's hash is actively compared for
-        # equality by classify.py's _result_signal() -- a fabricated
-        # per-span hash would read as "result changed" (an active,
-        # false claim), and a fabricated constant sentinel would read as
-        # "result identical" (also false, and worse: it can feed
-        # confirmed_waste). The only safe representation of "unknown
-        # result" this schema has is the one sources.openinference
-        # already established: no tool_result event at all, so
-        # _correlated_result_hash() finds nothing and reports UNKNOWN,
-        # not a wrong answer dressed as a confident one.
-        return call, None
+        # No tool.output span event at all -- confirmed empirically for
+        # every MCP tool call (the logs-joined tool_result record carries
+        # tool_result_size_bytes, a byte count, but never the actual
+        # output, at any logging level), and also for a built-in Bash
+        # call whose shell command exited non-zero: Claude Code's own
+        # telemetry never attaches a tool.output content event to a
+        # failed-exit-code span, regardless of OTEL_LOG_TOOL_CONTENT.
+        #
+        # Content is unrecoverable here, but `outcome` (computed above,
+        # from the child claude_code.tool.execution/blocked_on_user
+        # span's own success/decision attribute) is real and independent
+        # of whether content was captured -- dropping the whole record
+        # would silently discard it too, and outcome is what
+        # lineage.TaskLineage.terminal_outcome (and therefore
+        # classify.py's confirmed_waste path) needs to ever see a real
+        # failure for a task that ends on a content-less tool error.
+        #
+        # Still emit a tool_result, with an opaque, span-id-derived
+        # content_hash (see _opaque_hash) that can never coincidentally
+        # equal another record's hash -- the same reasoning as an llm_call
+        # with no prompt (point 4 above). Unlike that case, a tool_result's
+        # hash is actively compared for *equality* by classify.py's
+        # _result_signal(): two different opaque hashes would read as
+        # "result changed" (an active, false claim, the same failure mode
+        # a fabricated per-span hash would have caused before this fix
+        # existed). classify.py's _correlated_result_hash() is the one
+        # responsible for not doing that -- it treats any
+        # content_basis="opaque" tool_result as non-comparable and reports
+        # UNKNOWN instead, so this never manufactures a false "changed" or
+        # "identical" signal; it only rescues outcome, never content.
+        if outcome is None:
+            return call, None
+        result_hash, result_masks = _opaque_hash(span)
+        result_basis = "opaque"
+        summary.records_with_opaque_content += 1
+        result = {
+            "task_id": task_id,
+            "step_index": None,  # filled in by _convert_session
+            "event_type": "tool_result",
+            "name": tool_name,
+            "content_hash": result_hash,
+            "tokens_in": None,
+            "tokens_out": None,
+            "outcome": outcome,
+            "timestamp": _iso_timestamp(span.end_time_unix_nano or span.start_time_unix_nano),
+            "cost_usd": None,
+            "model": None,
+            "parent_id": None,  # filled in by _convert_session
+            "workflow": span.attributes.get("agent_id"),
+            "metadata": _base_metadata(
+                span, used_real_session_id, result_basis,
+                {"masked_spans": result_masks, "tool_use_id": tool_use_id, "mcp": is_mcp},
+            ),
+        }
+        return call, result
 
     result_hash, result_masks = hashing.content_hash(result_content, structured=False)
     result_basis = "prompt"
