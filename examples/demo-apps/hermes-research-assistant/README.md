@@ -17,37 +17,47 @@ that endpoint is fixed by Hermes's own config, not overridable per run,
 so this script owns port 4318 for its duration). Takes a couple of
 minutes.
 
-## What it does, and what's real vs. still tracked
+## What it does
 
 **Session A** asks for a research topic and lets the agent delegate it
 to two subagents via Hermes's real `delegate_task` tool -- a genuine,
-overlapping-topic, concurrent multi-agent workflow. This is the
-scenario this app was built around, and it's a **real, honest look at
-where redundo's multi-agent story is today, not a finished
-demonstration**:
+overlapping-topic, concurrent multi-agent workflow, and the flagship
+scenario this app was built around. The two subagents run *in parallel*,
+as lineage siblings, not one descended from the other, so redundo
+correctly never flags their overlapping calls against each other in
+same-task matching -- that would mean treating normal parallel fan-out
+as waste, which it isn't. Catching genuinely redundant parallel work is
+exactly what `cross_task_redundancy` exists for, and it needs two real,
+distinct task_ids linked by a confirmed delegation edge to have a chance
+to fire.
 
-- The two subagents run *in parallel*, as lineage siblings, not one
-  descended from the other. redundo correctly never flags siblings'
-  overlapping calls against each other in same-task matching -- that
-  would mean treating normal parallel fan-out as waste, which it isn't.
-  Catching genuinely redundant parallel work is exactly what the
-  `cross_task_redundancy` bucket exists for.
-- For `cross_task_redundancy` to have a chance to fire, each subagent
-  needs its own task_id, linked back to the parent's. Right now it
-  doesn't: verified directly against a live capture, Hermes puts the
-  parent conversation and both subagents' spans in one OTel trace, each
-  with a different real session id, and redundo's `openinference`
-  adapter's task-id resolution currently treats "more than one
-  conversation id in one trace" as ambiguous and falls back to grouping
-  everything under one task_id. There's a tracked follow-up for this.
-- A second, related gap: the attribute that names a subagent's parent
-  (`hermes.subagent.parent_session_id`) lives on a wrapper span this
-  adapter currently skips entirely, so even independent of the above,
-  it isn't reaching the events that would need it. Also tracked.
+That used to be broken for real Hermes captures (redundo's `openinference`
+adapter collapsed a parent conversation and its subagents into one
+task_id, and separately lost the subagent-parent link on top of that --
+both bugs found and fixed while building this demo, see
+[CogentWizards/redundo#31](https://github.com/CogentWizards/redundo/pull/31)).
+With the fix merged, this session's output now genuinely populates
+`cross_task_redundancy` on a live run: both subagents independently look
+up the same skill documentation before starting their own research, and
+redundo correctly links that repeat back to the shared `delegate_task`
+call that spawned them -- confirmed related, not a guess from timing or
+content.
 
-So Session A runs for real and its output is real, but it does not
-currently populate `cross_task_redundancy` -- treat it as this app
-building toward its flagship scenario, not yet delivering it.
+**Session B** is a single, sequential turn: calculate something, repeat
+the exact same calculation verbatim (nothing intervening), save the
+result to a file, repeat once more to double-check, then a nearby but
+different calculation. This one *is* fully same-task, sequential, no
+parallelism -- and produces its own real finding: the two verbatim-repeated
+calculations exact-match on the call side, but classify as
+`likely_legitimate` ("result changed") rather than `confirmed_waste`,
+because the tool's own result payload carries a small amount of
+per-call execution metadata alongside the actual answer, which isn't
+byte-identical between calls even though the answer is. This is the same
+family of finding as the `openclaw-daily-briefing` demo's README
+documents in more depth (a wrapper carrying volatile per-call data
+defeats exact result-identity comparison) -- seeing the same shape of
+gap independently on a second, unrelated source is itself a useful
+signal about where redundo's masking needs to get more thorough.
 
 **Session B** is a single, sequential turn: calculate something, repeat
 the exact same calculation verbatim (nothing intervening), save the
