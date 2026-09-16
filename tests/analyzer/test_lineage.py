@@ -3,7 +3,7 @@ from redundo.analyzer.schema import Event
 
 
 def make_event(step_index, event_type="tool_call", name="search", content_hash="h1",
-                parent_id=None, outcome=None, task_id="t1"):
+                parent_id=None, outcome=None, task_id="t1", metadata=None):
     return Event(
         task_id=task_id,
         step_index=step_index,
@@ -18,7 +18,7 @@ def make_event(step_index, event_type="tool_call", name="search", content_hash="
         model=None,
         parent_id=parent_id,
         workflow=None,
-        metadata={},
+        metadata=metadata if metadata is not None else {},
     )
 
 
@@ -67,6 +67,25 @@ def test_terminal_outcome_is_last_event_by_step_index():
 
 def test_terminal_outcome_none_when_last_event_has_none():
     events = [make_event(0, outcome="ok"), make_event(1, outcome=None)]
+    lineage = TaskLineage.build(events)
+    assert lineage.terminal_outcome is None
+
+
+def test_terminal_outcome_skips_a_trailing_synthesized_cost_only_event():
+    # A synthesized cost-only record (see claude_code.py's
+    # _synthesized_cost_only_event) is always appended after every real
+    # span-derived event, with outcome=None by construction -- it must not
+    # blank out an otherwise perfectly informative real terminal outcome.
+    events = [
+        make_event(0, outcome="error"),
+        make_event(1, outcome=None, metadata={"synthesized_cost_only": True}),
+    ]
+    lineage = TaskLineage.build(events)
+    assert lineage.terminal_outcome == "error"
+
+
+def test_terminal_outcome_none_when_every_event_is_synthesized_cost_only():
+    events = [make_event(0, outcome=None, metadata={"synthesized_cost_only": True})]
     lineage = TaskLineage.build(events)
     assert lineage.terminal_outcome is None
 
