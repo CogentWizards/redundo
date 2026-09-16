@@ -57,6 +57,22 @@ META_PARENT_TASK_ID_KEY = "parent_task_id"
 # subagent it spawned, which was never one continuous thread to begin
 # with.
 META_PARENT_TASK_LINK_KIND_KEY = "parent_task_link_kind"
+# str: where this record's content_hash actually came from -- adapter-
+# specific values (e.g. "prompt", "tool_input", "opaque",
+# "log_only_no_span"), documented per-source, not enumerated here. The
+# one value the analyzer itself depends on is "opaque": a content_hash
+# derived from the record's own span/call id rather than real content
+# (unique by construction, so it never coincidentally equals another
+# record's hash -- see each adapter's own opaque-hash helper). That
+# uniqueness makes it safe for candidate-pair generation (two different
+# opaque hashes simply never match, a null result, not a wrong one) but
+# unsafe for *result-identity* comparison specifically: comparing two
+# different opaque hashes to each other would read as "the result
+# changed" -- an active, false claim, not an absence of one. See
+# classify.py's _correlated_result_hash(), the one place this key is
+# actually read.
+META_CONTENT_BASIS_KEY = "content_basis"
+META_CONTENT_BASIS_OPAQUE = "opaque"
 
 
 class SchemaError(ValueError):

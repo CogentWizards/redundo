@@ -252,3 +252,54 @@ def test_llm_call_with_response_hash_can_reach_confirmed_waste():
     classification = classify_first_pair(events)
     assert classification.result_signal == Signal.WASTE_SUPPORTING
     assert classification.verdict == Verdict.CONFIRMED_WASTE
+
+
+def test_opaque_basis_tool_results_never_read_as_identical_or_changed():
+    # Two tool_results with content_basis="opaque" (see claude_code.py's
+    # _tool_events(): a real outcome rescued from a call whose actual
+    # content couldn't be captured, hashed from the span's own id, unique
+    # by construction). Even with genuinely DIFFERENT opaque hashes here
+    # (as two independent opaque hashes always are), this must read as
+    # UNKNOWN, not "result changed" -- comparing two hashes that can never
+    # coincidentally match is not evidence the underlying result changed,
+    # it's an absence of a comparable signal.
+    events = [
+        make_event(0, event_type="tool_call"),
+        make_event(
+            1, event_type="tool_result", content_hash="opaque_hash_a",
+            outcome="error", metadata={"content_basis": "opaque"},
+        ),
+        make_event(2, event_type="tool_call"),
+        make_event(
+            3, event_type="tool_result", content_hash="opaque_hash_b",
+            outcome="error", metadata={"content_basis": "opaque"},
+        ),
+    ]
+    classification = classify_first_pair(events)
+    assert classification.result_signal == Signal.UNKNOWN
+    assert classification.verdict != Verdict.CONFIRMED_WASTE
+    assert classification.verdict != Verdict.LIKELY_LEGITIMATE
+
+
+def test_opaque_basis_tool_results_do_not_block_terminal_outcome():
+    # The opaque-basis carve-out is scoped to result *identity* comparison
+    # only -- it must not stop the real outcome an opaque tool_result
+    # carries from being visible elsewhere (e.g. lineage.terminal_outcome,
+    # which just reads Event.outcome directly, not through
+    # _correlated_result_hash). Confirmed here via write_signal/
+    # terminal_signal still resolving normally around an opaque pair.
+    events = [
+        make_event(0, event_type="tool_call"),
+        make_event(
+            1, event_type="tool_result", content_hash="opaque_hash_a",
+            outcome="error", metadata={"content_basis": "opaque"},
+        ),
+        make_event(2, event_type="tool_call"),
+        make_event(
+            3, event_type="tool_result", content_hash="opaque_hash_b",
+            outcome="error", metadata={"content_basis": "opaque"},
+        ),
+    ]
+    classification = classify_first_pair(events)
+    assert classification.write_signal == Signal.WASTE_SUPPORTING
+    assert classification.terminal_signal == Signal.WASTE_SUPPORTING

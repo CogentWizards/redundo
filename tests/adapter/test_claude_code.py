@@ -110,14 +110,33 @@ def test_bash_tool_output_uses_output_key_not_content():
     assert result["content_hash"] is not None
 
 
-def test_tool_call_with_no_output_event_gets_no_result_record():
+def test_tool_call_with_no_output_event_but_a_known_outcome_gets_an_opaque_result_record():
     # No tool.output event and no logs join -- genuinely nothing to
-    # correlate. Must not fabricate a result record (see convert.py's
-    # extensive comment on why an opaque result hash is unsafe).
+    # correlate for *content*. But the child tool.execution span's own
+    # success attribute is a real, independent signal that must not be
+    # silently dropped along with the missing content (see convert.py's
+    # extensive comment on why this result's content_hash is opaque,
+    # never a fabricated stand-in for the real, unobservable result).
     spans = [
         _interaction(),
         _tool("t1", "interaction", "mcp__server__tool", 10, 50),
         _tool_execution("t1exec", "t1", success=True, start=10, end=45),
+    ]
+    records, _ = convert([traces_document(spans)])
+    types = [r["event_type"] for r in records]
+    assert types == ["tool_call", "tool_result"]
+    result = records[1]
+    assert result["outcome"] == "ok"
+    assert result["metadata"]["content_basis"] == "opaque"
+
+
+def test_tool_call_with_no_output_event_and_no_outcome_gets_no_result_record():
+    # No tool.output event, no logs join, AND no tool.execution child at
+    # all -- content is unrecoverable and there is no real outcome to
+    # rescue either. Must not fabricate a result record.
+    spans = [
+        _interaction(),
+        _tool("t1", "interaction", "mcp__server__tool", 10, 50),
     ]
     records, _ = convert([traces_document(spans)])
     types = [r["event_type"] for r in records]
@@ -241,12 +260,18 @@ def test_siblings_under_interaction_chain_sequentially():
     records, _ = convert([traces_document(spans)])
     by_step = {r["step_index"]: r for r in records}
     # step0: llm1 (root); step1: tool_call Read (chains to llm1); step2:
-    # llm2 (chains to Read, the last sibling processed).
+    # tool_result Read (no tool.output event, but tool_execution's own
+    # success=True is a real outcome, so this now gets an opaque-basis
+    # result record instead of being dropped -- see
+    # claude_code.py's _tool_events()); step3: llm2 (chains to the tool
+    # call's own last-mapped step, which is now the result, the last
+    # sibling processed under that ancestor).
     assert by_step[0]["event_type"] == "llm_call" and by_step[0]["parent_id"] is None
     assert by_step[1]["event_type"] == "tool_call" and by_step[1]["parent_id"] == 0
+    assert by_step[2]["event_type"] == "tool_result"
     last_llm = [r for r in records if r["event_type"] == "llm_call"][-1]
-    tool_call = [r for r in records if r["event_type"] == "tool_call"][0]
-    assert last_llm["parent_id"] == tool_call["step_index"]
+    tool_result = [r for r in records if r["event_type"] == "tool_result"][0]
+    assert last_llm["parent_id"] == tool_result["step_index"]
 
 
 def test_cross_interaction_events_chain_within_session():
