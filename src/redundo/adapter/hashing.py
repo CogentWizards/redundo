@@ -60,21 +60,36 @@ _BARE_INTEGER_RE = re.compile(r"\b\d{5,}\b")  # opt-in only; see mask_volatile
 # `<<<EXTERNAL_UNTRUSTED_CONTENT id="...">>>` / `<<<END_EXTERNAL_UNTRUSTED_CONTENT
 # id="...">>>` markers, and the id is a FRESH random value on every single
 # call -- even when the wrapped content is byte-identical to a previous
-# call. Confirmed twice against live captures (sources.openclaw and
+# call. Confirmed against live captures (sources.openclaw and
 # sources.openclaw_localtrace both hash gen_ai.tool.call.result through
 # this same masking path): always exactly 16 lowercase hex characters.
-# Not UUID-shaped (no hyphens), so _UUID_RE doesn't already catch it. The
-# lookbehind matches only the id itself, inside either marker spelling
-# ("END_EXTERNAL_UNTRUSTED_CONTENT" ends in "EXTERNAL_UNTRUSTED_CONTENT"),
-# leaving the surrounding marker text (and any genuinely different
-# wrapped content) untouched -- this is deliberately narrow to the
-# confirmed marker context, not a bare 16-hex-char pattern that could
-# coincidentally swallow real content elsewhere.
+# Not UUID-shaped (no hyphens), so _UUID_RE doesn't already catch it.
+#
+# The quotes around the id are NOT always bare `"`. gen_ai.tool.call.result
+# is itself JSON containing a `text` field that's *itself* JSON-encoded
+# text -- and canonicalize_json's own json.loads/json.dumps round-trip
+# re-escapes whatever's already inside that string. Confirmed directly
+# against a real capture: the same marker showed up with 0 backslashes
+# before mask_volatile even runs (a bare, already-unwrapped payload) in
+# one path and 3 literal backslashes before the quote
+# (`id=\\\"...\\\">>>`) in another, depending on how many JSON-string
+# layers happened to sit between the id and this function -- not a fixed
+# depth to hardcode. A lookbehind/lookahead can't express "however many
+# backslashes happen to be there" (Python requires fixed-width
+# lookaround), so this captures the quote-plus-any-backslashes on each
+# side and reconstructs them unchanged around the replacement token via
+# backreferences, rather than assuming one specific escaping depth.
 _EXTERNAL_UNTRUSTED_CONTENT_ID_RE = re.compile(
-    r'(?<=EXTERNAL_UNTRUSTED_CONTENT id=")[0-9a-f]{16}(?=")'
+    r'(EXTERNAL_UNTRUSTED_CONTENT id=\\*")[0-9a-f]{16}(\\*")'
 )
 
-# (replacement token, pattern) in application order.
+# (replacement token, pattern) in application order. Every entry here is a
+# plain literal token *except* the untrusted-content one, which needs a
+# capture-group backreference (see _EXTERNAL_UNTRUSTED_CONTENT_ID_RE's own
+# docstring) to put the surrounding quote/backslashes back unchanged --
+# re.sub/subn already treats \1-style references in the replacement
+# string specially, so this fits the same (token, pattern) shape as
+# every other row without any special-casing in mask_volatile itself.
 _MASKS: list[tuple[str, re.Pattern[str]]] = [
     ("<DATE>", _ISO_DATETIME_RE),
     ("<DATE>", _ISO_DATE_ONLY_RE),
@@ -83,7 +98,7 @@ _MASKS: list[tuple[str, re.Pattern[str]]] = [
     ("<DUR>", _DURATION_RE),
     ("<ADDR>", _HEX_ADDR_RE),
     ("<TMP>", _TMP_PATH_RE),
-    ("<ID>", _EXTERNAL_UNTRUSTED_CONTENT_ID_RE),
+    (r"\1<ID>\2", _EXTERNAL_UNTRUSTED_CONTENT_ID_RE),
 ]
 
 
