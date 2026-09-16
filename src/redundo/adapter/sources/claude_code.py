@@ -604,7 +604,11 @@ def _outcome_bool(value: Any) -> str | None:
 
 
 def _base_metadata(
-    span: Span, used_real_session_id: bool, content_basis: str, extra: dict[str, Any]
+    span: Span,
+    used_real_session_id: bool,
+    content_basis: str,
+    extra: dict[str, Any],
+    similarity_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     meta = {
         "hash_spec": hashing.HASH_SPEC,
@@ -613,6 +617,9 @@ def _base_metadata(
         "task_id_source": "session_id" if used_real_session_id else "trace_id_fallback",
         "content_basis": content_basis,
     }
+    if similarity_fingerprint is not None:
+        meta["similarity_fingerprint"] = similarity_fingerprint
+        meta["similarity_spec"] = hashing.SIMILARITY_SPEC
     meta.update(extra)
     return meta
 
@@ -742,8 +749,10 @@ def _llm_event(
         prompt = windowed_prompt
         content_basis = "prompt_windowed"
 
+    fingerprint = None
     if prompt is not None:
         digest, masks = hashing.content_hash(prompt, structured=False)
+        fingerprint = hashing.similarity_fingerprint(prompt, structured=False)
         summary.records_with_prompt_content += 1
         if content_basis == "prompt_windowed":
             summary.records_with_windowed_prompt_content += 1
@@ -769,6 +778,7 @@ def _llm_event(
         "metadata": _base_metadata(
             span, used_real_session_id, content_basis,
             {"masked_spans": masks, "request_id": span.attributes.get("request_id")},
+            similarity_fingerprint=fingerprint,
         ),
     }
 
@@ -816,8 +826,10 @@ def _tool_events(
                 tool_name = f"mcp__{parsed['mcp_server_name']}__{parsed['mcp_tool_name']}"
 
     call_content, call_basis = _tool_call_content(span, log_result)
+    call_fingerprint = None
     if call_content is not None:
         call_hash, call_masks = hashing.content_hash(call_content, structured=True)
+        call_fingerprint = hashing.similarity_fingerprint(call_content, structured=True)
     else:
         call_hash, call_masks = _opaque_hash(span)
     if call_basis == "tool_input":
@@ -844,6 +856,7 @@ def _tool_events(
         "metadata": _base_metadata(
             span, used_real_session_id, call_basis,
             {"masked_spans": call_masks, "tool_use_id": tool_use_id, "mcp": is_mcp},
+            similarity_fingerprint=call_fingerprint,
         ),
     }
 
