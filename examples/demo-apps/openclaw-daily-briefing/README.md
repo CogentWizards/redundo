@@ -35,30 +35,39 @@ at the story from a different angle, round it out.
 
 ## What actually happens on real data, and why
 
-Both sessions' repeated searches land in `likely_legitimate`, reason
-"result changed" -- for Session B that's correct and expected (the
-write really did intervene, and this demo doesn't need the result to
-have changed for that verdict to be right). For **Session A it's a real,
-interesting false-negative-adjacent finding**, not the intended
-`confirmed_waste`/`unclassified` split this demo set out to show: the
-underlying search result was byte-for-byte the same both times (the
-agent's own reply says as much -- "down to the `tookMs` and `cached`
-flag"), but `content_hash` still came out different, because OpenClaw
+**Session A** lands in `unclassified`, reason: "result identical; no
+intervening write; task succeeded, but that doesn't confirm this
+specific repeated call contributed." A human skimming the transcript
+would call the repeat pointless without a second thought -- the search
+really was byte-for-byte identical both times (the agent's own reply
+says as much: "down to the `tookMs` and `cached` flag"), and redundo now
+correctly sees that (see the wrapper-id masking note below). What it
+won't do is borrow "a human would call this waste" to fill the one gap
+that's left: the session's last recorded event is the model's own
+closing reply, which succeeds as a model call regardless of what it
+says, so the trace's own terminal-outcome signal reads "success." That's
+the same honest limitation the `claude-agent-sdk-code-review` demo's
+Session A hits, on a completely different product -- seeing the same
+shape of "can't confirm this specific call mattered" independently on a
+second, unrelated source is itself a useful signal, not a demo bug.
+
+**Session B** lands in `likely_legitimate` -- correctly, and for the
+intended reason: the write (`briefing.md`) really did intervene before
+the recheck, and this session doesn't need the search result itself to
+have changed for that verdict to be right.
+
+Getting Session A's identical repeat to actually read as identical took
+two real fixes, both found and fixed while building this demo: OpenClaw
 wraps every piece of external tool content in a
 `<<<EXTERNAL_UNTRUSTED_CONTENT id="...">>>` marker (its own
-prompt-injection defense) with a **fresh random id on every single
-call**, even when the wrapped content is identical. redundo's masking
-doesn't yet strip these ids (they're not UUID-shaped, so the existing
-UUID mask doesn't catch them), so two genuinely identical search results
-still hash differently. See the follow-up task tracking a proper fix
-(mask the wrapper's id before hashing, the same way volatile timestamps
-and temp paths already are).
-
-This is exactly the kind of thing running these demos against real data
-exists to surface: not a demo bug, and not a bug in the intended
-scenario either, but a real gap in how redundo processes this
-particular source, found by actually looking at what the trace
-contained rather than assuming the design would land as planned.
+prompt-injection defense) with a fresh random id on every single call,
+even when the wrapped content is identical, and redundo's masking didn't
+catch it -- first because the id wasn't masked at all
+([#30](https://github.com/CogentWizards/redundo/pull/30)), then because
+the mask's own lookbehind/lookahead assumed a bare `"` around the id,
+which isn't what the real, doubly-JSON-encoded payload actually contains
+([#33](https://github.com/CogentWizards/redundo/pull/33), found by
+re-verifying this exact demo after the first fix landed).
 
 The two rephrased searches in Session B land in `near_duplicate` as
 intended; the two sessions' matching opening searches (and closely
