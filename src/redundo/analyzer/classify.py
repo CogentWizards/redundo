@@ -48,7 +48,13 @@ from enum import Enum
 
 from .cycles import CandidatePair
 from .lineage import TaskLineage
-from .schema import META_RESPONSE_HASH_KEY, META_WRITE_KEY, Event
+from .schema import (
+    META_CONTENT_BASIS_KEY,
+    META_CONTENT_BASIS_OPAQUE,
+    META_RESPONSE_HASH_KEY,
+    META_WRITE_KEY,
+    Event,
+)
 
 
 class Verdict(str, Enum):
@@ -189,6 +195,17 @@ def _correlated_result_hash(call: Event, lineage: TaskLineage) -> str | None:
     if call.event_type == "tool_call":
         for child in lineage.children_of(call):
             if child.event_type == "tool_result":
+                if child.metadata.get(META_CONTENT_BASIS_KEY) == META_CONTENT_BASIS_OPAQUE:
+                    # A content-less result carrying only a real outcome
+                    # (see claude_code.py's _tool_events() for why this
+                    # exists): its content_hash is derived from the span's
+                    # own id, unique by construction, so two of these are
+                    # guaranteed to differ even when the real (unobserved)
+                    # results were identical. Comparing them would read as
+                    # "the result changed" -- an active, false claim.
+                    # Unknown is the honest answer here, not a guess in
+                    # either direction.
+                    return None
                 return child.content_hash
         return None
     if call.event_type == "llm_call":
