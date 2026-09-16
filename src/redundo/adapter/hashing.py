@@ -55,6 +55,24 @@ _DURATION_RE = re.compile(r"\b\d+(?:\.\d+)?(?:ms|us|µs|ns|s|m|h)\b")
 _HEX_ADDR_RE = re.compile(r"\b0x[0-9a-fA-F]{4,}\b")
 _TMP_PATH_RE = re.compile(r"(?:/tmp/|/var/folders/)\S*")
 _BARE_INTEGER_RE = re.compile(r"\b\d{5,}\b")  # opt-in only; see mask_volatile
+# OpenClaw's own prompt-injection defense wraps every piece of external/
+# untrusted tool content (web_search/web_fetch results, at minimum) in
+# `<<<EXTERNAL_UNTRUSTED_CONTENT id="...">>>` / `<<<END_EXTERNAL_UNTRUSTED_CONTENT
+# id="...">>>` markers, and the id is a FRESH random value on every single
+# call -- even when the wrapped content is byte-identical to a previous
+# call. Confirmed twice against live captures (sources.openclaw and
+# sources.openclaw_localtrace both hash gen_ai.tool.call.result through
+# this same masking path): always exactly 16 lowercase hex characters.
+# Not UUID-shaped (no hyphens), so _UUID_RE doesn't already catch it. The
+# lookbehind matches only the id itself, inside either marker spelling
+# ("END_EXTERNAL_UNTRUSTED_CONTENT" ends in "EXTERNAL_UNTRUSTED_CONTENT"),
+# leaving the surrounding marker text (and any genuinely different
+# wrapped content) untouched -- this is deliberately narrow to the
+# confirmed marker context, not a bare 16-hex-char pattern that could
+# coincidentally swallow real content elsewhere.
+_EXTERNAL_UNTRUSTED_CONTENT_ID_RE = re.compile(
+    r'(?<=EXTERNAL_UNTRUSTED_CONTENT id=")[0-9a-f]{16}(?=")'
+)
 
 # (replacement token, pattern) in application order.
 _MASKS: list[tuple[str, re.Pattern[str]]] = [
@@ -65,6 +83,7 @@ _MASKS: list[tuple[str, re.Pattern[str]]] = [
     ("<DUR>", _DURATION_RE),
     ("<ADDR>", _HEX_ADDR_RE),
     ("<TMP>", _TMP_PATH_RE),
+    ("<ID>", _EXTERNAL_UNTRUSTED_CONTENT_ID_RE),
 ]
 
 

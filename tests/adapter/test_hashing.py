@@ -87,6 +87,62 @@ def test_uuid_masked():
     assert count == 1
 
 
+def test_openclaw_untrusted_content_wrapper_id_masked():
+    text, count = mask_volatile(
+        '<<<EXTERNAL_UNTRUSTED_CONTENT id="700e7848e8030891">>>\n'
+        "Why Do Cats Knead? - PetMD\n"
+        '<<<END_EXTERNAL_UNTRUSTED_CONTENT id="700e7848e8030891">>>'
+    )
+    assert "<ID>" in text
+    assert "700e7848e8030891" not in text
+    assert count == 2  # one for each marker (start and end)
+    # The surrounding marker text and the real wrapped content must
+    # survive untouched -- this masks only the id, not the whole span.
+    assert "EXTERNAL_UNTRUSTED_CONTENT" in text
+    assert "Why Do Cats Knead? - PetMD" in text
+
+
+def test_openclaw_untrusted_content_wrapper_with_different_random_ids_hashes_identically():
+    # The whole point of this mask: two calls returning byte-identical
+    # real content, but wrapped with OpenClaw's own fresh-per-call random
+    # id, must hash the same once masked -- otherwise every web_search/
+    # web_fetch result would look "different" purely from this wrapper's
+    # own random noise, regardless of the actual content.
+    first = (
+        '<<<EXTERNAL_UNTRUSTED_CONTENT id="700e7848e8030891">>>\n'
+        "Why Do Cats Knead? - PetMD\n"
+        '<<<END_EXTERNAL_UNTRUSTED_CONTENT id="700e7848e8030891">>>'
+    )
+    second = (
+        '<<<EXTERNAL_UNTRUSTED_CONTENT id="9be145d20cc31af6">>>\n'
+        "Why Do Cats Knead? - PetMD\n"
+        '<<<END_EXTERNAL_UNTRUSTED_CONTENT id="9be145d20cc31af6">>>'
+    )
+    assert first != second
+    digest1, _ = content_hash(first, structured=False)
+    digest2, _ = content_hash(second, structured=False)
+    assert digest1 == digest2
+
+
+def test_openclaw_untrusted_content_wrapper_with_different_content_still_hashes_differently():
+    # The mask must not be so broad it swallows genuine content
+    # differences -- only the id inside the marker is masked, not the
+    # wrapped payload.
+    first = (
+        '<<<EXTERNAL_UNTRUSTED_CONTENT id="700e7848e8030891">>>\n'
+        "Why Do Cats Knead? - PetMD\n"
+        '<<<END_EXTERNAL_UNTRUSTED_CONTENT id="700e7848e8030891">>>'
+    )
+    second = (
+        '<<<EXTERNAL_UNTRUSTED_CONTENT id="9be145d20cc31af6">>>\n'
+        "Why Do Dogs Wag Their Tails? - PetMD\n"
+        '<<<END_EXTERNAL_UNTRUSTED_CONTENT id="9be145d20cc31af6">>>'
+    )
+    digest1, _ = content_hash(first, structured=False)
+    digest2, _ = content_hash(second, structured=False)
+    assert digest1 != digest2
+
+
 def test_duration_masked():
     text, count = mask_volatile("completed in 1.23s")
     assert "<DUR>" in text
