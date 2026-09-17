@@ -85,6 +85,78 @@ the box, no permission opt-in needed. See [docs/openinference.md](docs/openinfer
 </details>
 
 <details>
+<summary><strong>OpenAI Agents SDK</strong></summary>
+
+Instrument it with the community
+[openinference-instrumentation-openai-agents](https://github.com/Arize-ai/openinference)
+package, pointed at a `redundo collect` receiver:
+
+```bash
+pip install openinference-instrumentation-openai-agents opentelemetry-exporter-otlp-proto-http
+```
+
+```python
+from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+provider = TracerProvider()
+provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4318/v1/traces")))
+OpenAIAgentsInstrumentor().instrument(tracer_provider=provider)
+
+# run your agent(s), then:
+```
+
+```bash
+redundo adapt ./otlp_traces --source openinference --summary | redundo analyze --format html > report.html
+```
+
+In-trace handoffs work out of the box. Cross-trace correlation
+(the SDK's own `group_id`) is dropped by this translator today, an
+upstream gap, not something this adapter can fix. See
+[docs/openinference.md](docs/openinference.md)'s per-source table.
+
+</details>
+
+<details>
+<summary><strong>Google ADK</strong></summary>
+
+Instrument it with the community
+[openinference-instrumentation-google-adk](https://github.com/Arize-ai/openinference)
+package, pointed at a `redundo collect` receiver:
+
+```bash
+pip install openinference-instrumentation-google-adk opentelemetry-exporter-otlp-proto-http
+```
+
+```python
+from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+provider = TracerProvider()
+provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4318/v1/traces")))
+GoogleADKInstrumentor().instrument(tracer_provider=provider)
+
+# run your agent(s), then:
+```
+
+```bash
+redundo adapt ./otlp_traces --source openinference --summary | redundo analyze --format html > report.html
+```
+
+ADK's own session id maps onto the standard `session.id` attribute, so a
+real conversation-scoped `task_id` works out of the box. Subagent
+delegation via `AgentTool` reuses the parent's own session id, so
+delegated work lands in the same task automatically, no extra link
+needed. See [docs/openinference.md](docs/openinference.md)'s per-source
+table.
+
+</details>
+
+<details>
 <summary><strong>Claude Code (CLI)</strong></summary>
 
 ```bash
