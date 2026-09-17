@@ -114,3 +114,115 @@ they're checkable:
    count of unpriced repeats is surfaced explicitly, and token totals plus
    a per-model breakdown are reported instead, so a price can be applied
    downstream without this package guessing or going stale.
+
+## The six buckets
+
+Given a candidate pair (an original call and a later, identical repeat of
+it in the same execution path):
+
+- **confirmed_waste**: identical arguments (that's what makes it a
+  candidate pair in the first place), identical result, no intervening
+  write, task terminated in failure. All four confirmed, none assumed.
+- **likely_legitimate**: result changed, or a write intervened. Either
+  one confirmed is enough, unconditionally. Terminal success is also
+  legit-supporting, but only as a tie-breaker: if *either* call-level
+  signal already confirms waste (identical result, or no intervening
+  write; one alone is enough, they needn't agree), the task having
+  succeeded anyway doesn't override that. See `classify.py`'s module
+  docstring for the full reasoning.
+- **unclassified**: everything else. At least one required signal
+  (result identity, write status, or terminal outcome) couldn't be read
+  off the trace, and no legitimate-use signal fired either, or one
+  call-level signal alone confirms the call looks wasted and the task
+  merely succeeded anyway, which isn't proof the repeat contributed.
+- **near_duplicate**: a lower-confidence, differently-shaped finding.
+  Arguments *similar but not identical* to an earlier call on the same
+  path (a SimHash fingerprint comparison, not exact `content_hash`
+  equality). Deliberately not folded into the three verdicts above: this
+  is a similarity claim, not a waste/legitimate outcome, and stating it
+  as a bucket of its own keeps that distinction visible instead of
+  overstating what a fingerprint comparison can support. Never
+  double-counted against an exact match already in one of the three
+  buckets above. See [hashing.md](hashing.md) for what a similarity
+  fingerprint can and can't support.
+- **cross_task_redundancy**: a same-or-similar call as an earlier one in
+  a *different* task, where the two tasks are confirmed related, a
+  real, source-reported delegation link connects them (see
+  [openinference.md](openinference.md)'s `parent_task_id` section),
+  never inferred from timing or content. Surfaced for review, not a
+  waste verdict: what changed between the two calls isn't checked yet,
+  that needs cross-task write/outcome semantics this analysis doesn't
+  have.
+- **recurring_pattern**: a same-or-similar call recurring across tasks
+  with *no* confirmed relationship to each other, pure content
+  coincidence at corpus scale. Never a waste or legitimate claim, and not
+  evidence the two tasks are related, a frequency observation, most
+  likely a common or generic operation. Kept in its own bucket
+  specifically so it's never misread as the same kind of finding as the
+  other five.
+
+The last two search the *whole* corpus, not one task's own execution
+path, which is what makes them able to catch redundant work spanning
+separate runs of the same long-lived workflow, or separate agents
+delegated to from the same one, neither of which the first four buckets
+can see at all (they're scoped to a single task by design).
+
+The rule itself is printed next to every count in the actual report
+output, not left implicit in a label. `"42 confirmed_waste"` is a claim;
+`"42 confirmed_waste -- repeated call, unchanged result, no intervening
+write, task failed"` is a claim someone can check against one case by
+hand. `unclassified` is not minimized with heuristics: a confident wrong
+classification is worse than a large unclassified bucket, because the
+first time someone spot-checks a "confirmed waste" case by hand and finds
+it wasn't, the tool stops being trusted.
+
+There's a further bucket this analysis deliberately doesn't attempt:
+**silent-wrong** (identical call, identical-looking success, wrong answer
+both times). That's not computable from a trace alone. It needs a
+correctness oracle external to the trace itself. A different analysis
+module, built on the same schema, is where something like that would
+live.
+
+## Why trust these numbers
+
+Every report opens with a coverage line, before any bucket:
+
+```
+Coverage: 16/25 events priced (64%) -- $0.1060 of tracked spend is what this analysis actually covers.
+  9 event(s) had no cost_usd and are excluded from every dollar figure below -- the percentages are computed on the priced subset, not your total spend.
+```
+
+This is measured over the *entire loaded corpus*, not just the events
+that ended up in a candidate pair. The point is telling a reader what
+fraction of their total data the numbers below are even computed on,
+before they trust or forward those numbers. If `metadata.task_id_source`
+is present on any event, a second line reports what fraction were
+grouped by a source's most precise available signal versus a fallback.
+If no source in the loaded corpus ever sets that key, the line is
+omitted entirely rather than reporting a fabricated "0%": silence here
+means "this dimension can't be spoken to for this data," not "everything
+failed."
+
+A third line reports comparability: what fraction of tasks had at least
+one candidate pair (a repeated call) for the buckets below to say
+anything about, versus tasks where nothing repeated at all and so
+nothing about them appears in any bucket. That's not a data gap (every
+call in those tasks was simply unique), but without this line, "this
+task had nothing to compare" and "this task's spend belongs to a source
+with missing signal" both look identical: silent absence from the bucket
+breakdown.
+
+Two things hold across every source and every analysis in this repo:
+
+- **Degrade honestly, never guess.** When a source doesn't provide enough
+  information to compute something real (a tool's result content, an
+  LLM's response text, whether a call had a side effect), it's either
+  omitted or marked explicitly as unobservable, never a fabricated
+  placeholder that could be mistaken for real data. `unclassified` is not
+  a bug to be minimized with heuristics; it's the honest answer when a
+  trace doesn't say. Every source doc in `docs/` has a "known gaps"
+  section that says exactly what can't be seen and why.
+- **Every non-obvious decision is verified against real captured data**,
+  not just a source's published documentation. Several of the decisions
+  in `docs/claude-code.md` in particular exist specifically because the
+  docs and the actual data disagreed.
