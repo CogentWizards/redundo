@@ -1,9 +1,9 @@
-# Adapter spec: OTLP/OpenInference -> the redundo.analyzer Event schema
+# OpenInference adapter
 
 This is the contract this adapter implements. It's written down separately
 from the code so another implementation (a different language, a
 streaming pipeline, whatever) can produce output that's actually
-comparable to this adapter's output -- comparability requires identical
+comparable to this adapter's output. Comparability requires identical
 behavior, not just "close enough."
 
 ## task_id
@@ -33,7 +33,7 @@ ID as "ambiguous"). That was wrong for a real, confirmed shape: Hermes's
 trace as the parent conversation, each with their own distinct, genuinely
 real session id stamped directly on their own spans. Under the old
 whole-trace rule this read as "conflicting values, don't guess" and
-collapsed the parent and every subagent into one task_id -- silently
+collapsed the parent and every subagent into one task_id, silently
 defeating `metadata.parent_task_id` (below), since there was no second,
 distinct task left for it to point at. Per-span resolution has no
 remaining "conflicting values" case to guess at: once every span answers
@@ -44,14 +44,14 @@ Every emitted record's `metadata.task_id_source` is `"conversation_id"` or
 `"trace_id_fallback"`, naming which of the two happened for that specific
 record. This is what lets a downstream report state a coverage figure
 ("N% of records grouped by a real conversation id") instead of a reader
-having to trust the grouping blindly -- see redundo analyze's own report
+having to trust the grouping blindly. See redundo analyze's own report
 for where this gets surfaced.
 
 Why this matters more than it looks like it should: a fabricated grouping
 key produces confidently wrong repeat counts, not a visible gap. Two
 genuinely unrelated tasks grouped under a made-up shared ID will show
 "repeats" that never happened. A trace-ID fallback that's honestly
-reported is a visible, explainable degradation instead -- worse recall,
+reported is a visible, explainable degradation instead, worse recall,
 not wrong data.
 
 **A task_id's own step numbering can span more than one physical trace.**
@@ -59,7 +59,7 @@ A source that gives one CLI invocation its own trace per turn but a
 stable session id across turns (confirmed for Hermes: five separate
 `hermes --resume <session-id> -z "..."` invocations, five OTel traces,
 one real session id) needs its `step_index` sequence to stay one
-continuous, collision-free count across all of them -- assigning
+continuous, collision-free count across all of them. Assigning
 `step_index` per trace_id instead of per resolved task_id silently
 collides two different real events onto the same `(task_id, step_index)`
 key whenever a task spans more than one trace, corrupting
@@ -68,9 +68,9 @@ key whenever a task spans more than one trace, corrupting
 adapter groups kept spans by resolved task_id first, then runs the
 step/chain-tail bookkeeping once per group, so this never happens
 regardless of how many physical traces (or, within one trace, how many
-distinct task_ids -- the subagent case above) a task is assembled from.
+distinct task_ids, the subagent case above) a task is assembled from.
 
-## `metadata.parent_task_id`: a real cross-task link, when a source has one
+## Cross-task links
 
 `task_id` groups events within one conversation; it never crosses into a
 different task, even when that other task is a subagent this one
@@ -83,9 +83,9 @@ anything else.
 Resolved the same way `task_id` is: the span's own
 `hermes.subagent.parent_session_id` if present, else the nearest
 ancestor's, walking the real `parent_span_id` chain. This ancestor walk
-matters in practice, not just in theory -- confirmed against a real
+matters in practice, not just in theory. Confirmed against a real
 capture, the attribute lives on a subagent's own wrapping AGENT-kind span
-(never converted into an Event itself, see "Span kind -> event_type"
+(never converted into an Event itself, see "Span kind to event type"
 below), not on the LLM/TOOL spans nested inside it that actually need to
 carry it forward.
 
@@ -105,17 +105,17 @@ not assumed from docs:
 
 | Source | Status |
 |---|---|
-| Hermes | done end to end, confirmed against a live `delegate_task` capture: `hermes-otel` emits `hermes.subagent.parent_session_id` on every subagent's own AGENT-kind span, read via the ancestor walk above, and (since the task_id-per-span fix) each subagent gets its own distinct task_id for it to point at -- `cross_task_redundancy` genuinely fires on real data |
+| Hermes | done end to end, confirmed against a live `delegate_task` capture: `hermes-otel` emits `hermes.subagent.parent_session_id` on every subagent's own AGENT-kind span, read via the ancestor walk above, and (since the task_id-per-span fix) each subagent gets its own distinct task_id for it to point at. `cross_task_redundancy` genuinely fires on real data |
 | OpenClaw | blocked upstream: its own internal session state tracks a comparable `parentSessionKey`, but it isn't on any hook payload a plugin can read today |
 | Claude Code / Claude Agent SDK | in-process subagent delegation is already real span nesting under the parent `Task` call, no separate link needed at all; separate CLI processes per agent have no known signal |
 | OpenAI Agents SDK | in-trace handoffs already work via the existing OpenInference translator's own span reparenting, no link needed; cross-trace linking (`group_id`, the SDK's own mechanism) is dropped by that same translator today, an upstream fix, not this adapter's to make |
 | Google ADK | subagent delegation via `AgentTool` explicitly reuses the parent's own session id (confirmed in `openinference-instrumentation-google-adk`'s source), so it needs no separate link type at all |
 
-## Span kind -> event_type
+## Span kind to event type
 
 Only `openinference.span.kind` values of `LLM` and `TOOL` are converted.
 Everything else (`CHAIN`, `AGENT`, `RETRIEVER`, `EMBEDDING`, absent) is
-skipped and counted, not guessed at -- none of them map cleanly onto
+skipped and counted, not guessed at, none of them map cleanly onto
 `llm_call` / `tool_call` / `tool_result`.
 
 | OpenInference kind | Produces |
@@ -126,7 +126,7 @@ skipped and counted, not guessed at -- none of them map cleanly onto
 
 A `TOOL` span with no `input.value` is dropped entirely (no arguments, no
 candidate for repeat detection). A `TOOL` span with `input.value` but no
-`output.value` still produces its `tool_call` record -- the analyzer's
+`output.value` still produces its `tool_call` record, the analyzer's
 result-identity signal for it will correctly read as unknown.
 
 ## Lineage (`parent_id`)
@@ -135,17 +135,17 @@ Walks the real OTLP `parentSpanId` chain, transparently skipping
 non-kept-kind ancestors to find the nearest one that was actually
 converted. A `tool_result` record's `parent_id` is always its own
 `tool_call`'s step index. If a kept span has no kept ancestor at all,
-`parent_id` is `None` -- the analyzer's own linear-fallback default
+`parent_id` is `None`, the analyzer's own linear-fallback default
 applies from there, not a guess made here.
 
 ## Content hashing
 
-Shared by every source, not implemented per-source -- see
+Shared by every source, not implemented per-source. See
 [docs/hashing.md](hashing.md) for the full procedure (algorithm,
-normalization, masking order, versioning, and a copyable ~15-line
-reference implementation).
+normalization, masking order, versioning, and a copyable, about
+15-line, reference implementation).
 
-## cost_usd: a direct attribute first, an estimate second
+## Cost estimation
 
 Cost is not a stable OpenInference/gen_ai convention. This adapter first
 looks for `llm.cost.total`/`cost.total_usd` directly on the span; when
@@ -168,7 +168,7 @@ and `--summary` reports the active pricing table's age unconditionally,
 escalating past 30 days old, the same "staleness is shown, not hidden"
 discipline as everywhere else in this project.
 
-## Content and token counts split across two spans (hermes-otel)
+## Split content and tokens
 
 Found against a real capture, not assumed: at least one real exporter
 (`hermes-otel`, feeding Hermes) doesn't put `input.value` and
