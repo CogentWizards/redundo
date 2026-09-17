@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>redundo — point it at your agent's OTLP traces</title>
+<meta name="description" content="redundo turns your AI agent's OTLP telemetry into a report on what's actually wasted. Local, MIT licensed, zero dependencies.">
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: #0E1113; color: #E9ECEE; font-family: 'Instrument Sans', Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; text-wrap: pretty; }
+  a { color: #6C97E8; text-decoration: none; }
+  a:hover { color: #9DBAF0; }
+  ::selection { background: rgba(61,115,217,0.32); }
+  @keyframes blink { 0%,49% { opacity: 1 } 50%,100% { opacity: 0 } }
+  @media (prefers-reduced-motion: reduce) { * { transition-duration: .001ms !important; animation: none !important } html { scroll-behavior: auto } }
+
+  /* copy-to-clipboard overlays */
+  .copied-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: #138E83; color: #06100F; font-weight: 500; transition: opacity .22s ease; opacity: 0; pointer-events: none; }
+  .copied-overlay.show { opacity: 1; }
+  .copied-overlay-install { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 9px; background: #0E1113; color: #2FB3A6; border: 1px solid rgba(47,179,166,0.5); transition: opacity .22s ease; opacity: 0; pointer-events: none; }
+  .copied-overlay-install.show { opacity: 1; }
+
+  /* sample report theme */
+  .report-body[data-theme="dark"] { --rbg:#121211; --rpanel:#191918; --rink:#F2F0EC; --rink2:#B8B5AC; --rink3:#83807A; --rline:rgba(255,255,255,0.12); --rhair:rgba(255,255,255,0.06); --rtrack:#262624; }
+  .report-body[data-theme="light"] { --rbg:#FBFAF8; --rpanel:#FFFFFF; --rink:#111110; --rink2:#56534D; --rink3:#8D8A82; --rline:rgba(17,17,16,0.11); --rhair:rgba(17,17,16,0.055); --rtrack:#EDEBE4; }
+  .theme-btn { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; border: none; border-radius: 6px; padding: 6px 11px; cursor: pointer; transition: background .2s ease, color .2s ease; background: transparent; color: #9AA4AB; }
+  .theme-btn.active { background: rgba(255,255,255,0.1); color: #E9ECEE; }
+
+  /* spend bars: theme-dependent fill */
+  .report-body[data-theme="dark"] .spend-cw { background: rgba(216,121,53,0.28); }
+  .report-body[data-theme="light"] .spend-cw { background: rgba(216,121,53,0.16); }
+  .report-body[data-theme="dark"] .spend-uc { background: rgba(143,160,172,0.24); }
+  .report-body[data-theme="light"] .spend-uc { background: rgba(143,160,172,0.16); }
+  .report-body[data-theme="dark"] .spend-ll { background: rgba(63,156,98,0.28); }
+  .report-body[data-theme="light"] .spend-ll { background: rgba(63,156,98,0.16); }
+  .report-body[data-theme="dark"] .spend-nd { background: rgba(61,115,217,0.28); }
+  .report-body[data-theme="light"] .spend-nd { background: rgba(61,115,217,0.16); }
+
+  /* verdict accordion */
+  .verdict-detail { display: none; }
+  .verdict.open .verdict-detail { display: block; }
+  .verdict .chev { display: inline-block; width: 12px; font-size: 10px; color: var(--rink3, #83807A); transition: transform .25s ease; }
+  .verdict.open .chev { transform: rotate(90deg); }
+  .verdict-row { cursor: pointer; }
+
+  /* quickstart source tabs */
+  .source-tab { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; border: none; border-radius: 5px; padding: 5px 9px; cursor: pointer; transition: background .2s ease, color .2s ease; background: transparent; color: #9AA4AB; }
+  .source-tab.active { background: rgba(47,179,166,0.16); color: #2FB3A6; }
+
+  [data-reveal] { will-change: opacity, transform; }
+</style>
+</head>
+<body>
+
+<div style="position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: 60; pointer-events: none">
+  <div id="scroll-progress-bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #3D73D9, #138E83 40%, #3F9C62 70%, #D87935); transition: width .12s linear"></div>
+</div>
+
+<header style="position: sticky; top: 0; z-index: 50; backdrop-filter: blur(14px); background: rgba(14,17,19,0.72); border-bottom: 1px solid rgba(255,255,255,0.07)">
+  <nav style="max-width: 1120px; margin: 0 auto; padding: 14px clamp(20px, 4vw, 32px); display: flex; align-items: center; gap: 26px">
+    <a href="#top" style="display: flex; align-items: center; gap: 10px; color: #E9ECEE">
+      <span style="display: grid; grid-template-columns: 7px 7px; grid-template-rows: 7px 7px; gap: 2px">
+        <span style="background: #3D73D9; border-radius: 1.5px"></span>
+        <span style="background: #138E83; border-radius: 1.5px"></span>
+        <span style="background: #3F9C62; border-radius: 1.5px"></span>
+        <span style="background: #D87935; border-radius: 1.5px"></span>
+      </span>
+      <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; font-weight: 500; letter-spacing: -0.01em">redundo</span>
+      <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #7F8B93">v0.2.0</span>
+    </a>
+    <div style="flex: 1"></div>
+    <div style="display: flex; align-items: center; gap: 21px; font-size: 13.5px; color: #9AA4AB">
+      <a href="#how" style="color: #9AA4AB" data-hover="color: #E9ECEE">How it works</a>
+      <a href="#report" style="color: #9AA4AB" data-hover="color: #E9ECEE">Sample report</a>
+      <a href="#buckets" style="color: #9AA4AB" data-hover="color: #E9ECEE">Buckets</a>
+      <a href="#sources" style="color: #9AA4AB" data-hover="color: #E9ECEE">Sources</a>
+      <a href="#quickstart" style="color: #9AA4AB" data-hover="color: #E9ECEE">Quickstart</a>
+    </div>
+    <a href="https://github.com/CogentWizards/redundo" target="_blank" rel="noopener" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; color: #E9ECEE; border: 1px solid rgba(255,255,255,0.14); padding: 7px 12px; border-radius: 7px; transition: border-color .18s ease, background .18s ease" data-hover="border-color: rgba(61,115,217,0.6); background: rgba(61,115,217,0.1); color: #E9ECEE">GitHub ↗</a>
+  </nav>
+</header>
+
+<main id="top" style="position: relative">
+  <section style="position: relative; overflow: hidden; padding: clamp(66px, 9vw, 122px) clamp(20px, 4vw, 32px) clamp(52px, 7vw, 88px)">
+    <div style="position: absolute; inset: 0; pointer-events: none; background-image: linear-gradient(rgba(255,255,255,0.028) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.028) 1px, transparent 1px); background-size: 64px 64px; mask-image: radial-gradient(120% 70% at 50% 0%, #000 20%, transparent 72%); -webkit-mask-image: radial-gradient(120% 70% at 50% 0%, #000 20%, transparent 72%)"></div>
+    <div style="position: absolute; top: -260px; left: 50%; width: 900px; height: 520px; transform: translateX(-50%); pointer-events: none; background: radial-gradient(50% 50% at 50% 50%, rgba(61,115,217,0.16), transparent 70%)"></div>
+    <div style="position: relative; max-width: 1120px; margin: 0 auto">
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #7F8B93; letter-spacing: 0.02em">
+        <span style="color: #2FB3A6">PyPI 0.2.0</span>
+        <span style="opacity: .4">/</span>
+        <span>CI passing</span>
+        <span style="opacity: .4">/</span>
+        <span>MIT</span>
+        <span style="opacity: .4">/</span>
+        <span>python ≥ 3.10</span>
+      </div>
+      <h1 data-reveal style="margin: 22px 0 0; font-size: clamp(34px, 5.4vw, 62px); line-height: 1.04; letter-spacing: -0.035em; font-weight: 500; max-width: 21ch">Point it at your AI agent's OTLP traces. Get a report on what's actually wasted.</h1>
+      <p data-reveal style="margin: 24px 0 0; max-width: 60ch; font-size: clamp(15px, 1.6vw, 18px); line-height: 1.6; color: #9AA4AB">Repeated work, not a guess. <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">adapt</span> normalizes one framework's telemetry into a common event schema; <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">analyze</span> sorts repeated calls into six buckets — three of which are verdicts, and three of which are explicitly not.</p>
+
+      <div data-reveal style="margin: 40px 0 0; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; background: linear-gradient(180deg, #14181B, #101418); box-shadow: 0 24px 60px -28px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.04); overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.07); background: rgba(255,255,255,0.015)">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: #D87935"></span>
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: #3F9C62"></span>
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: #3D73D9"></span>
+          <span style="margin-left: 6px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #7F8B93">~/agents/support-bot</span>
+          <span style="flex: 1"></span>
+          <button onclick="copyPipe()" style="position: relative; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #9AA4AB; background: transparent; border: 1px solid rgba(255,255,255,0.13); border-radius: 6px; padding: 5px 10px; cursor: pointer; transition: all .18s ease" data-hover="color: #E9ECEE; border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.04)">copy<span class="copied-overlay" data-copied-key="pipe">copied</span></button>
+        </div>
+        <div style="padding: clamp(18px, 3vw, 30px) clamp(16px, 3vw, 28px); overflow-x: auto">
+          <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: clamp(12px, 1.4vw, 15px); line-height: 1.95; white-space: nowrap; color: #E9ECEE">
+            <div><span style="color: #3F9C62">$ </span>pip install <span style="color: #E8944F">"redundo[collector]"</span></div>
+            <div><span style="color: #3F9C62">$ </span>redundo collect <span style="color: #6C97E8">--out-dir</span> ./otlp_traces &amp;</div>
+            <div style="color: #7F8B93"># enable your framework's OTLP export, run it, then:</div>
+            <div><span style="color: #3F9C62">$ </span>redundo adapt ./otlp_traces <span style="color: #6C97E8">--summary</span> <span style="color: #D87935">|</span> redundo analyze <span style="color: #6C97E8">--format</span> html <span style="color: #D87935">&gt;</span> report.html<span style="display: inline-block; width: 8px; height: 1.05em; margin-left: 4px; vertical-align: -0.16em; background: #2FB3A6; animation: blink 1.1s steps(1) infinite"></span></div>
+          </div>
+          <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.06); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; line-height: 1.8; color: #7F8B93; white-space: nowrap">
+            <div>Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analysis actually covers.</div>
+            <div>Candidate redundant-repeat pairs: 8</div>
+            <div><span style="color: #E8944F">3 confirmed_waste</span> · <span style="color: #5FBF84">3 likely_legitimate</span> · <span style="color: #8FA0AC">2 unclassified</span> · 0 near_duplicate / 0 cross_task_redundancy / 0 recurring_pattern</div>
+          </div>
+        </div>
+      </div>
+      <div data-reveal style="margin: 10px 0 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #7F8B93">Real output of <a href="https://github.com/CogentWizards/redundo/blob/main/examples/demo_trace.jsonl" target="_blank" rel="noopener">redundo analyze examples/demo_trace.jsonl</a> — every count traces back to a case in that file.</div>
+
+      <div data-reveal style="margin: 28px 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+        <button onclick="copyInstall()" style="position: relative; display: inline-flex; align-items: center; gap: 10px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; font-weight: 500; color: #06100F; background: #2FB3A6; border: none; border-radius: 9px; padding: 13px 18px; cursor: pointer; box-shadow: 0 10px 28px -14px rgba(47,179,166,0.8); transition: transform .16s cubic-bezier(.2,.7,.2,1), box-shadow .16s ease" data-hover="transform: translateY(-1px); box-shadow: 0 16px 34px -14px rgba(47,179,166,0.9)" data-active-style="transform: translateY(0) scale(.99)">
+          <span style="opacity: .55">$</span>
+          <span>pip install "redundo[collector]"</span>
+          <span class="copied-overlay-install" data-copied-key="install">copied to clipboard</span>
+        </button>
+        <a href="https://github.com/CogentWizards/redundo" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: 9px; font-size: 14px; color: #E9ECEE; border: 1px solid rgba(255,255,255,0.16); border-radius: 9px; padding: 13px 18px; transition: border-color .18s ease, background .18s ease" data-hover="color: #E9ECEE; border-color: rgba(255,255,255,0.34); background: rgba(255,255,255,0.03)">Read the source ↗</a>
+      </div>
+
+      <p data-reveal style="margin: 26px 0 0; max-width: 68ch; font-size: 13.5px; line-height: 1.7; color: #9AA4AB">Runs on your machine. No account, no SaaS, nothing to stand up but a local OTLP receiver — <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; color: #9AA4AB">redundo collect</span>, which writes what it's sent to disk and nothing more.</p>
+    </div>
+  </section>
+
+  <section id="problem" style="border-top: 1px solid rgba(255,255,255,0.07); padding: clamp(60px, 8vw, 104px) clamp(20px, 4vw, 32px)">
+    <div style="max-width: 1120px; margin: 0 auto">
+      <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; letter-spacing: 0.14em; color: #7F8B93">01 / THE PROBLEM</div>
+      <div style="margin-top: 26px; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: clamp(24px, 4vw, 56px)">
+        <div>
+          <h2 style="margin: 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.15; letter-spacing: -0.025em; font-weight: 500">Agents repeat themselves quietly, and the invoice is the only place it shows up.</h2>
+          <p style="margin: 18px 0 0; font-size: 15.5px; line-height: 1.65; color: #9AA4AB">A loop re-reads the same file eleven times. A planner re-asks a question it already answered because the answer never made it back into context. Nothing errors, so nothing alerts.</p>
+        </div>
+        <div>
+          <p style="margin: 0; font-size: 15.5px; line-height: 1.65; color: #9AA4AB">But a repeat is not automatically waste. Polling until a value changes is correct. Re-reading a file after writing to it is correct. Retrying a failed call is correct. A tool that counts duplicates and calls the total "waste" is guessing.</p>
+          <div style="margin-top: 24px; border-left: 2px solid #D87935; padding: 2px 0 2px 16px">
+            <div style="font-size: 14.5px; line-height: 1.6; color: #E9ECEE">The whole design question is which repeats had a reason to exist — and saying so plainly when the trace doesn't contain enough to tell.</div>
+            <div style="margin-top: 8px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #7F8B93">Two of eight pairs in the demo trace get no verdict at all.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how" style="border-top: 1px solid rgba(255,255,255,0.07); padding: clamp(60px, 8vw, 104px) clamp(20px, 4vw, 32px)">
+    <div style="max-width: 1120px; margin: 0 auto">
+      <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; letter-spacing: 0.14em; color: #7F8B93">02 / HOW IT WORKS</div>
+      <h2 style="margin: 22px 0 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.15; letter-spacing: -0.025em; font-weight: 500; max-width: 30ch">Three small programs joined by a plain schema, installed as one package.</h2>
+      <p style="margin: 14px 0 0; max-width: 66ch; font-size: 15px; line-height: 1.65; color: #9AA4AB">Each stage only needs the one before it to speak the schema in between, so any stage can be swapped for your own — a source plugin, an analysis plugin, or a report format, with no fork and no PR against the repo.</p>
+
+      <div style="margin-top: 44px; display: grid; grid-template-columns: repeat(auto-fit, minmax(216px, 1fr)); gap: 14px">
+        <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 20px; background: #12161A; transition: transform .2s cubic-bezier(.2,.7,.2,1), border-color .2s ease, background .2s ease" data-hover="transform: translateY(-3px); border-color: rgba(61,115,217,0.5); background: #141A21">
+          <div style="display: flex; align-items: center; justify-content: space-between; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #7F8B93">
+            <span>STAGE 01</span><span style="width: 6px; height: 6px; border-radius: 50%; background: #3D73D9"></span>
+          </div>
+          <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: #E9ECEE">redundo collect</div>
+          <p style="margin: 10px 0 0; font-size: 13.5px; line-height: 1.6; color: #9AA4AB">A local OTLP receiver. Writes whatever telemetry it's sent to disk, nothing more. Optional — skip it if your exporter already writes files.</p>
+          <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #6C97E8">→ ./otlp_traces</div>
+        </div>
+        <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 20px; background: #12161A; transition: transform .2s cubic-bezier(.2,.7,.2,1), border-color .2s ease, background .2s ease" data-hover="transform: translateY(-3px); border-color: rgba(19,142,131,0.55); background: #121A1A">
+          <div style="display: flex; align-items: center; justify-content: space-between; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #7F8B93">
+            <span>STAGE 02</span><span style="width: 6px; height: 6px; border-radius: 50%; background: #138E83"></span>
+          </div>
+          <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: #E9ECEE">redundo adapt</div>
+          <p style="margin: 10px 0 0; font-size: 13.5px; line-height: 1.6; color: #9AA4AB">Turns one framework's raw telemetry into the common event schema. Tells the sources apart from the data itself; <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">--source</span> forces one.</p>
+          <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #2FB3A6">→ NDJSON on stdout</div>
+        </div>
+        <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 20px; background: #12161A; transition: transform .2s cubic-bezier(.2,.7,.2,1), border-color .2s ease, background .2s ease" data-hover="transform: translateY(-3px); border-color: rgba(63,156,98,0.55); background: #121B16">
+          <div style="display: flex; align-items: center; justify-content: space-between; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #7F8B93">
+            <span>STAGE 03</span><span style="width: 6px; height: 6px; border-radius: 50%; background: #3F9C62"></span>
+          </div>
+          <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: #E9ECEE">redundo analyze</div>
+          <p style="margin: 10px 0 0; font-size: 13.5px; line-height: 1.6; color: #9AA4AB">Pairs up repeated calls from that schema and classifies each pair into one of six buckets. Doesn't know or care where the input came from.</p>
+          <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #5FBF84">reads stdin or a file</div>
+        </div>
+        <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 20px; background: #12161A; transition: transform .2s cubic-bezier(.2,.7,.2,1), border-color .2s ease, background .2s ease" data-hover="transform: translateY(-3px); border-color: rgba(216,121,53,0.55); background: #1A1613">
+          <div style="display: flex; align-items: center; justify-content: space-between; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #7F8B93">
+            <span>OUTPUT</span><span style="width: 6px; height: 6px; border-radius: 50%; background: #D87935"></span>
+          </div>
+          <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: #E9ECEE">report.html</div>
+          <p style="margin: 10px 0 0; font-size: 13.5px; line-height: 1.6; color: #9AA4AB">One self-contained file that opens with its own coverage line. Or <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">--format json</span> for anything downstream.</p>
+          <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #E8944F">light + dark, prints clean</div>
+        </div>
+      </div>
+      <div style="margin-top: 16px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #7F8B93">Each half also runs alone: <span style="color: #E9ECEE">redundo adapt ./otlp_traces -o trace.jsonl</span> · <span style="color: #E9ECEE">redundo analyze trace.jsonl --format json</span> · plugins: <a href="https://github.com/CogentWizards/redundo/blob/main/docs/plugins.md" target="_blank" rel="noopener">docs/plugins.md</a></div>
+    </div>
+  </section>
+
+  <section id="report" style="border-top: 1px solid rgba(255,255,255,0.07); padding: clamp(60px, 8vw, 104px) clamp(20px, 4vw, 32px); background: linear-gradient(180deg, rgba(61,115,217,0.045), transparent 40%)">
+    <div style="max-width: 1180px; margin: 0 auto">
+      <div style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 18px">
+        <div>
+          <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; letter-spacing: 0.14em; color: #7F8B93">03 / SAMPLE REPORT</div>
+          <h2 style="margin: 22px 0 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.15; letter-spacing: -0.025em; font-weight: 500; max-width: 26ch">The actual output, coverage line first.</h2>
+          <p style="margin: 13px 0 0; max-width: 58ch; font-size: 15px; line-height: 1.65; color: #9AA4AB">Generated from <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">examples/demo_trace.jsonl</span>, so you can reproduce this file byte for byte before you trust any of it. It ships both themes — the real default is light.</p>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px">
+          <div style="display: flex; padding: 3px; gap: 2px; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; background: rgba(255,255,255,0.03)">
+            <button id="theme-light-btn" class="theme-btn" onclick="setReportTheme('light')">light</button>
+            <button id="theme-dark-btn" class="theme-btn active" onclick="setReportTheme('dark')">dark</button>
+          </div>
+          <a href="https://github.com/CogentWizards/redundo/blob/main/examples/demo_report.html" target="_blank" rel="noopener" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 9px 13px; color: #E9ECEE" data-hover="color: #E9ECEE; border-color: rgba(255,255,255,0.34); background: rgba(255,255,255,0.03)">open the real file ↗</a>
+        </div>
+      </div>
+
+      <div style="margin-top: 34px; border: 1px solid rgba(255,255,255,0.11); border-radius: 14px; overflow: hidden; box-shadow: 0 40px 90px -40px rgba(0,0,0,1)">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 11px 14px; background: #15191C; border-bottom: 1px solid rgba(255,255,255,0.07)">
+          <div style="display: flex; gap: 7px">
+            <span style="width: 9px; height: 9px; border-radius: 50%; background: rgba(255,255,255,0.16)"></span>
+            <span style="width: 9px; height: 9px; border-radius: 50%; background: rgba(255,255,255,0.16)"></span>
+            <span style="width: 9px; height: 9px; border-radius: 50%; background: rgba(255,255,255,0.16)"></span>
+          </div>
+          <div style="flex: 1; min-width: 0; text-align: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #7F8B93; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">file:///Users/you/agents/support-bot/report.html</div>
+          <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #7F8B93">offline</div>
+        </div>
+
+        <div class="report-body" data-theme="dark" style="background: var(--rbg, #121211); color: var(--rink, #F2F0EC); font-family: -apple-system, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.6; transition: background .35s ease, color .35s ease; padding: clamp(22px, 3.4vw, 40px) clamp(16px, 3.4vw, 44px) clamp(26px, 3.4vw, 44px)">
+          <div style="display: flex; align-items: center; gap: 9px; padding-bottom: 20px; border-bottom: 1px solid var(--rline, rgba(255,255,255,0.12))">
+            <span style="display: grid; grid-template-columns: 6px 6px; grid-template-rows: 6px 6px; gap: 2px">
+              <span style="background: #3D73D9; border-radius: 1px"></span><span style="background: #138E83; border-radius: 1px"></span><span style="background: #3F9C62; border-radius: 1px"></span><span style="background: #D87935; border-radius: 1px"></span>
+            </span>
+            <span style="font-size: 13.5px; font-weight: 600; letter-spacing: 0.02em">redundo</span>
+            <span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11.5px; color: var(--rink3, #83807A)">v0.2.0</span>
+          </div>
+
+          <p style="margin: 26px 0 14px; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rink3, #83807A)">Event analysis</p>
+          <h3 style="margin: 0; font-family: 'Iowan Old Style', Palatino, Georgia, serif; font-weight: 400; font-size: clamp(26px, 3.6vw, 42px); line-height: 1.08; letter-spacing: -0.02em; max-width: 20ch">Eight repeat pairs. Three were confirmed waste.</h3>
+          <p style="margin: 16px 0 0; max-width: 58ch; font-size: 15px; color: var(--rink2, #B8B5AC)">Every pair below is a call your agent made more than once on the same execution path.</p>
+
+          <div style="margin-top: 30px; display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); gap: 1px; background: var(--rline, rgba(255,255,255,0.12)); border-top: 1px solid var(--rline, rgba(255,255,255,0.12)); border-bottom: 1px solid var(--rline, rgba(255,255,255,0.12))">
+            <div style="background: var(--rbg, #121211); padding: 22px 20px">
+              <p style="margin: 0 0 9px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--rink3, #83807A)">Confirmed waste</p>
+              <p style="margin: 0; font-family: 'Iowan Old Style', Palatino, Georgia, serif; font-size: clamp(26px, 3.4vw, 34px); line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums">$0.0280</p>
+              <p style="margin: 9px 0 0; font-size: 12.5px; color: var(--rink2, #B8B5AC)">3 pair(s)</p>
+            </div>
+            <div style="background: var(--rbg, #121211); padding: 22px 20px">
+              <p style="margin: 0 0 9px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--rink3, #83807A)">Pairs evaluated</p>
+              <p style="margin: 0; font-family: 'Iowan Old Style', Palatino, Georgia, serif; font-size: clamp(26px, 3.4vw, 34px); line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums">8</p>
+              <p style="margin: 9px 0 0; font-size: 12.5px; color: var(--rink2, #B8B5AC)">3 confirmed waste · 3 likely legitimate · 2 unclassified</p>
+            </div>
+            <div style="background: var(--rbg, #121211); padding: 22px 20px">
+              <p style="margin: 0 0 9px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--rink3, #83807A)">Trace coverage</p>
+              <p style="margin: 0; font-family: 'Iowan Old Style', Palatino, Georgia, serif; font-size: clamp(26px, 3.4vw, 34px); line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums">64%</p>
+              <div style="margin: 13px 0 0; height: 3px; border-radius: 2px; background: var(--rtrack, #262624); overflow: hidden"><span style="display: block; height: 100%; width: 64%; background: var(--rink, #F2F0EC)"></span></div>
+              <p style="margin: 9px 0 0; font-size: 12.5px; color: var(--rink2, #B8B5AC)">16 of 25 events carried a price</p>
+            </div>
+          </div>
+
+          <p style="margin: 26px 0 0; max-width: 72ch; font-size: 13.5px; color: var(--rink2, #B8B5AC)">16 of 25 events carried a price (64%). <strong style="color: var(--rink, #F2F0EC)">$0.1060</strong> of tracked spend is what this analysis actually covers. <strong style="color: var(--rink, #F2F0EC)">All amounts are USD</strong>, as reported by each event's own <span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: .92em; color: var(--rink, #F2F0EC)">cost_usd</span>; this report never converts or estimates a currency. 9 event(s) had no <span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: .92em; color: var(--rink, #F2F0EC)">cost_usd</span> and are excluded from every dollar figure. Percentages are computed on the priced subset, not the total.</p>
+
+          <div style="margin-top: 34px; padding-top: 26px; border-top: 1px solid var(--rline, rgba(255,255,255,0.12))">
+            <h4 style="margin: 0 0 4px; font-family: 'Iowan Old Style', Palatino, Georgia, serif; font-weight: 400; font-size: 22px; letter-spacing: -0.01em">Where the spend went</h4>
+            <p style="margin: 0 0 20px; font-size: 13px; color: var(--rink3, #83807A)">Cost by verdict, across the priced subset. Select a row to open its detail.</p>
+
+            <div style="display: grid; grid-template-columns: minmax(130px, 1.1fr) minmax(0, 3fr) 84px; align-items: center; gap: 16px; padding: 14px 0; border-top: 1px solid var(--rhair, rgba(255,255,255,0.06)); transition: background .15s ease" data-hover="background: var(--rhair, rgba(255,255,255,0.06))">
+              <span style="display: flex; align-items: center; gap: 9px; min-width: 0">
+                <span style="width: 7px; height: 7px; border-radius: 50%; flex: none; background: #D87935"></span>
+                <span style="font-size: 14.5px; overflow-wrap: break-word">Confirmed waste</span>
+                <span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11.5px; color: var(--rink3, #83807A); flex: none">3</span>
+              </span>
+              <span style="display: block; height: 20px; border-radius: 3px; background: var(--rtrack, #262624); overflow: hidden"><span class="spend-cw" style="display: block; height: 100%; transition: width .5s cubic-bezier(.2,.7,.2,1), background .35s ease; width: 100%; border-left: 2px solid #D87935"></span></span>
+              <span style="text-align: right; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; font-variant-numeric: tabular-nums">$0.0280</span>
+            </div>
+            <div style="display: grid; grid-template-columns: minmax(130px, 1.1fr) minmax(0, 3fr) 84px; align-items: center; gap: 16px; padding: 14px 0; border-top: 1px solid var(--rhair, rgba(255,255,255,0.06)); transition: background .15s ease" data-hover="background: var(--rhair, rgba(255,255,255,0.06))">
+              <span style="display: flex; align-items: center; gap: 9px; min-width: 0">
+                <span style="width: 7px; height: 7px; border-radius: 50%; flex: none; background: #8FA0AC"></span>
+                <span style="font-size: 14.5px; overflow-wrap: break-word">Unclassified</span>
+                <span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11.5px; color: var(--rink3, #83807A); flex: none">2</span>
+              </span>
+              <span style="display: block; height: 20px; border-radius: 3px; background: var(--rtrack, #262624); overflow: hidden"><span class="spend-uc" style="display: block; height: 100%; transition: width .5s cubic-bezier(.2,.7,.2,1), background .35s ease; width: 78.6%; border-left: 2px solid #8FA0AC"></span></span>
+              <span style="text-align: right; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; font-variant-numeric: tabular-nums">$0.0220</span>
+            </div>
+            <div style="display: grid; grid-template-columns: minmax(130px, 1.1fr) minmax(0, 3fr) 84px; align-items: center; gap: 16px; padding: 14px 0; border-top: 1px solid var(--rhair, rgba(255,255,255,0.06)); transition: background .15s ease" data-hover="background: var(--rhair, rgba(255,255,255,0.06))">
+              <span style="display: flex; align-items: center; gap: 9px; min-width: 0">
+                <span style="width: 7px; height: 7px; border-radius: 50%; flex: none; background: #3F9C62"></span>
+                <span style="font-size: 14.5px; overflow-wrap: break-word">Likely legitimate</span>
+                <span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11.5px; color: var(--rink3, #83807A); flex: none">3</span>
+              </span>
+              <span style="display: block; height: 20px; border-radius: 3px; background: var(--rtrack, #262624); overflow: hidden"><span class="spend-ll" style="display: block; height: 100%; transition: width .5s cubic-bezier(.2,.7,.2,1), background .35s ease; width: 12.5%; border-left: 2px solid #3F9C62"></span></span>
+              <span style="text-align: right; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; font-variant-numeric: tabular-nums">$0.0035</span>
+            </div>
+            <div style="display: grid; grid-template-columns: minmax(130px, 1.1fr) minmax(0, 3fr) 84px; align-items: center; gap: 16px; padding: 14px 0; border-top: 1px solid var(--rhair, rgba(255,255,255,0.06)); transition: background .15s ease" data-hover="background: var(--rhair, rgba(255,255,255,0.06))">
+              <span style="display: flex; align-items: center; gap: 9px; min-width: 0">
+                <span style="width: 7px; height: 7px; border-radius: 50%; flex: none; background: #3D73D9"></span>
+                <span style="font-size: 14.5px; overflow-wrap: break-word">Near duplicate</span>
+                <span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11.5px; color: var(--rink3, #83807A); flex: none">0</span>
+              </span>
+              <span style="display: block; height: 20px; border-radius: 3px; background: var(--rtrack, #262624); overflow: hidden"><span class="spend-nd" style="display: block; height: 100%; transition: width .5s cubic-bezier(.2,.7,.2,1), background .35s ease; width: 1.5%; border-left: 2px solid #3D73D9"></span></span>
+              <span style="text-align: right; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; font-variant-numeric: tabular-nums">$0.0000</span>
+            </div>
+          </div>
+
+          <div style="margin-top: 34px; padding-top: 26px; border-top: 1px solid var(--rline, rgba(255,255,255,0.12))">
+            <h4 style="margin: 0 0 18px; font-family: 'Iowan Old Style', Palatino, Georgia, serif; font-weight: 400; font-size: 22px; letter-spacing: -0.01em">The verdicts</h4>
+
+            <div id="verdict-cw" class="verdict open" style="padding: 18px 0; border-top: 1px solid var(--rline, rgba(255,255,255,0.12))">
+              <div class="verdict-row" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap" onclick="toggleVerdict('cw')">
+                <span class="chev">▸</span>
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: #D87935"></span>
+                <span style="font-size: 17px; font-weight: 500">Confirmed waste</span>
+                <span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; color: var(--rink3, #83807A)">3 pair(s) · $0.0280</span>
+              </div>
+              <div class="verdict-detail" style="padding: 15px 0 0 23px">
+                <div style="max-width: 66ch; border-left: 1px solid var(--rline, rgba(255,255,255,0.12)); padding-left: 15px">
+                  <p style="margin: 0; font-size: 13.5px; color: var(--rink2, #B8B5AC)">The call repeated, the result didn't change, nothing wrote to state in between, and the task still failed. All four have to be true. Drop any one and this is a guess, not a finding.</p>
+                  <p style="margin: 8px 0 0; font-size: 13.5px"><span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--rink3, #83807A); margin-right: 6px">Action</span>Cache the result or guard the retry. This spend bought nothing.</p>
+                </div>
+                <div style="margin-top: 14px; display: grid; gap: 7px">
+                  <div style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; background: var(--rpanel, #191918); border: 1px solid var(--rhair, rgba(255,255,255,0.06)); border-radius: 6px; padding: 10px 12px; color: var(--rink2, #B8B5AC)">task=session-001 step=2 (tool_call/web_search): result identical; no intervening write; task terminated in failure</div>
+                  <div style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; background: var(--rpanel, #191918); border: 1px solid var(--rhair, rgba(255,255,255,0.06)); border-radius: 6px; padding: 10px 12px; color: var(--rink2, #B8B5AC)">task=session-001 step=4 (tool_call/web_search): result identical; no intervening write; task terminated in failure</div>
+                  <div style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; background: var(--rpanel, #191918); border: 1px solid var(--rhair, rgba(255,255,255,0.06)); border-radius: 6px; padding: 10px 12px; color: var(--rink2, #B8B5AC)">task=session-006 step=1 (llm_call/gpt-5.6): result identical; no intervening write; task terminated in failure</div>
+                </div>
+              </div>
+            </div>
+
+            <div id="verdict-ll" class="verdict" style="padding: 18px 0; border-top: 1px solid var(--rline, rgba(255,255,255,0.12))">
+              <div class="verdict-row" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap" onclick="toggleVerdict('ll')">
+                <span class="chev">▸</span>
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: #3F9C62"></span>
+                <span style="font-size: 17px; font-weight: 500">Likely legitimate</span>
+                <span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; color: var(--rink3, #83807A)">3 pair(s) · $0.0035</span>
+              </div>
+              <div class="verdict-detail" style="padding: 15px 0 0 23px">
+                <div style="max-width: 66ch; border-left: 1px solid var(--rline, rgba(255,255,255,0.12)); padding-left: 15px">
+                  <p style="margin: 0; font-size: 13.5px; color: var(--rink2, #B8B5AC)">A specific reason it's not waste: the result changed (polling worked), a write intervened (verification), or the task succeeded and neither the result nor the write status already confirms waste on its own.</p>
+                  <p style="margin: 8px 0 0; font-size: 13.5px"><span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--rink3, #83807A); margin-right: 6px">Action</span>Leave these alone. Cache them and you'll break polling and verification.</p>
+                </div>
+                <div style="margin-top: 14px; display: grid; gap: 7px">
+                  <div style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; background: var(--rpanel, #191918); border: 1px solid var(--rhair, rgba(255,255,255,0.06)); border-radius: 6px; padding: 10px 12px; color: var(--rink2, #B8B5AC)">task=session-002 step=3 (tool_call/read_file): result changed; write intervened at step 2</div>
+                  <div style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; background: var(--rpanel, #191918); border: 1px solid var(--rhair, rgba(255,255,255,0.06)); border-radius: 6px; padding: 10px 12px; color: var(--rink2, #B8B5AC)">task=session-003 step=2 (tool_call/get_stock_price): result changed</div>
+                  <div style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; background: var(--rpanel, #191918); border: 1px solid var(--rhair, rgba(255,255,255,0.06)); border-radius: 6px; padding: 10px 12px; color: var(--rink2, #B8B5AC)">task=session-004 step=2 (tool_call/ping_endpoint): result changed</div>
+                </div>
+              </div>
+            </div>
+
+            <div id="verdict-uc" class="verdict" style="padding: 18px 0; border-top: 1px solid var(--rline, rgba(255,255,255,0.12))">
+              <div class="verdict-row" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap" onclick="toggleVerdict('uc')">
+                <span class="chev">▸</span>
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: #8FA0AC"></span>
+                <span style="font-size: 17px; font-weight: 500">Unclassified</span>
+                <span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; color: var(--rink3, #83807A)">2 pair(s) · $0.0220</span>
+              </div>
+              <div class="verdict-detail" style="padding: 15px 0 0 23px">
+                <div style="max-width: 66ch; border-left: 1px solid var(--rline, rgba(255,255,255,0.12)); padding-left: 15px">
+                  <p style="margin: 0; font-size: 13.5px; color: var(--rink2, #B8B5AC)">A required signal (the result, the write status, or the outcome) was missing from the trace. No verdict here, and that's on purpose.</p>
+                  <p style="margin: 8px 0 0; font-size: 13.5px"><span style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--rink3, #83807A); margin-right: 6px">Action</span>Emit result hashes and task outcome, then re-run to get a verdict.</p>
+                </div>
+                <div style="margin-top: 14px; display: grid; gap: 7px">
+                  <div style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; background: var(--rpanel, #191918); border: 1px solid var(--rhair, rgba(255,255,255,0.06)); border-radius: 6px; padding: 10px 12px; color: var(--rink2, #B8B5AC)">task=session-005 step=1 (tool_call/legacy_lookup): no legitimate-use signal fired, but result not observable for one or both calls; task terminal outcome not recorded</div>
+                  <div style="font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; background: var(--rpanel, #191918); border: 1px solid var(--rhair, rgba(255,255,255,0.06)); border-radius: 6px; padding: 10px 12px; color: var(--rink2, #B8B5AC)">task=session-007 step=1 (llm_call/gpt-5.6): no legitimate-use signal fired, but result not observable for one or both calls</div>
+                </div>
+              </div>
+            </div>
+
+            <p style="margin: 18px 0 0; font-size: 13.5px; color: var(--rink2, #B8B5AC)">Unclassified pairs are reported with a count and no verdict, deliberately: a confident wrong classification here is worse than an honest unknown.</p>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #7F8B93">The report ships its own light/dark switch, prints without the chrome, and needs no network to render. Three narrated demo apps: <a href="https://github.com/CogentWizards/redundo/blob/main/examples/demo-apps" target="_blank" rel="noopener">examples/demo-apps/</a></div>
+    </div>
+  </section>
+
+  <section id="buckets" style="border-top: 1px solid rgba(255,255,255,0.07); padding: clamp(60px, 8vw, 104px) clamp(20px, 4vw, 32px)">
+    <div style="max-width: 1120px; margin: 0 auto">
+      <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; letter-spacing: 0.14em; color: #7F8B93">04 / THE SIX BUCKETS</div>
+      <h2 style="margin: 22px 0 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.15; letter-spacing: -0.025em; font-weight: 500; max-width: 30ch">Three of these are verdicts. Three are only ever surfaced for review.</h2>
+      <p style="margin: 14px 0 0; max-width: 64ch; font-size: 15px; line-height: 1.65; color: #9AA4AB">Keeping those two things apart is the point. Full reasoning for each bucket lives in <a href="https://github.com/CogentWizards/redundo/blob/main/docs/schema.md#the-six-buckets" target="_blank" rel="noopener">docs/schema.md</a> and in <a href="https://github.com/CogentWizards/redundo/blob/main/src/redundo/analyzer/classify.py" target="_blank" rel="noopener">classify.py</a>'s module docstring.</p>
+
+      <div style="margin-top: 36px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.1em; color: #7F8B93">VERDICTS</div>
+      <div style="margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(272px, 1fr)); gap: 16px">
+        <div style="border: 1px solid rgba(216,121,53,0.3); border-radius: 13px; padding: 24px; background: linear-gradient(180deg, rgba(216,121,53,0.07), rgba(216,121,53,0.015)); transition: transform .2s cubic-bezier(.2,.7,.2,1), border-color .2s ease" data-hover="transform: translateY(-3px); border-color: rgba(216,121,53,0.6)">
+          <div style="display: flex; align-items: center; gap: 9px">
+            <span style="width: 9px; height: 9px; border-radius: 2px; background: #D87935"></span>
+            <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; color: #E8944F">confirmed_waste</span>
+          </div>
+          <p style="margin: 14px 0 0; font-size: 14px; line-height: 1.6; color: #E9ECEE">The call repeated, the result didn't change, nothing wrote to state in between, and the task still failed.</p>
+          <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.08em; color: #7F8B93">ALL FOUR MUST HOLD</div>
+          <p style="margin: 8px 0 0; font-size: 13px; line-height: 1.55; color: #9AA4AB">Drop any one and this is a guess, not a finding.</p>
+          <p style="margin: 16px 0 0; padding-top: 14px; border-top: 1px solid rgba(216,121,53,0.22); font-size: 13.5px; line-height: 1.55; color: #9AA4AB"><span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.1em; color: #7F8B93; margin-right: 6px">ACTION</span>Cache the result or guard the retry. This spend bought nothing.</p>
+        </div>
+        <div style="border: 1px solid rgba(63,156,98,0.3); border-radius: 13px; padding: 24px; background: linear-gradient(180deg, rgba(63,156,98,0.07), rgba(63,156,98,0.015)); transition: transform .2s cubic-bezier(.2,.7,.2,1), border-color .2s ease" data-hover="transform: translateY(-3px); border-color: rgba(63,156,98,0.6)">
+          <div style="display: flex; align-items: center; gap: 9px">
+            <span style="width: 9px; height: 9px; border-radius: 2px; background: #3F9C62"></span>
+            <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; color: #5FBF84">likely_legitimate</span>
+          </div>
+          <p style="margin: 14px 0 0; font-size: 14px; line-height: 1.6; color: #E9ECEE">A specific reason it isn't waste: the result changed (polling worked), a write intervened (verification), or the task succeeded.</p>
+          <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.08em; color: #7F8B93">ANY ONE SUFFICES</div>
+          <p style="margin: 8px 0 0; font-size: 13px; line-height: 1.55; color: #9AA4AB">And neither the result nor the write status already confirms waste on its own.</p>
+          <p style="margin: 16px 0 0; padding-top: 14px; border-top: 1px solid rgba(63,156,98,0.22); font-size: 13.5px; line-height: 1.55; color: #9AA4AB"><span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.1em; color: #7F8B93; margin-right: 6px">ACTION</span>Leave these alone. Cache them and you'll break polling and verification.</p>
+        </div>
+        <div style="border: 1px solid rgba(255,255,255,0.1); border-radius: 13px; padding: 24px; background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.008)); transition: transform .2s cubic-bezier(.2,.7,.2,1), border-color .2s ease" data-hover="transform: translateY(-3px); border-color: rgba(255,255,255,0.28)">
+          <div style="display: flex; align-items: center; gap: 9px">
+            <span style="width: 9px; height: 9px; border-radius: 2px; background: #8FA0AC"></span>
+            <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; color: #C8CFD4">unclassified</span>
+          </div>
+          <p style="margin: 14px 0 0; font-size: 14px; line-height: 1.6; color: #E9ECEE">A required signal — the result, the write status, or the task outcome — was missing from the trace.</p>
+          <div style="margin-top: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.08em; color: #7F8B93">NO VERDICT, ON PURPOSE</div>
+          <p style="margin: 8px 0 0; font-size: 13px; line-height: 1.55; color: #9AA4AB">Counted and named rather than guessed at.</p>
+          <p style="margin: 16px 0 0; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 13.5px; line-height: 1.55; color: #9AA4AB"><span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.1em; color: #7F8B93; margin-right: 6px">ACTION</span>Emit result hashes and task outcome, then re-run to get a verdict.</p>
+        </div>
+      </div>
+
+      <div style="margin-top: 32px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.1em; color: #7F8B93">SURFACED FOR REVIEW — NOT SCORED, NOT A VERDICT</div>
+      <div style="margin-top: 12px; border: 1px solid rgba(255,255,255,0.09); border-radius: 13px; overflow: hidden; background: #12161A">
+        <div style="display: grid; grid-template-columns: minmax(180px, 0.85fr) minmax(0, 2fr); gap: 18px; padding: 19px 22px; border-bottom: 1px solid rgba(255,255,255,0.06); transition: background .15s ease" data-hover="background: rgba(61,115,217,0.06)">
+          <div style="display: flex; align-items: center; gap: 9px"><span style="width: 8px; height: 8px; border-radius: 2px; background: #3D73D9"></span><span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #6C97E8">near_duplicate</span></div>
+          <div style="font-size: 13.5px; line-height: 1.6; color: #9AA4AB">Arguments similar but not identical to an earlier call on the same path — a SimHash fingerprint comparison, not exact <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">content_hash</span> equality. Read these by hand. <a href="https://github.com/CogentWizards/redundo/blob/main/docs/hashing.md" target="_blank" rel="noopener">docs/hashing.md</a> covers what a similarity fingerprint can and can't support.</div>
+        </div>
+        <div style="display: grid; grid-template-columns: minmax(180px, 0.85fr) minmax(0, 2fr); gap: 18px; padding: 19px 22px; border-bottom: 1px solid rgba(255,255,255,0.06); transition: background .15s ease" data-hover="background: rgba(216,121,53,0.06)">
+          <div style="display: flex; align-items: center; gap: 9px"><span style="width: 8px; height: 8px; border-radius: 2px; background: #D87935"></span><span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #E8944F">cross_task_redundancy</span></div>
+          <div style="font-size: 13.5px; line-height: 1.6; color: #9AA4AB">The same or a near-identical call in a <em>different</em> task, where the two tasks have a source-reported delegation link — never one inferred from timing or content. What changed between them isn't checked yet, so this is not a waste verdict.</div>
+        </div>
+        <div style="display: grid; grid-template-columns: minmax(180px, 0.85fr) minmax(0, 2fr); gap: 18px; padding: 19px 22px; transition: background .15s ease" data-hover="background: rgba(63,156,98,0.06)">
+          <div style="display: flex; align-items: center; gap: 9px"><span style="width: 8px; height: 8px; border-radius: 2px; background: #3F9C62"></span><span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #5FBF84">recurring_pattern</span></div>
+          <div style="font-size: 13.5px; line-height: 1.6; color: #9AA4AB">The same call recurring across tasks with no confirmed relationship — most likely a common operation, not redundant work, and not evidence the tasks are related. Worth memoizing if it recurs a lot; not evidence of wasted spend on its own.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="sources" style="border-top: 1px solid rgba(255,255,255,0.07); padding: clamp(60px, 8vw, 104px) clamp(20px, 4vw, 32px)">
+    <div style="max-width: 1120px; margin: 0 auto">
+      <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; letter-spacing: 0.14em; color: #7F8B93">05 / SUPPORTED SOURCES</div>
+      <h2 style="margin: 22px 0 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.15; letter-spacing: -0.025em; font-weight: 500; max-width: 32ch">Each source has a genuinely different OTLP shape — and a different blind spot.</h2>
+      <p style="margin: 14px 0 0; max-width: 64ch; font-size: 15px; line-height: 1.65; color: #9AA4AB">Adapter quality is bounded by what the framework emits. Where a signal is missing, affected pairs land in <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">unclassified</span> rather than being guessed at.</p>
+
+      <div style="margin-top: 32px; overflow-x: auto; border: 1px solid rgba(255,255,255,0.09); border-radius: 12px">
+        <div style="min-width: 780px">
+          <div style="display: grid; grid-template-columns: 1.15fr 0.9fr 1.3fr 1.3fr; gap: 16px; padding: 14px 20px; background: rgba(255,255,255,0.022); border-bottom: 1px solid rgba(255,255,255,0.08); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.08em; color: #7F8B93">
+            <div>SOURCE</div><div>--source</div><div>WORKS OUT OF THE BOX</div><div>NEEDS A STEP, OR CAN'T SEE</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1.15fr 0.9fr 1.3fr 1.3fr; gap: 16px; padding: 18px 20px; border-bottom: 1px solid rgba(255,255,255,0.055); transition: background .15s ease" data-hover="background: rgba(61,115,217,0.05)">
+            <div><div style="font-size: 14.5px; color: #E9ECEE">Hermes, and anything OpenInference-instrumented</div><div style="margin-top: 5px; font-size: 12.5px; color: #7F8B93">incl. OpenAI Agents SDK, Google ADK</div></div>
+            <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; color: #6C97E8">openinference</div>
+            <div style="font-size: 13.5px; line-height: 1.55; color: #9AA4AB">Full content and a conversation-scoped <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">task_id</span>, no permission opt-in. ADK session ids and <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">AgentTool</span> delegation map on automatically.</div>
+            <div style="font-size: 13.5px; line-height: 1.55; color: #9AA4AB">Hermes needs the community <a href="https://github.com/briancaffey/hermes-otel" target="_blank" rel="noopener">hermes-otel</a> plugin. The Agents SDK's cross-trace <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">group_id</span> is dropped upstream of the adapter.</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1.15fr 0.9fr 1.3fr 1.3fr; gap: 16px; padding: 18px 20px; border-bottom: 1px solid rgba(255,255,255,0.055); transition: background .15s ease" data-hover="background: rgba(19,142,131,0.05)">
+            <div><div style="font-size: 14.5px; color: #E9ECEE">Claude Code</div><div style="margin-top: 5px; font-size: 12.5px; color: #7F8B93">CLI, IDE extensions, Agent SDK</div></div>
+            <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; color: #6C97E8">claude-code</div>
+            <div style="font-size: 13.5px; line-height: 1.55; color: #9AA4AB">Tool calls, model requests and per-turn usage from the standard telemetry env vars. Agent SDK prompt content is recovered by time-window correlation against the logs signal.</div>
+            <div style="font-size: 13.5px; line-height: 1.55; color: #9AA4AB">MCP tool <em>arguments</em> only appear on the logs signal; tool <em>output</em> only inside a span event gated by <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">OTEL_LOG_TOOL_CONTENT=1</span>.</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1.15fr 0.9fr 1.3fr 1.3fr; gap: 16px; padding: 18px 20px; border-bottom: 1px solid rgba(255,255,255,0.055); transition: background .15s ease" data-hover="background: rgba(63,156,98,0.05)">
+            <div><div style="font-size: 14.5px; color: #E9ECEE">Claude Cowork</div></div>
+            <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; color: #6C97E8">cowork</div>
+            <div style="font-size: 13.5px; line-height: 1.55; color: #9AA4AB">Session-scoped model and tool activity through the same collect → adapt path.</div>
+            <div style="font-size: 13.5px; line-height: 1.55; color: #9AA4AB">Per-source specifics, including what it doesn't emit, are in <a href="https://github.com/CogentWizards/redundo/blob/main/docs/cowork.md" target="_blank" rel="noopener">docs/cowork.md</a>.</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1.15fr 0.9fr 1.3fr 1.3fr; gap: 16px; padding: 18px 20px; transition: background .15s ease" data-hover="background: rgba(216,121,53,0.05)">
+            <div><div style="font-size: 14.5px; color: #E9ECEE">OpenClaw</div><div style="margin-top: 5px; font-size: 12.5px; color: #7F8B93">plugin recommended</div></div>
+            <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; color: #6C97E8">openclaw</div>
+            <div style="font-size: 13.5px; line-height: 1.55; color: #9AA4AB">With <a href="https://github.com/CogentWizards/openclaw-localtrace" target="_blank" rel="noopener">openclaw-localtrace</a>: a real conversation-scoped <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">task_id</span> and a real per-call write signal, written straight to a local directory. No collect step.</div>
+            <div style="font-size: 13.5px; line-height: 1.55; color: #9AA4AB">The built-in <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">@openclaw/diagnostics-otel</span> exporter strips the session and write signals this analysis relies on most — <a href="https://github.com/CogentWizards/redundo/blob/main/docs/openclaw.md" target="_blank" rel="noopener">docs/openclaw.md</a>.</div>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top: 14px; font-size: 13px; line-height: 1.6; color: #9AA4AB">Not listed? Pipe your own NDJSON matching <a href="https://github.com/CogentWizards/redundo/blob/main/docs/schema.md" target="_blank" rel="noopener">the schema</a> straight into <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">analyze</span>, or write an adapter plugin — no PR against the repo required.</div>
+    </div>
+  </section>
+
+  <section id="trust" style="border-top: 1px solid rgba(255,255,255,0.07); padding: clamp(60px, 8vw, 104px) clamp(20px, 4vw, 32px)">
+    <div style="max-width: 1120px; margin: 0 auto">
+      <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; letter-spacing: 0.14em; color: #7F8B93">06 / TRUST &amp; PRIVACY</div>
+      <h2 style="margin: 22px 0 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.15; letter-spacing: -0.025em; font-weight: 500; max-width: 28ch">Every number is checkable, and nothing leaves the machine.</h2>
+      <div style="margin-top: 32px; display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 14px">
+        <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 21px; background: #12161A; transition: border-color .2s ease, background .2s ease" data-hover="border-color: rgba(19,142,131,0.5); background: #121A1A">
+          <div style="font-size: 15px; color: #E9ECEE">Local by construction</div>
+          <p style="margin: 9px 0 0; font-size: 13.5px; line-height: 1.6; color: #9AA4AB">The only service involved is <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">redundo collect</span>, an OTLP receiver you run yourself that writes to a directory you name. No account, no upload, no hosted anything. The report is a single file that renders with the network off.</p>
+        </div>
+        <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 21px; background: #12161A; transition: border-color .2s ease, background .2s ease" data-hover="border-color: rgba(61,115,217,0.5); background: #141A21">
+          <div style="font-size: 15px; color: #E9ECEE">Content is compared as hashes</div>
+          <p style="margin: 9px 0 0; font-size: 13.5px; line-height: 1.6; color: #9AA4AB">Repeats are matched on <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">content_hash</span> equality, and near-duplicates on a SimHash fingerprint — not on stored prompt text. What each hash can and cannot support is written down rather than asserted.</p>
+          <div style="margin-top: 11px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px"><a href="https://github.com/CogentWizards/redundo/blob/main/docs/hashing.md" target="_blank" rel="noopener">docs/hashing.md ↗</a></div>
+        </div>
+        <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 21px; background: #12161A; transition: border-color .2s ease, background .2s ease" data-hover="border-color: rgba(216,121,53,0.5); background: #1A1613">
+          <div style="font-size: 15px; color: #E9ECEE">Content capture is opt-in, per source</div>
+          <p style="margin: 9px 0 0; font-size: 13.5px; line-height: 1.6; color: #9AA4AB">Where a framework can emit raw content, the switch is yours and defaults to off — <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">captureContent</span> and <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">captureIdentifiers</span> on the OpenClaw plugin, <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">OTEL_LOG_*</span> on Claude Code. More signal or less; stated either way.</p>
+        </div>
+        <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 21px; background: #12161A; transition: border-color .2s ease, background .2s ease" data-hover="border-color: rgba(63,156,98,0.5); background: #121B16">
+          <div style="font-size: 15px; color: #E9ECEE">Coverage before conclusions</div>
+          <p style="margin: 9px 0 0; font-size: 13.5px; line-height: 1.6; color: #9AA4AB">Every report opens with how much of the trace it could actually price — 64% in the demo — and excludes unpriced events from every dollar figure rather than estimating them into the total.</p>
+          <div style="margin-top: 11px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px"><a href="#report">see it in the sample ↑</a></div>
+        </div>
+        <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 21px; background: #12161A; transition: border-color .2s ease, background .2s ease" data-hover="border-color: rgba(61,115,217,0.5); background: #141A21">
+          <div style="font-size: 15px; color: #E9ECEE">Priced from a snapshot you can refresh</div>
+          <p style="margin: 9px 0 0; font-size: 13.5px; line-height: 1.6; color: #9AA4AB">When a source doesn't report <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">cost_usd</span>, cost comes from a bundled per-model pricing snapshot — local, inspectable, and updated on your command with <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">redundo update-pricing</span>.</p>
+          <div style="margin-top: 11px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px"><a href="https://github.com/CogentWizards/redundo/blob/main/docs/pricing.md" target="_blank" rel="noopener">docs/pricing.md ↗</a></div>
+        </div>
+        <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 21px; background: #12161A; transition: border-color .2s ease, background .2s ease" data-hover="border-color: rgba(19,142,131,0.5); background: #121A1A">
+          <div style="font-size: 15px; color: #E9ECEE">Each bucket links back to a real case</div>
+          <p style="margin: 9px 0 0; font-size: 13.5px; line-height: 1.6; color: #9AA4AB">Reports list sample cases by task and step — <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">task=session-001 step=2</span> — so any count can be checked by hand against the trace that produced it.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="quickstart" style="border-top: 1px solid rgba(255,255,255,0.07); padding: clamp(60px, 8vw, 104px) clamp(20px, 4vw, 32px)">
+    <div style="max-width: 1120px; margin: 0 auto">
+      <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; letter-spacing: 0.14em; color: #7F8B93">07 / QUICKSTART</div>
+      <h2 style="margin: 22px 0 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.15; letter-spacing: -0.025em; font-weight: 500">First report in about two minutes.</h2>
+
+      <div style="margin-top: 34px; display: grid; gap: 14px">
+        <div style="display: grid; grid-template-columns: 24px 1fr; gap: 18px; align-items: start">
+          <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #7F8B93; padding-top: 16px">01</div>
+          <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 11px; background: #0F1315; overflow: hidden">
+            <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px 10px 16px; border-bottom: 1px solid rgba(255,255,255,0.06)">
+              <span style="font-size: 13.5px; color: #C8CFD4">Install, and start the local receiver</span>
+              <span style="flex: 1"></span>
+              <button onclick="copyQs1()" style="position: relative; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #9AA4AB; background: transparent; border: 1px solid rgba(255,255,255,0.13); border-radius: 6px; padding: 5px 10px; cursor: pointer; transition: all .18s ease" data-hover="color: #E9ECEE; border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.04)">copy<span class="copied-overlay" data-copied-key="qs1">copied</span></button>
+            </div>
+            <div style="padding: 14px 16px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; line-height: 1.85; white-space: nowrap; color: #E9ECEE">
+              <div><span style="color: #3F9C62">$ </span>pip install <span style="color: #E8944F">"redundo[collector]"</span></div>
+              <div><span style="color: #3F9C62">$ </span>redundo collect <span style="color: #6C97E8">--out-dir</span> ./otlp_traces &amp;</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 24px 1fr; gap: 18px; align-items: start">
+          <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #7F8B93; padding-top: 16px">02</div>
+          <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 11px; background: #0F1315; overflow: hidden">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px 10px 16px; border-bottom: 1px solid rgba(255,255,255,0.06)">
+              <span style="font-size: 13.5px; color: #C8CFD4">Turn on your framework's OTLP export</span>
+              <span style="flex: 1"></span>
+              <div style="display: flex; flex-wrap: wrap; gap: 3px; padding: 3px; border: 1px solid rgba(255,255,255,0.1); border-radius: 7px; background: rgba(255,255,255,0.025)">
+                <button class="source-tab active" data-source="claude-code" onclick="pickSource('claude-code')">Claude Code</button>
+                <button class="source-tab" data-source="openinference" onclick="pickSource('openinference')">Hermes / OpenInference</button>
+                <button class="source-tab" data-source="openclaw" onclick="pickSource('openclaw')">OpenClaw</button>
+                <button class="source-tab" data-source="cowork" onclick="pickSource('cowork')">Claude Cowork</button>
+              </div>
+              <button onclick="copyQs2()" style="position: relative; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #9AA4AB; background: transparent; border: 1px solid rgba(255,255,255,0.13); border-radius: 6px; padding: 5px 10px; cursor: pointer; transition: all .18s ease" data-hover="color: #E9ECEE; border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.04)">copy<span class="copied-overlay" data-copied-key="qs2">copied</span></button>
+            </div>
+            <div id="source-code" style="padding: 14px 16px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 1.85; white-space: pre; color: #E9ECEE">export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
+export OTEL_TRACES_EXPORTER=otlp
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_TRACES_EXPORT_INTERVAL=1000
+export OTEL_LOG_TOOL_DETAILS=1   # tool arguments + MCP tool_input</div>
+            <div id="source-note" style="padding: 0 16px 14px; font-size: 13px; line-height: 1.6; color: #9AA4AB; max-width: 74ch">Also covers the Claude Agent SDK — it launches the claude binary as a subprocess, so set these in whatever process calls query(), not inside the SDK's own options. Full detail: docs/claude-code.md.</div>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 24px 1fr; gap: 18px; align-items: start">
+          <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #7F8B93; padding-top: 16px">03</div>
+          <div style="border: 1px solid rgba(47,179,166,0.28); border-radius: 11px; background: linear-gradient(180deg, rgba(19,142,131,0.07), #0F1315); overflow: hidden">
+            <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px 10px 16px; border-bottom: 1px solid rgba(255,255,255,0.06)">
+              <span style="font-size: 13.5px; color: #C8CFD4">Drive real turns through it, then adapt and analyze</span>
+              <span style="flex: 1"></span>
+              <button onclick="copyQs3()" style="position: relative; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #9AA4AB; background: transparent; border: 1px solid rgba(255,255,255,0.13); border-radius: 6px; padding: 5px 10px; cursor: pointer; transition: all .18s ease" data-hover="color: #E9ECEE; border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.04)">copy<span class="copied-overlay" data-copied-key="qs3">copied</span></button>
+            </div>
+            <div style="padding: 14px 16px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 1.85; white-space: nowrap; color: #E9ECEE">
+              <div><span style="color: #3F9C62">$ </span>redundo adapt ./otlp_traces <span style="color: #6C97E8">--summary</span> \</div>
+              <div style="padding-left: 2.4em"><span style="color: #D87935">|</span> redundo analyze <span style="color: #6C97E8">--format</span> html <span style="color: #D87935">&gt;</span> report.html</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 24px 1fr; gap: 18px; align-items: start">
+          <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #7F8B93; padding-top: 16px">04</div>
+          <div style="border: 1px solid rgba(255,255,255,0.09); border-radius: 11px; padding: 18px; background: #0F1315">
+            <div style="font-size: 13.5px; line-height: 1.65; color: #9AA4AB">Open <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; color: #E9ECEE">report.html</span> and read the coverage line first — under 80% and the totals are indicative, not auditable. Want it without instrumenting anything? <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; color: #E9ECEE">redundo analyze examples/demo_trace.jsonl</span> reproduces the sample above. There's also <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; color: #E9ECEE">redundo drift</span>, a separate context-drift heuristic: <a href="https://github.com/CogentWizards/redundo/blob/main/docs/context-drift.md" target="_blank" rel="noopener">docs/context-drift.md</a>.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer style="border-top: 1px solid rgba(255,255,255,0.07); padding: clamp(48px, 6vw, 76px) clamp(20px, 4vw, 32px) 40px; background: #0B0E10">
+    <div style="max-width: 1120px; margin: 0 auto">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 36px">
+        <div>
+          <div style="display: flex; align-items: center; gap: 10px">
+            <span style="display: grid; grid-template-columns: 7px 7px; grid-template-rows: 7px 7px; gap: 2px">
+              <span style="background: #3D73D9; border-radius: 1.5px"></span><span style="background: #138E83; border-radius: 1.5px"></span><span style="background: #3F9C62; border-radius: 1.5px"></span><span style="background: #D87935; border-radius: 1.5px"></span>
+            </span>
+            <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: #E9ECEE">redundo</span>
+          </div>
+          <p style="margin: 14px 0 0; max-width: 34ch; font-size: 13.5px; line-height: 1.6; color: #9AA4AB">MIT licensed and developed in the open. Point it at your agent's OTLP traces, get a report on what's wasted.</p>
+          <div style="margin-top: 11px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #7F8B93">v0.2.0 · 37 commits · no telemetry of its own</div>
+        </div>
+        <div>
+          <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.1em; color: #7F8B93">CODE</div>
+          <div style="margin-top: 12px; display: grid; gap: 9px; font-size: 13.5px">
+            <a href="https://github.com/CogentWizards/redundo" target="_blank" rel="noopener">GitHub repository</a>
+            <a href="https://github.com/CogentWizards/redundo/issues" target="_blank" rel="noopener">Issues</a>
+            <a href="https://pypi.org/project/redundo/" target="_blank" rel="noopener">PyPI</a>
+            <a href="https://github.com/CogentWizards/redundo/actions/workflows/ci.yml" target="_blank" rel="noopener">CI</a>
+            <a href="https://github.com/CogentWizards/redundo/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+          </div>
+        </div>
+        <div>
+          <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.1em; color: #7F8B93">DOCS</div>
+          <div style="margin-top: 12px; display: grid; gap: 9px; font-size: 13.5px">
+            <a href="https://github.com/CogentWizards/redundo/blob/main/docs/schema.md" target="_blank" rel="noopener">Schema &amp; the six buckets</a>
+            <a href="https://github.com/CogentWizards/redundo/blob/main/docs/hashing.md" target="_blank" rel="noopener">Hashing &amp; fingerprinting</a>
+            <a href="https://github.com/CogentWizards/redundo/blob/main/docs/pricing.md" target="_blank" rel="noopener">Pricing data</a>
+            <a href="https://github.com/CogentWizards/redundo/blob/main/docs/context-drift.md" target="_blank" rel="noopener">Context drift</a>
+            <a href="https://github.com/CogentWizards/redundo/blob/main/docs/plugins.md" target="_blank" rel="noopener">Writing plugins</a>
+          </div>
+        </div>
+        <div>
+          <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.1em; color: #7F8B93">CONTRIBUTING</div>
+          <div style="margin-top: 12px; border: 1px solid rgba(255,255,255,0.09); border-radius: 10px; padding: 14px; background: #101416">
+            <div style="font-size: 13.5px; line-height: 1.6; color: #9AA4AB">Contributions welcome — <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">uv sync</span> then <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .92em">uv run pytest</span>. New sources and new classifications are plugins, so they don't need a PR here at all.</div>
+            <div style="margin-top: 10px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px"><a href="https://github.com/CogentWizards/redundo/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">CONTRIBUTING.md ↗</a> · <a href="https://github.com/CogentWizards/redundo/blob/main/CODE_OF_CONDUCT.md" target="_blank" rel="noopener">Code of conduct</a></div>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top: 44px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #7F8B93">
+        <span>A repeat among unpriced events is invisible, not free.</span>
+        <span>github.com/CogentWizards/redundo</span>
+      </div>
+    </div>
+  </footer>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var PIPE_TEXT = 'pip install "redundo[collector]"\nredundo collect --out-dir ./otlp_traces &\n# enable your framework\'s OTLP export, run it, then:\nredundo adapt ./otlp_traces --summary | redundo analyze --format html > report.html';
+  var INSTALL_TEXT = 'pip install "redundo[collector]"';
+  var QS1_TEXT = 'pip install "redundo[collector]"\nredundo collect --out-dir ./otlp_traces &';
+  var QS3_TEXT = 'redundo adapt ./otlp_traces --summary | redundo analyze --format html > report.html';
+
+  var SOURCES = {
+    "claude-code": {
+      code: 'export CLAUDE_CODE_ENABLE_TELEMETRY=1\nexport CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1\nexport OTEL_TRACES_EXPORTER=otlp\nexport OTEL_LOGS_EXPORTER=otlp\nexport OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\nexport OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318\nexport OTEL_TRACES_EXPORT_INTERVAL=1000\nexport OTEL_LOG_TOOL_DETAILS=1   # tool arguments + MCP tool_input',
+      note: "Also covers the Claude Agent SDK — it launches the claude binary as a subprocess, so set these in whatever process calls query(), not inside the SDK's own options. Full detail: docs/claude-code.md."
+    },
+    "openinference": {
+      code: 'hermes plugins install briancaffey/hermes-otel/hermes_otel\nexport OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318/v1/traces"\n# note the /v1/traces suffix, then restart Hermes',
+      note: "Full content and a real conversation-scoped task_id both work out of the box, no permission opt-in needed. The same --source openinference covers the OpenAI Agents SDK and Google ADK via their OpenInference instrumentors."
+    },
+    "openclaw": {
+      code: 'openclaw plugins install clawhub:@cogentwizards/openclaw-localtrace\nopenclaw plugins enable openclaw-localtrace\nopenclaw config set plugins.entries.openclaw-localtrace.config.enabled true\nopenclaw config set plugins.entries.openclaw-localtrace.hooks.allowConversationAccess true\nopenclaw gateway restart',
+      note: "No redundo collect step for this source — the plugin writes straight to a local directory. captureIdentifiers and allowConversationAccess unlock a real task_id and per-call write signal; read the plugin's README before turning them on."
+    },
+    "cowork": {
+      code: "# point Cowork's OTLP export at the local receiver, then:\nredundo adapt ./otlp_traces --source cowork --summary \\\n    | redundo analyze --format html > report.html",
+      note: "Per-source specifics are in docs/cowork.md. If adapt can't tell the shape apart on its own, --source cowork forces it."
+    }
+  };
+  var currentSourceKey = "claude-code";
+
+  var copyTimeout;
+  function copyText(text, key) {
+    function finish() {
+      document.querySelectorAll("[data-copied-key]").forEach(function (el) {
+        el.classList.toggle("show", el.getAttribute("data-copied-key") === key);
+      });
+      clearTimeout(copyTimeout);
+      copyTimeout = setTimeout(function () {
+        document.querySelectorAll("[data-copied-key]").forEach(function (el) {
+          el.classList.remove("show");
+        });
+      }, 1700);
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(finish, finish);
+        return;
+      }
+    } catch (e) {}
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+    finish();
+  }
+
+  window.copyPipe = function () { copyText(PIPE_TEXT, "pipe"); };
+  window.copyInstall = function () { copyText(INSTALL_TEXT, "install"); };
+  window.copyQs1 = function () { copyText(QS1_TEXT, "qs1"); };
+  window.copyQs2 = function () { copyText(SOURCES[currentSourceKey].code, "qs2"); };
+  window.copyQs3 = function () { copyText(QS3_TEXT, "qs3"); };
+
+  window.setReportTheme = function (theme) {
+    var panel = document.querySelector(".report-body");
+    if (panel) panel.setAttribute("data-theme", theme);
+    var lightBtn = document.getElementById("theme-light-btn");
+    var darkBtn = document.getElementById("theme-dark-btn");
+    if (lightBtn) lightBtn.classList.toggle("active", theme === "light");
+    if (darkBtn) darkBtn.classList.toggle("active", theme === "dark");
+  };
+
+  window.toggleVerdict = function (key) {
+    var el = document.getElementById("verdict-" + key);
+    if (el) el.classList.toggle("open");
+  };
+
+  window.pickSource = function (key) {
+    var s = SOURCES[key];
+    if (!s) return;
+    currentSourceKey = key;
+    var codeEl = document.getElementById("source-code");
+    var noteEl = document.getElementById("source-note");
+    if (codeEl) codeEl.textContent = s.code;
+    if (noteEl) noteEl.textContent = s.note;
+    document.querySelectorAll(".source-tab").forEach(function (btn) {
+      btn.classList.toggle("active", btn.getAttribute("data-source") === key);
+    });
+  };
+
+  // generic hover/active style handling, mirrors the design's style-hover/style-active directives
+  document.querySelectorAll("[data-hover]").forEach(function (el) {
+    var base = el.getAttribute("style") || "";
+    var hoverExtra = el.getAttribute("data-hover");
+    el.addEventListener("mouseenter", function () { el.setAttribute("style", base + ";" + hoverExtra); });
+    el.addEventListener("mouseleave", function () { el.setAttribute("style", base); });
+  });
+  document.querySelectorAll("[data-active-style]").forEach(function (el) {
+    var base = el.getAttribute("style") || "";
+    var activeExtra = el.getAttribute("data-active-style");
+    el.addEventListener("mousedown", function () { el.setAttribute("style", base + ";" + activeExtra); });
+    el.addEventListener("mouseup", function () { el.setAttribute("style", base); });
+    el.addEventListener("mouseleave", function () { el.setAttribute("style", base); });
+  });
+
+  // scroll progress bar
+  var progressBar = document.getElementById("scroll-progress-bar");
+  function onScroll() {
+    if (!progressBar) return;
+    var el = document.scrollingElement || document.documentElement;
+    var max = el.scrollHeight - el.clientHeight;
+    progressBar.style.width = (max > 0 ? Math.min(100, (el.scrollTop / max) * 100) : 0) + "%";
+  }
+  window.addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
+
+  // reveal-on-scroll
+  var revealNodes = Array.prototype.slice.call(document.querySelectorAll("[data-reveal]"));
+  if (revealNodes.length && typeof IntersectionObserver !== "undefined" &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    revealNodes.forEach(function (n, i) {
+      n.style.opacity = "0";
+      n.style.transform = "translateY(10px)";
+      n.style.transition = "opacity .7s cubic-bezier(.2,.7,.2,1) " + i * 65 + "ms, transform .7s cubic-bezier(.2,.7,.2,1) " + i * 65 + "ms";
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        entry.target.style.opacity = "1";
+        entry.target.style.transform = "none";
+        io.unobserve(entry.target);
+      });
+    }, { rootMargin: "0px 0px -6% 0px" });
+    revealNodes.forEach(function (n) { io.observe(n); });
+    setTimeout(function () {
+      revealNodes.forEach(function (n) { n.style.opacity = "1"; n.style.transform = "none"; });
+    }, 1500);
+  }
+})();
+</script>
+</body>
+</html>
