@@ -1,10 +1,12 @@
-# Context drift hints: `redundo drift`
+# Context drift
+
+Covers `redundo drift`.
 
 A heuristic, not a finding, and deliberately not part of `redundo analyze`'s
 own report. This document says plainly what that means and why, so it's
 never mistaken for the same kind of claim as a bucket.
 
-## Why this is a separate command, not a bucket
+## Why a separate command
 
 Every bucket `redundo analyze` produces, even the "surfaced for review, not
 a verdict" ones (`near_duplicate`, `cross_task_redundancy`), is a
@@ -25,7 +27,7 @@ So: its own command (`redundo drift`), its own output (a plain list of
 measured distances and a literal diff, not a verdict), and an explicit
 disclaimer printed at the top of every run.
 
-## What it needs: a continuation link, not a delegation link
+## Continuation vs delegation links
 
 `metadata.parent_task_id` (see `docs/openinference.md`) says two tasks
 are related. It doesn't say *how*. `metadata.parent_task_link_kind`
@@ -53,7 +55,7 @@ table), tracked there for the same reason: it already models "this
 session id replaced that one," exactly the relationship a continuation
 edge needs.
 
-## What it measures, and what it deliberately doesn't blend together
+## What it measures
 
 For each hop between consecutive tasks in a continuation chain, two
 independent numbers, never combined into one score:

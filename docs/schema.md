@@ -77,7 +77,7 @@ Keys `analyze` looks for. Absence is not a claim of a default value.
   `similarity_fingerprint`, the same "don't silently compare
   incompatible hashes" discipline `hash_spec` applies to `content_hash`.
 
-## Design decisions where the contract was underspecified
+## Design decisions
 
 The schema names `parent_id` but doesn't say what to do when a source
 doesn't populate it, or how "redundant repeat" should behave in branched
@@ -169,7 +169,7 @@ can see at all (they're scoped to a single task by design).
 
 The rule itself is printed next to every count in the actual report
 output, not left implicit in a label. `"42 confirmed_waste"` is a claim;
-`"42 confirmed_waste -- repeated call, unchanged result, no intervening
+`"42 confirmed_waste: repeated call, unchanged result, no intervening
 write, task failed"` is a claim someone can check against one case by
 hand. `unclassified` is not minimized with heuristics: a confident wrong
 classification is worse than a large unclassified bucket, because the
@@ -188,8 +188,8 @@ live.
 Every report opens with a coverage line, before any bucket:
 
 ```
-Coverage: 16/25 events priced (64%) -- $0.1060 of tracked spend is what this analysis actually covers.
-  9 event(s) had no cost_usd and are excluded from every dollar figure below -- the percentages are computed on the priced subset, not your total spend.
+Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analysis actually covers.
+  9 event(s) had no cost_usd and are excluded from every dollar figure below. Percentages are computed on the priced subset, not your total spend.
 ```
 
 This is measured over the *entire loaded corpus*, not just the events

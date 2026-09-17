@@ -1,9 +1,9 @@
-# Adapter spec: OpenClaw's `@openclaw/diagnostics-otel` -> the redundo.analyzer Event schema
+# OpenClaw adapter
 
 This adapter is built against the exporter's own TypeScript source
 (`extensions/diagnostics-otel/src/*.ts` in the [openclaw/openclaw](https://github.com/openclaw/openclaw)
 repo) and its own test suite's literal example payloads, not against
-documentation prose alone -- see "A live capture attempt" below for why.
+documentation prose alone. See "A live capture attempt" below for why.
 
 ## Span kinds
 
@@ -13,13 +13,13 @@ OpenClaw's exporter produces several span names; only two become Events:
 |---|---|
 | `openclaw.model.call` | `llm_call` |
 | `openclaw.tool.execution` | `tool_call` (+ `tool_result` when output was captured) |
-| `openclaw.harness.run`, `openclaw.run` | nothing -- structural wrapper spans, used only for lineage-ancestor lookup and the `workflow` label |
-| `openclaw.model.usage` | nothing -- see "The `openclaw.model.usage` span" below |
+| `openclaw.harness.run`, `openclaw.run` | nothing. Structural wrapper spans, used only for lineage-ancestor lookup and the `workflow` label |
+| `openclaw.model.usage` | nothing. See "The `openclaw.model.usage` span" below |
 | everything else (`openclaw.session.stuck`, `openclaw.tool.loop`, `openclaw.memory.pressure`, ...) | nothing, unrelated to call/tool-call accounting |
 
 Under `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental`, model-call
 spans are named `"<gen_ai.operation.name> <model>"` instead of
-`openclaw.model.call` -- genuinely ambiguous with other gen_ai-semconv
+`openclaw.model.call`, genuinely ambiguous with other gen_ai-semconv
 sources by name alone, so `detect.py` falls back to the
 `openclaw.model_call.observation_unit` attribute, which the exporter sets
 on every model-call span regardless of naming mode.
@@ -33,10 +33,10 @@ whether it ever represents an API call not already captured by
 `openclaw.model.call`, or is always a redundant re-emission of the same
 call's usage. Converting it as a second `llm_call` risked double-counting;
 skipping it risks a blind spot if it's ever the *only* signal for some call
-shape. Skipped, not guessed at -- resolve this against a real capture
+shape. Skipped, not guessed at. Resolve this against a real capture
 before changing it (see "A live capture attempt").
 
-## task_id: always the trace ID, not a fallback -- a ceiling
+## task_id ceiling
 
 Every other OTLP source this project supports has a "real conversation id,
 falls back to trace id" story, with a documented cost to the fallback.
@@ -58,15 +58,15 @@ Verified directly in the exporter source, not inferred:
   exported span attributes.
 
 The only thing that *does* survive is native OTel trace/span-id parent-child
-linkage (not an `openclaw.*` attribute -- the actual span context), plus
+linkage (not an `openclaw.*` attribute, the actual span context), plus
 `gen_ai.tool.call.id`, a deliberate per-*call* semconv identity kept for
 compatibility with generic OTel viewers. Neither is a session key.
 
 **Consequence:** `task_id` for this source is always the OTLP trace id.
 `metadata.task_id_source` is still set to `"trace_id_fallback"` (the
 existing convention's value across every source for "not a real
-conversation id"), but the framing that value usually carries -- "this
-corpus degraded from a better signal" -- doesn't quite fit here. There is
+conversation id"), but the framing that value usually carries, "this
+corpus degraded from a better signal," doesn't quite fit here. There is
 no better signal to have degraded *from*; trace-id-scoped grouping is the
 most this signal can ever give for this source, by design, not by gap.
 Repeats spanning more than one OTel trace (almost certainly: more than one
@@ -74,8 +74,8 @@ turn in the same OpenClaw session) are structurally invisible to this
 adapter. If OpenClaw's trace boundaries turn out to be per-turn rather than
 per-session (plausible from the harness/run span hierarchy documented in
 OpenClaw's own OTel guide, but not directly confirmed here), that makes
-this adapter's `task_id` scoped to a single turn, not a whole conversation
--- narrower coverage than the other three sources give.
+this adapter's `task_id` scoped to a single turn, not a whole conversation,
+narrower coverage than the other three sources give.
 
 ## Lineage
 
@@ -85,12 +85,12 @@ Real `parent_span_id` walked the same way as `sources.openinference`:
 present. Whether OpenClaw actually nests sequential calls under each other,
 or puts every call in one turn as flat siblings of a single `openclaw.run`
 span (confirmed to happen for at least one other real OTel-instrumented
-agent framework -- see `sources.openinference`'s own docstring), was not
+agent framework, see `sources.openinference`'s own docstring), was not
 verified against a live capture (see below). This adapter includes the
 same interval-based sibling-chaining safety net `sources.openinference`
 uses as a precaution either way: a no-op if the real topology already
 nests correctly, a safety net if it doesn't, but only beneath a real
-*kept* ancestor further up the chain -- a flat group with nothing kept
+*kept* ancestor further up the chain. A flat group with nothing kept
 above it (e.g. the first turn in a trace) is left unlinked rather than
 guessed at, since chaining across two genuinely independent top-level
 flame graphs in the same trace would be a wrong finding, not a
@@ -101,12 +101,12 @@ conservative one.
 falling back to the span's own `openclaw.channel` attribute, falling back
 to `None`.
 
-## Content: opt-in, and off changes what's even hashable
+## Content capture is opt-in
 
 Raw content (`gen_ai.input.messages`, `gen_ai.output.messages`,
 `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`) is exported only
-when the operator sets `diagnostics.otel.captureContent: true` -- off by
-default. The message-shape verified against the exporter's own test
+when the operator sets `diagnostics.otel.captureContent: true`, off by
+default. The message shape verified against the exporter's own test
 assertions: `gen_ai.input.messages`/`gen_ai.output.messages` are a single
 JSON-stringified array attribute, one object per message,
 `{role, parts: [...], finish_reason?}`, each part one of
@@ -114,18 +114,18 @@ JSON-stringified array attribute, one object per message,
 `{type: "tool_call_response", id?, response}` / `{type: "blob", ...}`.
 
 Without `captureContent`, every record from this source degrades to
-`content_basis: "opaque"` -- a hash of the span's own id (never
+`content_basis: "opaque"`, a hash of the span's own id (never
 coincidentally matching another record's hash), the same idiom
 `sources.claude_code` uses for its own no-content case. This means a
 corpus captured with the default configuration produces records that load
 and count correctly (coverage, cost-shape, task counts) but can never
-participate in a candidate pair -- every `llm_call`/`tool_call` looks
+participate in a candidate pair. Every `llm_call`/`tool_call` looks
 unique by construction. That's not a bug in this adapter; it's an honest
 reflection of what the operator chose to export.
 
-## Cost: an estimate apportioned from the metrics signal, not a metered figure
+## Cost from metrics
 
-OpenClaw's exporter does compute and export a real cost estimate --
+OpenClaw's exporter does compute and export a real cost estimate,
 `openclaw.cost.usd`, a cumulative Counter split by `(openclaw.channel,
 openclaw.model)` attributes, fed from `model.usage` diagnostic events
 whenever they carry a `costUsd` value. But it is **only** exported on the
@@ -137,16 +137,16 @@ specific call, and the exporter never populates metric exemplars either
 spend).
 
 `redundo collect` captures `/v1/metrics` (written to disk like any other
-signal; pass the whole capture directory to `redundo adapt` as usual --
+signal; pass the whole capture directory to `redundo adapt` as usual,
 metrics files are picked up automatically alongside traces and logs). This
 adapter apportions each `(channel, model)` counter's total across every
 `llm_call` event sharing that `(channel, model)`, weighted by token share
 (`tokens_in + tokens_out`) when the calls in scope have token data, split
-evenly otherwise. `tool_call`/`tool_result` records never get a `cost_usd`
--- the counter is model-call-scoped, with nothing analogous for tools.
+evenly otherwise. `tool_call`/`tool_result` records never get a `cost_usd`,
+the counter is model-call-scoped, with nothing analogous for tools.
 
 **The counter resets to zero, and starts a new observation window, every
-time the exporting Gateway process restarts** -- confirmed directly
+time the exporting Gateway process restarts**, confirmed directly
 during this feature's development against a real capture where the same
 `(channel, model)` pair's `start_time_unix_nano` changed mid-session.
 Treating every point as one flat running total would silently drop
@@ -154,28 +154,28 @@ whatever a pre-restart generation had accumulated. This adapter instead
 tracks each restart as its own *generation*, and needed one more
 correction beyond that: a generation's own `start_time_unix_nano` is when
 the exporting SDK began tracking that attribute combination, not
-necessarily when the real calls it covers began -- also confirmed
+necessarily when the real calls it covers began, also confirmed
 directly, real `llm_call` spans landed both before their generation's
 recorded start (registration lag) and after its last observed export
 (a real call made in the time between one periodic metrics flush and the
 next). Bucketing by "does this call's timestamp fall inside this
 generation's own observed range" undercounted roughly 12 of 13 real calls
 in that capture. The correct boundary is *which restart cycle a call
-belongs to* -- strictly before the next generation of the same `(channel,
-model)` begins, open-ended at both ends of the whole sequence -- the same
+belongs to*, strictly before the next generation of the same `(channel,
+model)` begins, open-ended at both ends of the whole sequence, the same
 idiom `sources.claude_code` uses for its own cross-signal time-window
 bucketing (see that source's own docs for the fuller reasoning). Every
 apportioned record's `metadata.cost_basis` names which case applied
 (`"apportioned_from_metrics_by_tokens"` or `"_equal_split"`), and
 `ConversionSummary.notes()` reports how many `llm_call` records actually
-got an estimate -- if metrics documents weren't captured at all, that
+got an estimate. If metrics documents weren't captured at all, that
 count is `0` and `cost_usd` stays `None` everywhere, same as before this
 feature existed.
 
 **What this still can't do**: a `(channel, model)` generation with zero
 matching `llm_call` spans in the trace data (e.g. a call whose own export
 was lost or never captured) simply has its total go unapportioned to
-anyone -- correct, not a bug, since inventing a match would be a guess.
+anyone, correct, not a bug, since inventing a match would be a guess.
 And this is still an estimate, never an exactly metered per-call figure:
 "this call's token share of this generation's total" is the most precise
 claim the data actually supports.
@@ -193,11 +193,11 @@ this adapter.
 ## Blocked tool calls
 
 A tool call OpenClaw's own policy denies before it executes carries
-`openclaw.outcome = "blocked"` and never produces output -- there will
+`openclaw.outcome = "blocked"` and never produces output. There will
 never be a `tool_result` for it, unlike an ordinary call whose result
 simply wasn't captured. Rather than let that read identically to "result
 unknown," this adapter puts `outcome: "error"` directly on the `tool_call`
-record itself for this one case -- the only place that real signal can go.
+record itself for this one case, the only place that real signal can go.
 
 ## A live capture attempt
 
@@ -208,25 +208,25 @@ an isolated profile, a local Ollama model (no external API keys or cost),
 doctor` confirmed the traces and logs exporters connected successfully,
 and `sessions list` confirmed the driven turns genuinely executed through
 the instrumented Gateway process (real token usage recorded). Every
-exported batch across several turns was nonetheless empty -- zero spans,
+exported batch across several turns was nonetheless empty, zero spans,
 zero log records.
 
 Reading the exporter's own source ruled out the two most likely causes:
 no provider-name gate exists anywhere in the plugin (grepped exhaustively),
 and the plugin's own trust-filtering logic (`metadata.trusted`) only
 affects whether a `*.started` span gets a real trace parent or a rootless
-one -- it does not produce zero spans either way, confirmed by the
+one. It does not produce zero spans either way, confirmed by the
 exporter's own test for exactly this case. The most likely explanation is
 that the diagnostic event a `model.call.*`/`tool.execution.*` recorder
 needs was never emitted for this specific embedded/Ollama-provider code
-path -- code outside the `diagnostics-otel` plugin itself, not available
+path, code outside the `diagnostics-otel` plugin itself, not available
 to inspect from this package's checkout.
 
 This adapter is therefore built against the exporter's own source and
 test-asserted example payloads (a form of "real data," just not a live
 capture), rather than against documentation prose. Anyone who can get a
-genuine live capture -- with a real hosted provider, or once the empty-export
-issue above is understood -- should treat that as the next validation
+genuine live capture, with a real hosted provider, or once the empty-export
+issue above is understood, should treat that as the next validation
 step, the same discipline every other source in this package was held to.
 See CONTRIBUTING.md.
 
@@ -238,7 +238,7 @@ openclaw plugins enable diagnostics-otel
 openclaw config set diagnostics.enabled true
 openclaw config set diagnostics.otel.enabled true
 openclaw config set diagnostics.otel.endpoint "http://localhost:4318"
-openclaw config set diagnostics.otel.captureContent true   # opt-in; see "Content" above
+openclaw config set diagnostics.otel.captureContent true   # opt-in; see "Content capture is opt-in" above
 # restart the Gateway, then:
 redundo collect --out-dir ./otlp_traces &
 # ... drive real turns through the Gateway ...
