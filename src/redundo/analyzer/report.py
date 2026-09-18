@@ -131,8 +131,8 @@ def to_text(result: AnalysisResult, *, max_reasons: int = 20) -> str:
 # someone's own trace data, possibly offline, and possibly years from now.
 # A network dependency is a bug waiting to happen. The serif display font
 # and oklch color tokens below are all system/fallback stacks and inline
-# CSS values, never fetched. The CogentWizards org mark embedded below is
-# a small PNG (base64, ~6 KB), not a fetch either.
+# CSS values, never fetched. The header mark is four CSS-colored spans,
+# not an image, so there's nothing to fetch or embed for it either.
 #
 # Every string interpolated from the trace (model names, workflow labels,
 # classification reasons, all attacker-controlled if the trace comes from
@@ -174,77 +174,6 @@ _NUMBER_WORDS = (
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
     "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
     "nineteen", "twenty",
-)
-
-# The CogentWizards org mark, downscaled to 64x64 and re-encoded. Embedded
-# as data so the header logo needs no network request, matching this
-# file's own "nothing is fetched" rule.
-_LOGO_BASE64 = (
-    "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"
 )
 
 
@@ -503,12 +432,13 @@ def _bucket_section(result: AnalysisResult, bucket: Bucket, *, index: int, max_r
 
 
 def _header_html() -> str:
-    logo_src = f"data:image/png;base64,{_LOGO_BASE64}"
     version = html.escape(_redundo_version())
     return f"""
 <header class="page-header">
   <div class="brand">
-    <img src="{logo_src}" width="24" height="24" alt="" class="brand-mark">
+    <span class="brand-mark" aria-hidden="true">
+      <span></span><span></span><span></span><span></span>
+    </span>
     <span class="brand-name">redundo</span>
     <span class="brand-version">v{version}</span>
   </div>
@@ -588,7 +518,11 @@ code {{ font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-s
   padding-top: 22px; padding-bottom: 22px;
 }}
 .brand {{ display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }}
-.brand-mark {{ border-radius: 6px; display: block; }}
+.brand-mark {{ display: grid; grid-template-columns: 6px 6px; grid-template-rows: 6px 6px; gap: 2px; }}
+.brand-mark span:nth-child(1) {{ background: #3d73d9; border-radius: 1px; }}
+.brand-mark span:nth-child(2) {{ background: #138e83; border-radius: 1px; }}
+.brand-mark span:nth-child(3) {{ background: #3f9c62; border-radius: 1px; }}
+.brand-mark span:nth-child(4) {{ background: #d87935; border-radius: 1px; }}
 .brand-name {{ font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }}
 .brand-version {{ font-size: 12px; color: var(--ink3); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }}
 /* theme switch */
