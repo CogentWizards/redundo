@@ -20,12 +20,12 @@
   <ellipse cx="300" cy="120" rx="620" ry="380" fill="url(#glow)"/>
   <rect x="0" y="0" width="1280" height="6" fill="url(#topbar)"/>
 
-  <!-- four-square mark -->
-  <g>
-    <rect x="100" y="176" width="46" height="46" rx="2" fill="#3D73D9"/>
-    <rect x="160" y="176" width="46" height="46" rx="2" fill="#138E83"/>
-    <rect x="100" y="236" width="46" height="46" rx="2" fill="#3F9C62"/>
-    <rect x="160" y="236" width="46" height="46" rx="2" fill="#D87935"/>
+  <!-- brand mark, scaled from its native 0-1200 viewBox into a 106x106 box -->
+  <g transform="translate(100,176) scale(0.0883333)">
+    <path fill="#3D73D9" d="M220 80H490C551 80 600 129 600 190V370L370 600H190C129 600 80 551 80 490V220C80 143 143 80 220 80Z"/>
+    <path fill="#138E83" d="M710 80H980C1057 80 1120 143 1120 220V490C1120 551 1071 600 1010 600H830L600 370V190C600 129 649 80 710 80Z"/>
+    <path fill="#D87935" d="M830 600H1010C1071 600 1120 649 1120 710V980C1120 1057 1057 1120 980 1120H710C649 1120 600 1071 600 1010V830L830 600Z"/>
+    <path fill="#3F9C62" d="M190 600H370L600 830V1010C600 1071 551 1120 490 1120H220C143 1120 80 1057 80 980V710C80 649 129 600 190 600Z"/>
   </g>
 
   <text x="234" y="245" font-family="SF Mono, ui-monospace, monospace" font-weight="500" font-size="88" letter-spacing="-1" fill="#E9ECEE">redundo</text>
