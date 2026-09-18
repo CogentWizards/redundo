@@ -37,7 +37,8 @@ def test_html_is_self_contained_no_external_resources():
     assert "<script" not in page.lower()
     assert 'src="http' not in page  # no fetched image/script
     assert "stylesheet" not in page.lower()  # no external CSS
-    assert '<img src="data:image/png;base64,' in page  # the header logo is embedded, not fetched
+    assert "<img" not in page.lower()  # the header logo is CSS, not a fetched or embedded image
+    assert 'class="brand-mark"' in page
 
 
 def test_html_contains_all_four_bucket_labels():
