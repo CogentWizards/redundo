@@ -20,12 +20,12 @@
   <ellipse cx="300" cy="120" rx="620" ry="380" fill="url(#glow)"/>
   <rect x="0" y="0" width="1280" height="6" fill="url(#topbar)"/>
 
-  <!-- four-square mark -->
-  <g>
-    <rect x="100" y="176" width="46" height="46" rx="2" fill="#3D73D9"/>
-    <rect x="160" y="176" width="46" height="46" rx="2" fill="#138E83"/>
-    <rect x="100" y="236" width="46" height="46" rx="2" fill="#3F9C62"/>
-    <rect x="160" y="236" width="46" height="46" rx="2" fill="#D87935"/>
+  <!-- brand mark, scaled from its native 0-1200 viewBox into a 106x106 box -->
+  <g transform="translate(100,176) scale(0.0883333)">
+    <path fill="#3D73D9" d="M220 80H470C525 80 570 125 570 180V345C570 470 470 570 345 570H180C125 570 80 525 80 470V220C80 143 143 80 220 80Z"/>
+    <path fill="#138E83" d="M730 80H980C1057 80 1120 143 1120 220V470C1120 525 1075 570 1020 570H855C730 570 630 470 630 345V180C630 125 675 80 730 80Z"/>
+    <path fill="#D87935" d="M855 630H1020C1075 630 1120 675 1120 730V980C1120 1057 1057 1120 980 1120H730C675 1120 630 1075 630 1020V855C630 730 730 630 855 630Z"/>
+    <path fill="#3F9C62" d="M180 630H345C470 630 570 730 570 855V1020C570 1075 525 1120 470 1120H220C143 1120 80 1057 80 980V730C80 675 125 630 180 630Z"/>
   </g>
 
   <text x="234" y="245" font-family="SF Mono, ui-monospace, monospace" font-weight="500" font-size="88" letter-spacing="-1" fill="#E9ECEE">redundo</text>

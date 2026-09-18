@@ -131,8 +131,9 @@ def to_text(result: AnalysisResult, *, max_reasons: int = 20) -> str:
 # someone's own trace data, possibly offline, and possibly years from now.
 # A network dependency is a bug waiting to happen. The serif display font
 # and oklch color tokens below are all system/fallback stacks and inline
-# CSS values, never fetched. The header mark is four CSS-colored spans,
-# not an image, so there's nothing to fetch or embed for it either.
+# CSS values, never fetched. The header mark is inline SVG (four <path>s,
+# hardcoded brand colors), not a raster image, so there's nothing to
+# fetch and no binary blob to embed for it either.
 #
 # Every string interpolated from the trace (model names, workflow labels,
 # classification reasons, all attacker-controlled if the trace comes from
@@ -436,9 +437,12 @@ def _header_html() -> str:
     return f"""
 <header class="page-header">
   <div class="brand">
-    <span class="brand-mark" aria-hidden="true">
-      <span></span><span></span><span></span><span></span>
-    </span>
+    <svg class="brand-mark" viewBox="0 0 1200 1200" width="22" height="22" aria-hidden="true">
+      <path fill="#3D73D9" d="M220 80H470C525 80 570 125 570 180V345C570 470 470 570 345 570H180C125 570 80 525 80 470V220C80 143 143 80 220 80Z"/>
+      <path fill="#138E83" d="M730 80H980C1057 80 1120 143 1120 220V470C1120 525 1075 570 1020 570H855C730 570 630 470 630 345V180C630 125 675 80 730 80Z"/>
+      <path fill="#D87935" d="M855 630H1020C1075 630 1120 675 1120 730V980C1120 1057 1057 1120 980 1120H730C675 1120 630 1075 630 1020V855C630 730 730 630 855 630Z"/>
+      <path fill="#3F9C62" d="M180 630H345C470 630 570 730 570 855V1020C570 1075 525 1120 470 1120H220C143 1120 80 1057 80 980V730C80 675 125 630 180 630Z"/>
+    </svg>
     <span class="brand-name">redundo</span>
     <span class="brand-version">v{version}</span>
   </div>
@@ -518,11 +522,7 @@ code {{ font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-s
   padding-top: 22px; padding-bottom: 22px;
 }}
 .brand {{ display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }}
-.brand-mark {{ display: grid; grid-template-columns: 6px 6px; grid-template-rows: 6px 6px; gap: 2px; }}
-.brand-mark span:nth-child(1) {{ background: #3d73d9; border-radius: 1px; }}
-.brand-mark span:nth-child(2) {{ background: #138e83; border-radius: 1px; }}
-.brand-mark span:nth-child(3) {{ background: #3f9c62; border-radius: 1px; }}
-.brand-mark span:nth-child(4) {{ background: #d87935; border-radius: 1px; }}
+.brand-mark {{ display: block; flex: none; }}
 .brand-name {{ font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }}
 .brand-version {{ font-size: 12px; color: var(--ink3); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }}
 /* theme switch */
