@@ -1,0 +1,37 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#3D73D9" stop-opacity="0.22"/>
+      <stop offset="65%" stop-color="#3D73D9" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="topbar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3D73D9"/>
+      <stop offset="40%" stop-color="#138E83"/>
+      <stop offset="70%" stop-color="#3F9C62"/>
+      <stop offset="100%" stop-color="#D87935"/>
+    </linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M 48 0 L 0 0 0 48" fill="none" stroke="#FFFFFF" stroke-opacity="0.035" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1280" height="640" fill="#0E1113"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <ellipse cx="300" cy="120" rx="620" ry="380" fill="url(#glow)"/>
+  <rect x="0" y="0" width="1280" height="6" fill="url(#topbar)"/>
+
+  <!-- four-square mark -->
+  <g>
+    <rect x="100" y="176" width="46" height="46" rx="2" fill="#3D73D9"/>
+    <rect x="160" y="176" width="46" height="46" rx="2" fill="#138E83"/>
+    <rect x="100" y="236" width="46" height="46" rx="2" fill="#3F9C62"/>
+    <rect x="160" y="236" width="46" height="46" rx="2" fill="#D87935"/>
+  </g>
+
+  <text x="234" y="245" font-family="SF Mono, ui-monospace, monospace" font-weight="500" font-size="88" letter-spacing="-1" fill="#E9ECEE">redundo</text>
+
+  <text x="100" y="360" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="36" fill="#C8CFD4">Point it at your AI agent's OTLP traces.</text>
+  <text x="100" y="410" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="36" fill="#C8CFD4">Get a report on what's actually wasted.</text>
+
+  <text x="100" y="560" font-family="SF Mono, ui-monospace, monospace" font-size="23" fill="#7F8B93">MIT licensed  /  github.com/CogentWizards/redundo</text>
+</svg>
