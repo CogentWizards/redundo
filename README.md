@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/redundo.svg)](https://pypi.org/project/redundo/)
 [![CI](https://github.com/CogentWizards/redundo/actions/workflows/ci.yml/badge.svg)](https://github.com/CogentWizards/redundo/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/CogentWizards/redundo/blob/main/LICENSE)
 
 Point it at your AI agent's OTLP traces. Get a report on what's actually wasted: repeated work, not a guess.
 
@@ -19,7 +19,7 @@ redundo adapt ./otlp_traces --summary | redundo analyze --format html > report.h
 ```
 
 Each source has a genuinely different OTLP shape, and `redundo adapt`
-tells them apart from the data itself. See [`detect.py`](src/redundo/adapter/detect.py)'s
+tells them apart from the data itself. See [`detect.py`](https://github.com/CogentWizards/redundo/blob/main/src/redundo/adapter/detect.py)'s
 module docstring for the exact rules, or force one with `--source`.
 
 Each half also runs on its own:
@@ -57,7 +57,7 @@ redundo adapt "$(openclaw config get plugins.entries.openclaw-localtrace.config.
 `captureIdentifiers` and `hooks.allowConversationAccess` unlock a real
 conversation-scoped `task_id` and a real per-call write signal. Read the
 plugin's own README before turning them on. Without the plugin at all,
-[docs/openclaw.md](docs/openclaw.md) covers the built-in exporter instead, at
+[docs/openclaw.md](https://github.com/CogentWizards/redundo/blob/main/docs/openclaw.md) covers the built-in exporter instead, at
 the cost of that missing signal.
 
 </details>
@@ -80,7 +80,7 @@ redundo adapt ./otlp_traces --source openinference --summary | redundo analyze -
 ```
 
 Full content and a real conversation-scoped `task_id` both work out of
-the box, no permission opt-in needed. See [docs/openinference.md](docs/openinference.md).
+the box, no permission opt-in needed. See [docs/openinference.md](https://github.com/CogentWizards/redundo/blob/main/docs/openinference.md).
 
 </details>
 
@@ -115,7 +115,7 @@ redundo adapt ./otlp_traces --source openinference --summary | redundo analyze -
 In-trace handoffs work out of the box. Cross-trace correlation
 (the SDK's own `group_id`) is dropped by this translator today, an
 upstream gap, not something this adapter can fix. See
-[docs/openinference.md](docs/openinference.md)'s per-source table.
+[docs/openinference.md](https://github.com/CogentWizards/redundo/blob/main/docs/openinference.md)'s per-source table.
 
 </details>
 
@@ -151,7 +151,7 @@ ADK's own session id maps onto the standard `session.id` attribute, so a
 real conversation-scoped `task_id` works out of the box. Subagent
 delegation via `AgentTool` reuses the parent's own session id, so
 delegated work lands in the same task automatically, no extra link
-needed. See [docs/openinference.md](docs/openinference.md)'s per-source
+needed. See [docs/openinference.md](https://github.com/CogentWizards/redundo/blob/main/docs/openinference.md)'s per-source
 table.
 
 </details>
@@ -179,7 +179,7 @@ redundo adapt ./otlp_traces --source claude-code --summary | redundo analyze --f
 
 MCP tool call *arguments* only ever appear on the logs signal; tool
 *output* content only ever appears in a span event gated by
-`OTEL_LOG_TOOL_CONTENT=1`. Full detail in [docs/claude-code.md](docs/claude-code.md).
+`OTEL_LOG_TOOL_CONTENT=1`. Full detail in [docs/claude-code.md](https://github.com/CogentWizards/redundo/blob/main/docs/claude-code.md).
 
 </details>
 
@@ -202,7 +202,7 @@ source. One thing genuinely differs: the SDK always launches the CLI in
 streaming mode, which never emits the span the CLI normally uses to
 attach a turn's prompt text. This adapter recovers that content
 automatically via a time-window correlation against the logs signal. See
-"Agent SDK content recovery" in [docs/claude-code.md](docs/claude-code.md).
+"Agent SDK content recovery" in [docs/claude-code.md](https://github.com/CogentWizards/redundo/blob/main/docs/claude-code.md).
 
 </details>
 
@@ -224,15 +224,15 @@ Candidate redundant-repeat pairs: 8
 ```
 
 Every count above traces back to a real, checkable case in
-[`examples/demo_trace.jsonl`](examples/demo_trace.jsonl). Full report:
-[`examples/demo_report.html`](examples/demo_report.html). Three live,
-narrated demo apps (Claude Agent SDK, OpenClaw, Hermes): [`examples/demo-apps/`](examples/demo-apps/).
+[`examples/demo_trace.jsonl`](https://github.com/CogentWizards/redundo/blob/main/examples/demo_trace.jsonl). Full report:
+[`examples/demo_report.html`](https://github.com/CogentWizards/redundo/blob/main/examples/demo_report.html). Three live,
+narrated demo apps (Claude Agent SDK, OpenClaw, Hermes): [`examples/demo-apps/`](https://github.com/CogentWizards/redundo/tree/main/examples/demo-apps/).
 
 ## How it works
 
 `redundo` is two programs joined by a plain schema, installed as one package.
 
-**`adapt`** turns a framework's OTLP telemetry into one common event schema ([docs/schema.md](docs/schema.md)). **`analyze`** classifies repeated calls into one of six buckets:
+**`adapt`** turns a framework's OTLP telemetry into one common event schema ([docs/schema.md](https://github.com/CogentWizards/redundo/blob/main/docs/schema.md)). **`analyze`** classifies repeated calls into one of six buckets:
 
 | Bucket | Fires when |
 |---|---|
@@ -243,7 +243,7 @@ narrated demo apps (Claude Agent SDK, OpenClaw, Hermes): [`examples/demo-apps/`]
 | `cross_task_redundancy` | same call, different task, a *confirmed* link between them |
 | `recurring_pattern` | same call, different task, no confirmed link |
 
-Full reasoning for each: [docs/schema.md](docs/schema.md#the-six-buckets), or [`classify.py`](src/redundo/analyzer/classify.py)'s own module docstring.
+Full reasoning for each: [docs/schema.md](https://github.com/CogentWizards/redundo/blob/main/docs/schema.md#the-six-buckets), or [`classify.py`](https://github.com/CogentWizards/redundo/blob/main/src/redundo/analyzer/classify.py)'s own module docstring.
 
 ## Modular by design
 
@@ -257,20 +257,20 @@ Each stage only needs the one before it to speak the schema in between,
 so any stage can be swapped for your own. Bring your own event source
 by writing an `adapt` plugin, or add a new classification by writing an
 `analyze` plugin, no fork or PR against this repo required. See
-[docs/plugins.md](docs/plugins.md).
+[docs/plugins.md](https://github.com/CogentWizards/redundo/blob/main/docs/plugins.md).
 
 ## Supported sources
 
 | Source | Docs |
 |---|---|
-| Hermes, and anything OpenInference-instrumented | [docs/openinference.md](docs/openinference.md) |
-| Claude Code (CLI, IDE extensions, Agent SDK) | [docs/claude-code.md](docs/claude-code.md) |
-| Claude Cowork | [docs/cowork.md](docs/cowork.md) |
-| OpenClaw | [docs/openclaw.md](docs/openclaw.md), or the [openclaw-localtrace](https://github.com/CogentWizards/openclaw-localtrace) plugin ([docs](docs/openclaw-localtrace.md)) for a real write signal |
+| Hermes, and anything OpenInference-instrumented | [docs/openinference.md](https://github.com/CogentWizards/redundo/blob/main/docs/openinference.md) |
+| Claude Code (CLI, IDE extensions, Agent SDK) | [docs/claude-code.md](https://github.com/CogentWizards/redundo/blob/main/docs/claude-code.md) |
+| Claude Cowork | [docs/cowork.md](https://github.com/CogentWizards/redundo/blob/main/docs/cowork.md) |
+| OpenClaw | [docs/openclaw.md](https://github.com/CogentWizards/redundo/blob/main/docs/openclaw.md), or the [openclaw-localtrace](https://github.com/CogentWizards/openclaw-localtrace) plugin ([docs](https://github.com/CogentWizards/redundo/blob/main/docs/openclaw-localtrace.md)) for a real write signal |
 
-Not listed? Pipe your own NDJSON matching [the schema](docs/schema.md)
+Not listed? Pipe your own NDJSON matching [the schema](https://github.com/CogentWizards/redundo/blob/main/docs/schema.md)
 straight into `analyze`. It doesn't know or care where its input came
-from. Or write an adapter plugin, no PR against this repo required: [docs/plugins.md](docs/plugins.md).
+from. Or write an adapter plugin, no PR against this repo required: [docs/plugins.md](https://github.com/CogentWizards/redundo/blob/main/docs/plugins.md).
 
 ## Pricing data
 
@@ -281,15 +281,15 @@ from a bundled, per-model pricing snapshot. Refresh it any time:
 redundo update-pricing
 ```
 
-Full detail: [docs/pricing.md](docs/pricing.md).
+Full detail: [docs/pricing.md](https://github.com/CogentWizards/redundo/blob/main/docs/pricing.md).
 
 ## Docs
 
-- [docs/schema.md](docs/schema.md): the event schema and the six buckets, in full
-- [docs/hashing.md](docs/hashing.md): content hashing and similarity fingerprinting
-- [docs/pricing.md](docs/pricing.md): how cost is estimated, and how to refresh it
-- [docs/context-drift.md](docs/context-drift.md): `redundo drift`, a separate heuristic
-- [docs/plugins.md](docs/plugins.md): writing your own source, analysis, or report format
+- [docs/schema.md](https://github.com/CogentWizards/redundo/blob/main/docs/schema.md): the event schema and the six buckets, in full
+- [docs/hashing.md](https://github.com/CogentWizards/redundo/blob/main/docs/hashing.md): content hashing and similarity fingerprinting
+- [docs/pricing.md](https://github.com/CogentWizards/redundo/blob/main/docs/pricing.md): how cost is estimated, and how to refresh it
+- [docs/context-drift.md](https://github.com/CogentWizards/redundo/blob/main/docs/context-drift.md): `redundo drift`, a separate heuristic
+- [docs/plugins.md](https://github.com/CogentWizards/redundo/blob/main/docs/plugins.md): writing your own source, analysis, or report format
 
 ## Development
 
@@ -298,8 +298,8 @@ uv sync
 uv run pytest
 ```
 
-Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions welcome. See [CONTRIBUTING.md](https://github.com/CogentWizards/redundo/blob/main/CONTRIBUTING.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/CogentWizards/redundo/blob/main/LICENSE).
