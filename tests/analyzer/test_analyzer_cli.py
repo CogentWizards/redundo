@@ -64,3 +64,46 @@ def test_unknown_format_fails_with_dynamic_name_list(monkeypatch, capsys):
     assert exc_info.value.code == 2
     err = capsys.readouterr().err
     assert "html" in err and "json" in err and "text" in err
+
+
+# A priced trace with a real repeat, so the unclassified bucket (no
+# tool_result to confirm anything, so it can't land elsewhere) has a
+# nonzero cost_usd for the monthly projection to scale from. Only the
+# repeat's own cost_usd counts toward the bucket (0.01, not the pair's
+# combined 0.02); total_call_events=2 (both tool_call events) ->
+# cost_per_call = 0.01 / 2 = 0.005.
+PRICED_TRACE = (
+    '{"task_id": "t1", "step_index": 0, "event_type": "tool_call", "name": "x", '
+    '"content_hash": "h1", "cost_usd": 0.01, "outcome": "ok"}\n'
+    '{"task_id": "t1", "step_index": 1, "event_type": "tool_call", "name": "x", '
+    '"content_hash": "h1", "cost_usd": 0.01, "outcome": "ok"}\n'
+)
+
+
+def test_calls_per_day_default_is_1000(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO(PRICED_TRACE))
+    exit_code = main(["-"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "at 1,000 calls/day" in out
+    # cost_per_call=0.005 * 1000 calls/day * 30-day month = $150/mo
+    assert "$150.00/mo" in out
+
+
+def test_calls_per_day_flag_changes_the_projection(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO(PRICED_TRACE))
+    exit_code = main(["-", "--calls-per-day", "50"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "at 50 calls/day" in out
+    # cost_per_call=0.005 * 50 calls/day * 30-day month = $7.50/mo
+    assert "$7.50/mo" in out
+
+
+def test_calls_per_day_reaches_json_format(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO(PRICED_TRACE))
+    exit_code = main(["-", "--format", "json", "--calls-per-day", "2000"])
+    assert exit_code == 0
+    import json
+    data = json.loads(capsys.readouterr().out)
+    assert data["projection"]["calls_per_day"] == 2000

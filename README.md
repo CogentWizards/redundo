@@ -214,10 +214,12 @@ redundo analyze examples/demo_trace.jsonl
 
 ```
 Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analysis actually covers.
+  Cost basis: $0.1060 (100%) reported directly by the source.
 
 Candidate redundant-repeat pairs: 8
 
 3 confirmed_waste: repeated call, unchanged result, no intervening write, task failed
+  at 1,000 calls/day: ~$52.50/mo projected
 3 likely_legitimate: result changed, or a write intervened
 2 unclassified: a required signal was missing from the trace, no verdict, on purpose
 0 near_duplicate / 0 cross_task_redundancy / 0 recurring_pattern

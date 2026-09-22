@@ -35,6 +35,21 @@ META_SIMILARITY_SPEC_KEY = "similarity_spec"  # str: version of the fingerprint 
 # content, no real position in any lineage. Absent or False means "not
 # this," same convention as every other metadata key.
 META_SYNTHESIZED_COST_ONLY_KEY = "synthesized_cost_only"
+# str: which real signal produced this event's cost_usd. Absent means the
+# source reported cost_usd directly, as-is (the "direct_from_source"
+# canonical label compute_generic_coverage falls back to; no adapter
+# actually writes that string, absence itself is the signal). When an
+# adapter estimates or apportions cost_usd instead of reading it
+# directly, it sets this explicitly, never silently. Known values in
+# use today: "estimated_from_bundled_pricing_table" (OpenInference,
+# openclaw-localtrace; see docs/pricing.md), "apportioned_from_metrics_by_tokens"
+# / "apportioned_from_metrics_equal_split" (OpenClaw; see docs/openclaw.md).
+# A record with META_SYNTHESIZED_COST_ONLY_KEY set is reported under its
+# own canonical "synthesized_billing_only" basis regardless of this key,
+# since that's a stronger, more specific statement about the record's
+# origin. This is what lets a report state its own cost figure's
+# composition instead of implying every dollar is equally authoritative.
+META_COST_BASIS_KEY = "cost_basis"
 # str: the task_id of another task this one was delegated from (a real
 # subagent/handoff relationship), when a source can confirm one. Never
 # inferred from timing, content similarity, or any other guess, only

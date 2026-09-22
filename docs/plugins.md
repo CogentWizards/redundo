@@ -116,6 +116,15 @@ Register it:
 my-format = "my_package.report_format:to_my_format"
 ```
 
+The CLI also passes `calls_per_day=` (from `redundo analyze --calls-per-day`,
+default 1000), the same optional-knob pattern as an analysis's
+`keep_reasons` above: if your renderer's signature doesn't accept it,
+the CLI catches the `TypeError` and calls it without that argument
+instead. Only the two built-in HTML/text renderers use it today, to
+scale a bucket's own dollar figure to a hypothetical monthly cost; a
+format that doesn't care about the projection can simply omit the
+parameter.
+
 ## Why entry points
 
 Nothing here is redundo-specific infrastructure. `importlib.metadata`

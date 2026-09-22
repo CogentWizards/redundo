@@ -82,6 +82,11 @@ class AnalysisResult:
                 "task_id_confidence_fraction": self.coverage.task_id_confidence_fraction,
                 "synthesized_cost_only_events": self.coverage.synthesized_cost_only_events,
                 "synthesized_cost_only_usd": round(self.coverage.synthesized_cost_only_usd, 6),
+                "total_call_events": self.coverage.total_call_events,
+                "cost_by_basis": {
+                    basis: {"events": stat.events, "usd": round(stat.usd, 6)}
+                    for basis, stat in self.coverage.cost_by_basis.items()
+                },
                 "extra_notes": list(self.coverage.extra_notes),
             },
             "by_bucket": {

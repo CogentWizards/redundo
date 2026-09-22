@@ -57,6 +57,15 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Number of example cases to keep per bucket for spot-checking (default: 20)",
     )
+    parser.add_argument(
+        "--calls-per-day",
+        type=int,
+        default=1000,
+        metavar="N",
+        help="Assumed call volume for the monthly-cost projection shown next to each "
+        "bucket's dollar figure (default: 1000). A hypothetical scaling of this "
+        "trace's own cost-per-call rate, never a measurement of your real traffic.",
+    )
     return parser
 
 
@@ -91,7 +100,12 @@ def main(argv: list[str] | None = None) -> int:
     result = analysis.run(events)
 
     render = format_registry.get(args.format)
-    output = render(result, max_reasons=args.samples)
+    try:
+        output = render(result, max_reasons=args.samples, calls_per_day=args.calls_per_day)
+    except TypeError:
+        # This format's renderer doesn't accept calls_per_day -- not every
+        # third-party report format needs to know about the projection.
+        output = render(result, max_reasons=args.samples)
 
     if args.output:
         try:
