@@ -1,13 +1,19 @@
-from redundo.analyzer.metrics import compute_generic_coverage
+from redundo.analyzer.metrics import (
+    COST_BASIS_DIRECT,
+    COST_BASIS_SYNTHESIZED,
+    compute_generic_coverage,
+)
 from redundo.analyzer.schema import Event
 
 
 def make_event(cost_usd=None, task_id_source=None, task_id="t1", step_index=0,
                event_type="tool_call", name="x", content_hash="h", parent_id=None,
-               outcome=None):
+               outcome=None, cost_basis=None):
     metadata = {}
     if task_id_source is not None:
         metadata["task_id_source"] = task_id_source
+    if cost_basis is not None:
+        metadata["cost_basis"] = cost_basis
     return Event(
         task_id=task_id, step_index=step_index, event_type=event_type, name=name,
         content_hash=content_hash, tokens_in=None, tokens_out=None, outcome=outcome,
@@ -113,3 +119,63 @@ def test_ordinary_events_never_count_as_synthesized_cost_only():
     c = coverage([make_event(cost_usd=1.0)])
     assert c.synthesized_cost_only_events == 0
     assert c.synthesized_cost_only_usd == 0.0
+
+
+def test_total_call_events_counts_llm_and_tool_calls_not_results():
+    c = coverage([
+        make_event(event_type="llm_call"),
+        make_event(event_type="tool_call"),
+        make_event(event_type="tool_result"),
+    ])
+    assert c.total_call_events == 2
+
+
+def test_cost_basis_absent_is_reported_as_direct_from_source():
+    c = coverage([make_event(cost_usd=1.0), make_event(cost_usd=2.0)])
+    assert set(c.cost_by_basis) == {COST_BASIS_DIRECT}
+    assert c.cost_by_basis[COST_BASIS_DIRECT].events == 2
+    assert c.cost_by_basis[COST_BASIS_DIRECT].usd == 3.0
+
+
+def test_cost_basis_mixture_is_broken_out_separately():
+    c = coverage([
+        make_event(cost_usd=1.0),
+        make_event(cost_usd=2.0, cost_basis="estimated_from_bundled_pricing_table"),
+        make_event(cost_usd=0.5, cost_basis="estimated_from_bundled_pricing_table"),
+        make_event(cost_usd=4.0, cost_basis="apportioned_from_metrics_by_tokens"),
+    ])
+    assert c.cost_by_basis[COST_BASIS_DIRECT].events == 1
+    assert c.cost_by_basis[COST_BASIS_DIRECT].usd == 1.0
+    assert c.cost_by_basis["estimated_from_bundled_pricing_table"].events == 2
+    assert c.cost_by_basis["estimated_from_bundled_pricing_table"].usd == 2.5
+    assert c.cost_by_basis["apportioned_from_metrics_by_tokens"].events == 1
+    assert c.cost_by_basis["apportioned_from_metrics_by_tokens"].usd == 4.0
+    # sums back to the ordinary totals -- additive tracking, not a
+    # separate, exclusive view of the data.
+    assert c.priced_events == 4
+    assert c.total_priced_cost_usd == 7.5
+
+
+def test_synthesized_cost_only_wins_over_an_unrelated_cost_basis_value():
+    # Shouldn't happen in practice (an adapter wouldn't set both), but the
+    # synthesized flag is a stronger, more specific claim and must win.
+    events = [
+        Event(
+            task_id="t1", step_index=0, event_type="llm_call", name="x",
+            content_hash="h", tokens_in=None, tokens_out=None, outcome=None,
+            timestamp=None, cost_usd=1.0, model=None, parent_id=None,
+            workflow=None,
+            metadata={
+                "synthesized_cost_only": True,
+                "cost_basis": "estimated_from_bundled_pricing_table",
+            },
+        ),
+    ]
+    c = coverage(events)
+    assert set(c.cost_by_basis) == {COST_BASIS_SYNTHESIZED}
+    assert c.cost_by_basis[COST_BASIS_SYNTHESIZED].usd == 1.0
+
+
+def test_unpriced_events_dont_appear_in_cost_by_basis():
+    c = coverage([make_event(cost_usd=None)])
+    assert c.cost_by_basis == {}

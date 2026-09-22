@@ -22,12 +22,132 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .analysis import AnalysisResult, Bucket
-from .metrics import CoverageStats, Slice
+from .metrics import COST_BASIS_DIRECT, COST_BASIS_SYNTHESIZED, CoverageStats, Slice
+
+# ---------------------------------------------------------------------------
+# Cost basis
+#
+# coverage.cost_by_basis (see metrics.py) breaks "tracked spend" down by
+# where each dollar actually came from. Rendered here as prose so a
+# report never implies every dollar is equally authoritative -- a real
+# billed amount, a bundled-pricing-table estimate, an apportioned share
+# of an aggregate metrics counter, and a billing-only record synthesized
+# with no matching span are four different claims. See docs/pricing.md
+# and docs/schema.md's "Design decisions" section.
+# ---------------------------------------------------------------------------
+
+_COST_BASIS_LABELS: dict[str, str] = {
+    COST_BASIS_DIRECT: "reported directly by the source",
+    "estimated_from_bundled_pricing_table": "estimated from a bundled pricing table",
+    "apportioned_from_metrics_by_tokens": "apportioned from an aggregate metrics counter",
+    "apportioned_from_metrics_equal_split": "apportioned from an aggregate metrics counter",
+    COST_BASIS_SYNTHESIZED: "synthesized from a billing-only record with no matching span",
+}
 
 
-def to_json(result: AnalysisResult, *, max_reasons: int = 20, indent: int = 2) -> str:
+def _cost_basis_parts(coverage: CoverageStats) -> list[str]:
+    """One phrase per distinct label in coverage.cost_by_basis, each
+    stating its dollar share of total_priced_cost_usd, ordered by dollar
+    amount descending. Two raw basis values that map to the same prose
+    label (the two "apportioned_from_metrics_*" variants) are merged here
+    for readability; the raw, unmerged breakdown is still available from
+    `to_json`'s own `coverage.cost_by_basis`.
+    """
+    if not coverage.cost_by_basis or coverage.total_priced_cost_usd <= 0:
+        return []
+    usd_by_label: dict[str, float] = {}
+    for basis, stat in coverage.cost_by_basis.items():
+        label = _COST_BASIS_LABELS.get(basis, basis)
+        usd_by_label[label] = usd_by_label.get(label, 0.0) + stat.usd
+    parts = []
+    for label, usd in sorted(usd_by_label.items(), key=lambda kv: -kv[1]):
+        if usd <= 0:
+            continue
+        share = usd / coverage.total_priced_cost_usd * 100
+        parts.append(f"{_fmt_usd(usd)} ({share:.0f}%) {label}")
+    return parts
+
+
+# ---------------------------------------------------------------------------
+# Monthly cost projection
+#
+# A loaded trace is often a small sample (a few calls captured during
+# development, a short demo run), so a bucket's raw dollar figure is
+# routinely a few cents, easy to dismiss even when the repeat pattern
+# behind it is real. This scales a bucket's own cost-per-call rate in
+# the sample up to a hypothetical call volume, so a reader can judge
+# whether the pattern would matter at production scale.
+#
+# This is explicitly a hypothetical, never presented as a measurement:
+# it assumes THIS SAMPLE's own ratio of bucket cost to total call volume
+# holds at the assumed rate, which real traffic composition may not
+# match (different tasks, different mixes of models and tools, at
+# different times of day). The assumption is always printed next to the
+# number, never left implicit -- the same "state it, don't hide it"
+# discipline as every other estimate in this project.
+# ---------------------------------------------------------------------------
+
+DEFAULT_PROJECTED_CALLS_PER_DAY = 1000
+_PROJECTION_DAYS_PER_MONTH = 30
+
+
+def _projected_monthly_usd(
+    bucket_cost_usd: float,
+    total_call_events: int,
+    *,
+    calls_per_day: int = DEFAULT_PROJECTED_CALLS_PER_DAY,
+) -> float | None:
+    """None when there's nothing to project from: no cost in this
+    bucket, or no call events at all in the loaded corpus to compute a
+    per-call rate against.
+    """
+    if total_call_events <= 0 or bucket_cost_usd <= 0:
+        return None
+    cost_per_call = bucket_cost_usd / total_call_events
+    return cost_per_call * calls_per_day * _PROJECTION_DAYS_PER_MONTH
+
+
+def _fmt_usd_per_month(value: float) -> str:
+    return f"{_fmt_usd(value)}/mo"
+
+
+def _projection_caption(calls_per_day: int) -> str:
+    return (
+        f"Dollar figures below are also projected at {calls_per_day:,} calls/day "
+        f"({_PROJECTION_DAYS_PER_MONTH}-day month), scaling this sample's own "
+        "cost-per-call rate in each bucket. A hypothetical, not a measurement "
+        "of your real traffic."
+    )
+
+
+def to_json(
+    result: AnalysisResult,
+    *,
+    max_reasons: int = 20,
+    indent: int = 2,
+    calls_per_day: int = DEFAULT_PROJECTED_CALLS_PER_DAY,
+) -> str:
     data = result.as_dict()
     data["reasons"] = {key: reasons[:max_reasons] for key, reasons in result.reasons.items()}
+
+    total_calls = result.coverage.total_call_events
+    data["projection"] = {
+        "calls_per_day": calls_per_day,
+        "days_per_month": _PROJECTION_DAYS_PER_MONTH,
+        "basis": (
+            "Hypothetical: scales each bucket's own cost-per-call rate in this "
+            "sample to the assumed call volume. Not a measurement of real traffic."
+        ),
+    }
+    for bucket in result.buckets:
+        bucket_data = data["by_bucket"][bucket.key]
+        cost_per_call = bucket.slice.cost_usd / total_calls if total_calls else None
+        bucket_data["cost_per_call_usd"] = round(cost_per_call, 8) if cost_per_call else None
+        projected = _projected_monthly_usd(
+            bucket.slice.cost_usd, total_calls, calls_per_day=calls_per_day
+        )
+        bucket_data["projected_monthly_usd"] = round(projected, 6) if projected else None
+
     return json.dumps(data, indent=indent)
 
 
@@ -51,6 +171,9 @@ def _coverage_lines(coverage: CoverageStats) -> list[str]:
             "from every dollar figure below. Percentages are computed on the "
             "priced subset, not your total spend."
         )
+    basis_parts = _cost_basis_parts(coverage)
+    if basis_parts:
+        lines.append("  Cost basis: " + ", ".join(basis_parts) + ".")
     conf = coverage.task_id_confidence_fraction
     if conf is not None:
         lines.append(
@@ -64,17 +187,34 @@ def _coverage_lines(coverage: CoverageStats) -> list[str]:
     return lines
 
 
-def to_text(result: AnalysisResult, *, max_reasons: int = 20) -> str:
+def to_text(
+    result: AnalysisResult,
+    *,
+    max_reasons: int = 20,
+    calls_per_day: int = DEFAULT_PROJECTED_CALLS_PER_DAY,
+) -> str:
+    total_calls = result.coverage.total_call_events
+    any_bucket_priced = any(b.slice.cost_usd > 0 for b in result.buckets)
+
     lines: list[str] = []
     lines.extend(_coverage_lines(result.coverage))
     lines.append("")
     lines.append(f"Candidate redundant-repeat pairs: {result.total_candidates}")
+    if any_bucket_priced and total_calls > 0:
+        lines.append(_projection_caption(calls_per_day))
     lines.append("")
 
     for bucket in result.buckets:
         s = bucket.slice
         lines.append(f"{s.count} {bucket.key}: {bucket.rule_text}")
+        projected = _projected_monthly_usd(s.cost_usd, total_calls, calls_per_day=calls_per_day)
+        if projected is not None:
+            lines.append(
+                f"  at {calls_per_day:,} calls/day: ~{_fmt_usd_per_month(projected)} projected"
+            )
         lines.append(f"  cost_usd:   {s.cost_usd:.6f}" + (
+            "  (this sample only)" if projected is not None else ""
+        ) + (
             f"  ({s.unpriced_count} repeat(s) had no cost_usd)" if s.unpriced_count else ""
         ))
         lines.append(f"  tokens_in:  {s.tokens_in}")
@@ -293,6 +433,9 @@ def _coverage_html(coverage: CoverageStats) -> str:
             "excluded from every dollar figure above and below. Percentages are computed "
             "on the priced subset, not the total.</p>"
         )
+    basis_parts = _cost_basis_parts(coverage)
+    if basis_parts:
+        parts.append(f"<p>Cost basis: {html.escape(', '.join(basis_parts))}.</p>")
     conf = coverage.task_id_confidence_fraction
     if conf is not None:
         parts.append(
@@ -306,11 +449,16 @@ def _coverage_html(coverage: CoverageStats) -> str:
     return "".join(parts)
 
 
-def _spend_rows(buckets: list[Bucket]) -> str:
+def _spend_rows(buckets: list[Bucket], *, total_call_events: int, calls_per_day: int) -> str:
     """One row per bucket: a colored dot, label, count, an inline
     proportional bar, and a dollar (or pair-count) figure. Replaces what
     used to be a separate cards grid and SVG bar chart with a single list,
     each row linking to that bucket's own detail section below.
+
+    The bar proportions are computed from each bucket's raw cost_usd, not
+    the projected figure -- every bucket is scaled by the same corpus-wide
+    call-volume ratio, so the relative proportions between buckets are
+    identical either way; only the displayed number changes.
     """
     use_cost = any(b.slice.cost_usd > 0 for b in buckets)
     values = [b.slice.cost_usd if use_cost else b.slice.count for b in buckets]
@@ -320,7 +468,18 @@ def _spend_rows(buckets: list[Bucket]) -> str:
     for i, bucket in enumerate(buckets):
         accent, fill, _ = _palette_for(i)
         pct = max((values[i] / max_value) * 100, 1.5) if max_value else 0
-        value_text = _fmt_usd(bucket.slice.cost_usd) if use_cost else f"{bucket.slice.count} pair(s)"
+        projected = _projected_monthly_usd(
+            bucket.slice.cost_usd, total_call_events, calls_per_day=calls_per_day
+        )
+        if projected is not None:
+            value_html = (
+                f'<span class="row-value-main">{html.escape(_fmt_usd_per_month(projected))}</span>'
+                f'<span class="row-value-sample">{html.escape(_fmt_usd(bucket.slice.cost_usd))} sample</span>'
+            )
+        elif use_cost:
+            value_html = f'<span class="row-value-main">{html.escape(_fmt_usd(bucket.slice.cost_usd))}</span>'
+        else:
+            value_html = f'<span class="row-value-main">{bucket.slice.count} pair(s)</span>'
         anchor = html.escape(f"#bucket-{bucket.key}", quote=True)
         rows.append(f"""
 <a class="row" href="{anchor}">
@@ -330,7 +489,7 @@ def _spend_rows(buckets: list[Bucket]) -> str:
     <span class="row-count">{bucket.slice.count}</span>
   </span>
   <span class="row-track"><span class="bar rowfill" style="width:{pct:.1f}%;background:{fill};border-left:2px solid {accent}"></span></span>
-  <span class="row-value">{html.escape(value_text)}</span>
+  <span class="row-value">{value_html}</span>
   <span class="rowgo">&rarr;</span>
 </a>""")
     return "".join(rows)
@@ -392,7 +551,15 @@ def _sample_cases_html(reasons: list[str], *, label: str = "Sample cases to spot
 </details>"""
 
 
-def _bucket_section(result: AnalysisResult, bucket: Bucket, *, index: int, max_reasons: int) -> str:
+def _bucket_section(
+    result: AnalysisResult,
+    bucket: Bucket,
+    *,
+    index: int,
+    max_reasons: int,
+    total_call_events: int,
+    calls_per_day: int,
+) -> str:
     by_model = result.by_bucket_and_model.get(bucket.key, {})
     by_workflow = result.by_bucket_and_workflow.get(bucket.key, {})
     reasons = result.reasons.get(bucket.key, [])[:max_reasons]
@@ -411,6 +578,15 @@ def _bucket_section(result: AnalysisResult, bucket: Bucket, *, index: int, max_r
     open_attr = " open" if index == 0 else ""
     safe_id = html.escape(f"bucket-{bucket.key}", quote=True)
 
+    projected = _projected_monthly_usd(
+        bucket.slice.cost_usd, total_call_events, calls_per_day=calls_per_day
+    )
+    meta_value = (
+        f"~{html.escape(_fmt_usd_per_month(projected))} projected "
+        f"&middot; {html.escape(_fmt_usd(bucket.slice.cost_usd))} in this sample"
+        if projected is not None else html.escape(_fmt_usd(bucket.slice.cost_usd))
+    )
+
     return f"""
 <details class="bucket" id="{safe_id}"{open_attr}>
   <summary>
@@ -418,7 +594,7 @@ def _bucket_section(result: AnalysisResult, bucket: Bucket, *, index: int, max_r
       <span class="chev">&#9656;</span>
       <span class="dot" style="background:{accent}"></span>
       <h3>{html.escape(bucket.label)}</h3>
-      <span class="bucket-meta">{bucket.slice.count} pair(s) &middot; {html.escape(_fmt_usd(bucket.slice.cost_usd))}</span>
+      <span class="bucket-meta">{bucket.slice.count} pair(s) &middot; {meta_value}</span>
     </span>
   </summary>
   <div class="bucket-body">
@@ -560,13 +736,14 @@ h2 .info {{ margin-left: 4px; }}
 .stat-sub {{ margin: 10px 0 0; font-size: 12.5px; color: var(--ink2); }}
 .stat-bar {{ margin: 14px 0 0; height: 3px; background: var(--track); border-radius: 2px; overflow: hidden; }}
 .stat-bar > span {{ display: block; height: 100%; background: var(--ink); }}
+.projection-caption {{ margin: 14px 0 0; font-size: 12px; color: var(--ink3); font-style: italic; }}
 .coverage {{ font-size: 13.5px; color: var(--ink2); }}
 .coverage p {{ margin: 0 0 8px; }}
 .coverage p:last-child {{ margin-bottom: 0; }}
 .coverage code {{ color: var(--ink); }}
 /* spend rows */
 .row {{
-  display: grid; grid-template-columns: minmax(140px, 1.1fr) minmax(0, 3fr) 88px 18px; align-items: center; gap: 18px;
+  display: grid; grid-template-columns: minmax(140px, 1.1fr) minmax(0, 3fr) 112px 18px; align-items: center; gap: 18px;
   padding: 15px 0; border-top: 1px solid var(--hair); text-decoration: none; color: inherit;
 }}
 .row:last-child {{ border-bottom: 1px solid var(--hair); }}
@@ -579,7 +756,12 @@ h2 .info {{ margin-left: 4px; }}
 .row-count {{ font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; color: var(--ink3); flex: none; }}
 .row-track {{ display: block; height: 20px; background: var(--track); border-radius: 3px; overflow: hidden; }}
 .bar {{ display: block; height: 100%; }}
-.row-value {{ text-align: right; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; font-variant-numeric: tabular-nums; }}
+.row-value {{
+  display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums;
+}}
+.row-value-main {{ font-size: 13px; }}
+.row-value-sample {{ font-size: 10.5px; color: var(--ink3); }}
 .rowgo {{ color: var(--ink3); font-size: 13px; text-align: right; }}
 /* Below ~560px the 4-column grid doesn't have room for a full label next
    to a bar next to a dollar figure without truncating one of them, so
@@ -679,6 +861,7 @@ a.quiet {{
 
 <section>
   <div class="stat-grid">{stats}</div>
+  {projection_caption}
 </section>
 
 <section class="coverage">{coverage}</section>
@@ -753,32 +936,51 @@ def _stat_cell(label: str, value: str, sub: str, *, bar_pct: float | None = None
     )
 
 
-def to_html(result: AnalysisResult, *, max_reasons: int = 20) -> str:
+def to_html(
+    result: AnalysisResult,
+    *,
+    max_reasons: int = 20,
+    calls_per_day: int = DEFAULT_PROJECTED_CALLS_PER_DAY,
+) -> str:
     """Render a self-contained HTML page: no CDN assets, no webfonts, no JS.
     Safe to open directly from disk or attach anywhere. Every value pulled
     from the trace is HTML-escaped before being interpolated. The header,
     theme toggle, per-bucket tabs, and collapsible sections are all CSS-only
     interactivity; there is no <script> tag anywhere in the output.
     """
+    total_calls = result.coverage.total_call_events
     eyebrow, headline = _headline(result)
     coverage_html = _coverage_html(result.coverage)
-    rows = _spend_rows(result.buckets)
+    rows = _spend_rows(result.buckets, total_call_events=total_calls, calls_per_day=calls_per_day)
     sections = "".join(
-        _bucket_section(result, b, index=i, max_reasons=max_reasons)
+        _bucket_section(
+            result, b, index=i, max_reasons=max_reasons,
+            total_call_events=total_calls, calls_per_day=calls_per_day,
+        )
         for i, b in enumerate(result.buckets)
     )
 
     top = result.buckets[0] if result.buckets else None
+    top_projected = (
+        _projected_monthly_usd(top.slice.cost_usd, total_calls, calls_per_day=calls_per_day)
+        if top else None
+    )
     bucket_parts = " &middot; ".join(
         f"{b.slice.count} {html.escape(b.label.lower())}" for b in result.buckets if b.slice.count
     ) or "nothing classified"
+    if top_projected is not None:
+        top_value = html.escape(_fmt_usd_per_month(top_projected))
+        top_sub = html.escape(
+            f"{top.slice.count} pair(s) · {_fmt_usd(top.slice.cost_usd)} in this sample"
+        )
+    elif top and top.slice.cost_usd > 0:
+        top_value = html.escape(_fmt_usd(top.slice.cost_usd))
+        top_sub = html.escape(f"{top.slice.count} pair(s)")
+    else:
+        top_value = str(top.slice.count) if top else "0"
+        top_sub = html.escape(f"{top.slice.count} pair(s)" if top else "no candidate pairs")
     stats = "".join([
-        _stat_cell(
-            top.label if top else "Top bucket",
-            html.escape(_fmt_usd(top.slice.cost_usd)) if top and top.slice.cost_usd > 0
-            else (str(top.slice.count) if top else "0"),
-            html.escape(f"{top.slice.count} pair(s)" if top else "no candidate pairs"),
-        ) if top else "",
+        _stat_cell(top.label if top else "Top bucket", top_value, top_sub) if top else "",
         _stat_cell(
             "Pairs evaluated", str(result.total_candidates), bucket_parts,
         ),
@@ -791,6 +993,12 @@ def to_html(result: AnalysisResult, *, max_reasons: int = 20) -> str:
             bar_pct=result.coverage.pricing_coverage_fraction * 100,
         ),
     ])
+
+    any_bucket_priced = any(b.slice.cost_usd > 0 for b in result.buckets)
+    projection_caption = (
+        f'<p class="projection-caption">{html.escape(_projection_caption(calls_per_day))}</p>'
+        if any_bucket_priced and total_calls > 0 else ""
+    )
 
     unpriced_section = ""
     if result.coverage.unpriced_events:
@@ -818,6 +1026,7 @@ def to_html(result: AnalysisResult, *, max_reasons: int = 20) -> str:
         eyebrow=eyebrow,
         headline=headline,
         stats=stats,
+        projection_caption=projection_caption,
         coverage=coverage_html,
         rows=rows,
         sections=sections,

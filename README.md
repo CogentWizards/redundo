@@ -6,15 +6,16 @@
 
 Point it at your AI agent's OTLP traces. Get a report on what's actually wasted: repeated work, not a guess.
 
-- **Runs on your machine.** No account, no SaaS, nothing to stand up but a local OTLP receiver.
+- **Runs on your machine.** No account, no SaaS. Point it at OTLP traces you already have, or capture them with the bundled collector.
 - **Every number is checkable.** Each bucket links back to a real, hand-verifiable case.
 
 ## Quickstart
 
+Already have a directory of OTLP JSON traces (your framework wrote them
+directly, or you captured them some other way)? Point `redundo` at it:
+
 ```bash
-pip install "redundo[collector]"
-redundo collect --out-dir ./otlp_traces &
-# enable your framework's OTLP export, run it, then:
+pip install redundo
 redundo adapt ./otlp_traces --summary | redundo analyze --format html > report.html
 ```
 
@@ -29,6 +30,20 @@ redundo adapt ./otlp_traces -o trace.jsonl       # just convert
 redundo analyze trace.jsonl --format json         # just analyze a file
 redundo analyze trace.jsonl                       # reads stdin if the path is omitted or "-"
 ```
+
+### Capturing OTLP traces
+
+Don't have traces yet? Most frameworks only export telemetry over the
+network, so you need somewhere local to catch it first:
+
+```bash
+pip install "redundo[collector]"
+redundo collect --out-dir ./otlp_traces &
+# enable your framework's OTLP export (see below), run it, then adapt/analyze as above
+```
+
+Setup for your framework, most need the collector above running first;
+OpenClaw's own plugin below is the one exception:
 
 <details>
 <summary><strong>OpenClaw</strong></summary>
@@ -214,10 +229,12 @@ redundo analyze examples/demo_trace.jsonl
 
 ```
 Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analysis actually covers.
+  Cost basis: $0.1060 (100%) reported directly by the source.
 
 Candidate redundant-repeat pairs: 8
 
 3 confirmed_waste: repeated call, unchanged result, no intervening write, task failed
+  at 1,000 calls/day: ~$52.50/mo projected
 3 likely_legitimate: result changed, or a write intervened
 2 unclassified: a required signal was missing from the trace, no verdict, on purpose
 0 near_duplicate / 0 cross_task_redundancy / 0 recurring_pattern

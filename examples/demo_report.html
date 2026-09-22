@@ -77,13 +77,14 @@ h2 .info { margin-left: 4px; }
 .stat-sub { margin: 10px 0 0; font-size: 12.5px; color: var(--ink2); }
 .stat-bar { margin: 14px 0 0; height: 3px; background: var(--track); border-radius: 2px; overflow: hidden; }
 .stat-bar > span { display: block; height: 100%; background: var(--ink); }
+.projection-caption { margin: 14px 0 0; font-size: 12px; color: var(--ink3); font-style: italic; }
 .coverage { font-size: 13.5px; color: var(--ink2); }
 .coverage p { margin: 0 0 8px; }
 .coverage p:last-child { margin-bottom: 0; }
 .coverage code { color: var(--ink); }
 /* spend rows */
 .row {
-  display: grid; grid-template-columns: minmax(140px, 1.1fr) minmax(0, 3fr) 88px 18px; align-items: center; gap: 18px;
+  display: grid; grid-template-columns: minmax(140px, 1.1fr) minmax(0, 3fr) 112px 18px; align-items: center; gap: 18px;
   padding: 15px 0; border-top: 1px solid var(--hair); text-decoration: none; color: inherit;
 }
 .row:last-child { border-bottom: 1px solid var(--hair); }
@@ -96,7 +97,12 @@ h2 .info { margin-left: 4px; }
 .row-count { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; color: var(--ink3); flex: none; }
 .row-track { display: block; height: 20px; background: var(--track); border-radius: 3px; overflow: hidden; }
 .bar { display: block; height: 100%; }
-.row-value { text-align: right; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; font-variant-numeric: tabular-nums; }
+.row-value {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums;
+}
+.row-value-main { font-size: 13px; }
+.row-value-sample { font-size: 10.5px; color: var(--ink3); }
 .rowgo { color: var(--ink3); font-size: 13px; text-align: right; }
 /* Below ~560px the 4-column grid doesn't have room for a full label next
    to a bar next to a dollar figure without truncating one of them, so
@@ -216,10 +222,11 @@ a.quiet {
 </section>
 
 <section>
-  <div class="stat-grid"><div class="stat"><p class="stat-label">Confirmed waste</p><p class="stat-value serif">$0.0280</p><p class="stat-sub">3 pair(s)</p></div><div class="stat"><p class="stat-label">Pairs evaluated</p><p class="stat-value serif">8</p><p class="stat-sub">3 confirmed waste &middot; 3 likely legitimate &middot; 2 unclassified</p></div><div class="stat"><p class="stat-label">Trace coverage</p><p class="stat-value serif">64%</p><div class="stat-bar"><span style="width:64%"></span></div><p class="stat-sub">16 of 25 events carried a price</p></div></div>
+  <div class="stat-grid"><div class="stat"><p class="stat-label">Confirmed waste</p><p class="stat-value serif">$52.50/mo</p><p class="stat-sub">3 pair(s) · $0.0280 in this sample</p></div><div class="stat"><p class="stat-label">Pairs evaluated</p><p class="stat-value serif">8</p><p class="stat-sub">3 confirmed waste &middot; 3 likely legitimate &middot; 2 unclassified</p></div><div class="stat"><p class="stat-label">Trace coverage</p><p class="stat-value serif">64%</p><div class="stat-bar"><span style="width:64%"></span></div><p class="stat-sub">16 of 25 events carried a price</p></div></div>
+  <p class="projection-caption">Dollar figures below are also projected at 1,000 calls/day (30-day month), scaling this sample&#x27;s own cost-per-call rate in each bucket. A hypothetical, not a measurement of your real traffic.</p>
 </section>
 
-<section class="coverage"><p>16 of 25 events carried a price (64%). <strong>$0.1060</strong> of tracked spend is what this analysis actually covers. <strong>All amounts are USD</strong>, as reported by each event's own <code>cost_usd</code>; this report never converts or estimates a currency.</p><p>9 event(s) had no <code>cost_usd</code> and are excluded from every dollar figure above and below. Percentages are computed on the priced subset, not the total.</p></section>
+<section class="coverage"><p>16 of 25 events carried a price (64%). <strong>$0.1060</strong> of tracked spend is what this analysis actually covers. <strong>All amounts are USD</strong>, as reported by each event's own <code>cost_usd</code>; this report never converts or estimates a currency.</p><p>9 event(s) had no <code>cost_usd</code> and are excluded from every dollar figure above and below. Percentages are computed on the priced subset, not the total.</p><p>Cost basis: $0.1060 (100%) reported directly by the source.</p></section>
 
 <section>
   <h2 class="serif">Where the spend went</h2>
@@ -232,7 +239,7 @@ a.quiet {
     <span class="row-count">3</span>
   </span>
   <span class="row-track"><span class="bar rowfill" style="width:100.0%;background:oklch(0.93 0.035 38);border-left:2px solid oklch(0.55 0.15 38)"></span></span>
-  <span class="row-value">$0.0280</span>
+  <span class="row-value"><span class="row-value-main">$52.50/mo</span><span class="row-value-sample">$0.0280 sample</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
 <a class="row" href="#bucket-likely_legitimate">
@@ -242,7 +249,7 @@ a.quiet {
     <span class="row-count">3</span>
   </span>
   <span class="row-track"><span class="bar rowfill" style="width:12.5%;background:oklch(0.93 0.032 142);border-left:2px solid oklch(0.55 0.13 142)"></span></span>
-  <span class="row-value">$0.0035</span>
+  <span class="row-value"><span class="row-value-main">$6.56/mo</span><span class="row-value-sample">$0.0035 sample</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
 <a class="row" href="#bucket-unclassified">
@@ -252,7 +259,7 @@ a.quiet {
     <span class="row-count">2</span>
   </span>
   <span class="row-track"><span class="bar rowfill" style="width:78.6%;background:oklch(0.93 0.004 80);border-left:2px solid oklch(0.55 0.012 80)"></span></span>
-  <span class="row-value">$0.0220</span>
+  <span class="row-value"><span class="row-value-main">$41.25/mo</span><span class="row-value-sample">$0.0220 sample</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
 <a class="row" href="#bucket-near_duplicate">
@@ -262,7 +269,7 @@ a.quiet {
     <span class="row-count">0</span>
   </span>
   <span class="row-track"><span class="bar rowfill" style="width:1.5%;background:oklch(0.93 0.033 258);border-left:2px solid oklch(0.55 0.14 258)"></span></span>
-  <span class="row-value">$0.0000</span>
+  <span class="row-value"><span class="row-value-main">$0.0000</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
 <a class="row" href="#bucket-cross_task_redundancy">
@@ -272,7 +279,7 @@ a.quiet {
     <span class="row-count">0</span>
   </span>
   <span class="row-track"><span class="bar rowfill" style="width:1.5%;background:oklch(0.93 0.035 38);border-left:2px solid oklch(0.55 0.15 38)"></span></span>
-  <span class="row-value">$0.0000</span>
+  <span class="row-value"><span class="row-value-main">$0.0000</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
 <a class="row" href="#bucket-recurring_pattern">
@@ -282,7 +289,7 @@ a.quiet {
     <span class="row-count">0</span>
   </span>
   <span class="row-track"><span class="bar rowfill" style="width:1.5%;background:oklch(0.93 0.032 142);border-left:2px solid oklch(0.55 0.13 142)"></span></span>
-  <span class="row-value">$0.0000</span>
+  <span class="row-value"><span class="row-value-main">$0.0000</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
 </section>
@@ -296,7 +303,7 @@ a.quiet {
       <span class="chev">&#9656;</span>
       <span class="dot" style="background:oklch(0.55 0.15 38)"></span>
       <h3>Confirmed waste</h3>
-      <span class="bucket-meta">3 pair(s) &middot; $0.0280</span>
+      <span class="bucket-meta">3 pair(s) &middot; ~$52.50/mo projected &middot; $0.0280 in this sample</span>
     </span>
   </summary>
   <div class="bucket-body">
@@ -328,7 +335,7 @@ a.quiet {
       <span class="chev">&#9656;</span>
       <span class="dot" style="background:oklch(0.55 0.13 142)"></span>
       <h3>Likely legitimate</h3>
-      <span class="bucket-meta">3 pair(s) &middot; $0.0035</span>
+      <span class="bucket-meta">3 pair(s) &middot; ~$6.56/mo projected &middot; $0.0035 in this sample</span>
     </span>
   </summary>
   <div class="bucket-body">
@@ -360,7 +367,7 @@ a.quiet {
       <span class="chev">&#9656;</span>
       <span class="dot" style="background:oklch(0.55 0.012 80)"></span>
       <h3>Unclassified</h3>
-      <span class="bucket-meta">2 pair(s) &middot; $0.0220</span>
+      <span class="bucket-meta">2 pair(s) &middot; ~$41.25/mo projected &middot; $0.0220 in this sample</span>
     </span>
   </summary>
   <div class="bucket-body">
@@ -480,9 +487,8 @@ a.quiet {
   </div>
   <div class="footer-meta">
     <p class="noprint"><a class="quiet" href="mailto:?subject=redundo%20waste%20report&body=Sharing%20a%20redundo%20waste-detection%20report%20%28attached%29.%0A%0Aredundo%20is%20open%20source%3A%20https%3A//github.com/CogentWizards/redundo">Share by email</a>. Attach this file, it's the whole report.</p>
-    <p class="meta">2026-09-18 02:18 UTC &middot; redundo v0.3.0</p>
+    <p class="meta">2026-09-22 16:49 UTC &middot; redundo v0.3.0</p>
   </div>
 </footer>
 </body>
 </html>
-

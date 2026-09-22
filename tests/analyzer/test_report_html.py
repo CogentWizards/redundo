@@ -216,3 +216,94 @@ def test_no_synthesized_cost_only_section_when_there_are_none():
     result = build(events)
     assert "Spend outside the trace structure" not in to_text(result)
     assert "Spend outside the trace structure" not in to_html(result)
+
+
+# --- cost basis breakdown ---------------------------------------------------
+
+def test_cost_basis_line_shown_when_estimated_and_direct_are_mixed():
+    events = [
+        make_event(0, event_type="llm_call", cost_usd=1.0),
+        make_event(1, event_type="llm_call", cost_usd=1.0, content_hash="b",
+                    metadata={"cost_basis": "estimated_from_bundled_pricing_table"}),
+    ]
+    result = build(events)
+    text = to_text(result)
+    assert "Cost basis: $1.00 (50%) reported directly by the source, " \
+        "$1.00 (50%) estimated from a bundled pricing table." in text
+    page = to_html(result)
+    assert "Cost basis:" in page
+    assert "estimated from a bundled pricing table" in page
+
+
+def test_cost_basis_line_absent_when_nothing_priced():
+    events = [make_event(0, event_type="tool_call")]
+    result = build(events)
+    assert "Cost basis:" not in to_text(result)
+    assert "Cost basis:" not in to_html(result)
+
+
+# --- monthly cost projection -------------------------------------------------
+
+_CONFIRMED_WASTE_EVENTS = [
+    make_event(0, event_type="tool_call", cost_usd=1.0),
+    make_event(1, event_type="tool_result", content_hash="same"),
+    make_event(2, event_type="tool_call", cost_usd=1.0, outcome="error"),
+    make_event(3, event_type="tool_result", content_hash="same", outcome="error"),
+]
+
+
+def test_text_projection_defaults_to_1000_calls_per_day():
+    # 2 tool_call events -> total_call_events=2; confirmed_waste's own
+    # cost_usd is the repeat's 1.0 -> cost_per_call=0.5 -> $0.5*1000*30=$15000/mo.
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    text = to_text(result)
+    assert "Dollar figures below are also projected at 1,000 calls/day" in text
+    assert "at 1,000 calls/day: ~$15,000.00/mo projected" in text
+    assert "cost_usd:   1.000000  (this sample only)" in text
+
+
+def test_text_projection_respects_calls_per_day_kwarg():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    text = to_text(result, calls_per_day=10)
+    assert "at 10 calls/day: ~$150.00/mo projected" in text
+
+
+def test_html_top_stat_card_shows_projection_not_the_raw_cent_figure():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    page = to_html(result)
+    assert "$15,000.00/mo" in page
+    assert "$1.00 in this sample" in page
+
+
+def test_html_bucket_meta_and_spend_row_show_both_figures():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    page = to_html(result)
+    assert "~$15,000.00/mo projected" in page
+    assert "row-value-main" in page and "row-value-sample" in page
+
+
+def test_json_includes_projection_and_per_bucket_fields():
+    import json as _json
+
+    from redundo.analyzer.report import to_json
+
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    data = _json.loads(to_json(result, calls_per_day=10))
+    assert data["projection"]["calls_per_day"] == 10
+    assert data["projection"]["days_per_month"] == 30
+    bucket = data["by_bucket"]["confirmed_waste"]
+    assert bucket["cost_per_call_usd"] == 0.5
+    assert bucket["projected_monthly_usd"] == 150.0
+
+
+def test_no_projection_when_no_bucket_has_cost():
+    events = [
+        make_event(0, event_type="tool_call"),
+        make_event(1, event_type="tool_result", content_hash="same"),
+    ]
+    result = build(events)
+    text = to_text(result)
+    assert "projected" not in text
+    assert "Dollar figures below are also projected" not in text
+    page = to_html(result)
+    assert '<p class="projection-caption">' not in page

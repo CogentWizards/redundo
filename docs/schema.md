@@ -14,7 +14,7 @@ reimplemented independently as long as it agrees on this shape.
 | `tokens_in` / `tokens_out` | if the source has them |
 | `outcome` | `ok` \| `error` \| empty |
 | `timestamp` | when the event happened |
-| `cost_usd` | dollar-denominated cost, if the source has it directly (no adapter ever computes cost from a price table) |
+| `cost_usd` | dollar-denominated cost, if the source has it directly, or an adapter's own estimate/apportionment when it doesn't (see `metadata.cost_basis` below and [docs/pricing.md](pricing.md)) |
 | `model` | cost fallback, and waste segmented by model |
 | `parent_id` | the `step_index` (within this `task_id`) of the event that produced/spawned this one |
 | `workflow` | free-text segmentation label (agent name, pipeline stage, ...) |
@@ -76,6 +76,19 @@ Keys `analyze` looks for. Absence is not a claim of a default value.
   version of the fingerprint procedure used to compute
   `similarity_fingerprint`, the same "don't silently compare
   incompatible hashes" discipline `hash_spec` applies to `content_hash`.
+- `metadata.cost_basis` (str, optional): which real signal produced this
+  event's `cost_usd`, when it isn't the source's own directly-reported
+  figure. Absent means direct: the source reported `cost_usd` itself,
+  as-is. Known values in use today: `"estimated_from_bundled_pricing_table"`
+  (an adapter's own estimate from token counts against a bundled
+  pricing snapshot, see [docs/pricing.md](pricing.md)) and
+  `"apportioned_from_metrics_by_tokens"` / `"apportioned_from_metrics_equal_split"`
+  (a share of an aggregate metrics counter split across the calls it
+  covers, see [docs/openclaw.md](openclaw.md)). A record with
+  `metadata.synthesized_cost_only` set is reported under a further
+  distinct basis regardless of this key. `redundo analyze`'s own report
+  states the dollar mixture across these, so a real billed amount and a
+  bundled-price-table guess never look equally authoritative.
 
 ## Design decisions
 
@@ -109,11 +122,21 @@ they're checkable:
    candidate pair sits in. For genuinely parallel/multi-branch tasks with
    independently-resolving branches this is an approximation, a
    documented limitation, not a silent one.
-5. **No price table.** `cost_usd` is used directly when a source provides
-   it. When it doesn't, dollar totals for that slice stay at zero, the
-   count of unpriced repeats is surfaced explicitly, and token totals plus
-   a per-model breakdown are reported instead, so a price can be applied
-   downstream without this package guessing or going stale.
+5. **Every dollar states its own origin, never presented as equally
+   authoritative.** `cost_usd` is used directly when a source provides
+   it. When it doesn't, some adapters estimate it from real per-call
+   token counts against a bundled, LiteLLM-derived pricing table
+   (`redundo update-pricing` refreshes it, see [docs/pricing.md](pricing.md)),
+   or apportion a share of an aggregate metrics counter across the calls
+   it covers (see [docs/openclaw.md](openclaw.md)). Either way, the
+   adapter sets `metadata.cost_basis` explicitly, never silently, and a
+   report's coverage line breaks "tracked spend" down by basis, so a
+   real billed amount and a bundled-price-table guess are never mixed
+   into one number that looks equally authoritative. When a record has
+   no cost signal at all, the slice's dollar total stays at zero, the
+   count of unpriced repeats is surfaced explicitly, and token totals
+   plus a per-model breakdown are reported instead, so a price can still
+   be applied downstream without this package guessing.
 
 ## The six buckets
 
@@ -190,18 +213,32 @@ Every report opens with a coverage line, before any bucket:
 ```
 Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analysis actually covers.
   9 event(s) had no cost_usd and are excluded from every dollar figure below. Percentages are computed on the priced subset, not your total spend.
+  Cost basis: $0.1060 (100%) reported directly by the source.
 ```
 
 This is measured over the *entire loaded corpus*, not just the events
 that ended up in a candidate pair. The point is telling a reader what
 fraction of their total data the numbers below are even computed on,
-before they trust or forward those numbers. If `metadata.task_id_source`
-is present on any event, a second line reports what fraction were
-grouped by a source's most precise available signal versus a fallback.
-If no source in the loaded corpus ever sets that key, the line is
-omitted entirely rather than reporting a fabricated "0%": silence here
-means "this dimension can't be spoken to for this data," not "everything
-failed."
+before they trust or forward those numbers. The cost basis line (see
+`metadata.cost_basis` above) states, for the priced subset, what
+fraction of those dollars were reported directly by the source versus
+estimated, apportioned, or synthesized by an adapter, omitted only when
+nothing is priced at all. If `metadata.task_id_source` is present on any
+event, a further line reports what fraction were grouped by a source's
+most precise available signal versus a fallback. If no source in the
+loaded corpus ever sets that key, the line is omitted entirely rather
+than reporting a fabricated "0%": silence here means "this dimension
+can't be spoken to for this data," not "everything failed."
+
+Every bucket's own dollar figure is also projected at an assumed call
+volume (1,000 calls/day by default, `--calls-per-day` to change it):
+"3 confirmed_waste ... at 1,000 calls/day: ~$52.50/mo projected". A
+sample trace is often a handful of calls captured during development,
+so the raw figure alone reads as too small to matter even when the
+underlying repeat pattern is real. The projection is always labeled a
+hypothetical, never a measurement: it scales this bucket's own
+cost-per-call ratio in the loaded sample to the assumed volume, which
+real traffic composition may not match.
 
 A third line reports comparability: what fraction of tasks had at least
 one candidate pair (a repeated call) for the buckets below to say
