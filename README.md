@@ -233,7 +233,11 @@ Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analy
 
 Candidate redundant-repeat pairs: 8
 
+Fix these first:
+  1. $0.0200 for task=session-006 step=1 (llm_call/gpt-5.6): result identical; no intervening write; task terminated in failure
+
 3 confirmed_waste: repeated call, unchanged result, no intervening write, task failed
+  Your agent repeated itself, learned nothing new, and still failed: these are the places it was stuck, not working.
   at 1,000 calls/day: ~$52.50/mo projected
 3 likely_legitimate: result changed, or a write intervened
 2 unclassified: a required signal was missing from the trace, no verdict, on purpose
@@ -261,6 +265,20 @@ narrated demo apps (Claude Agent SDK, OpenClaw, Hermes): [`examples/demo-apps/`]
 | `recurring_pattern` | same call, different task, no confirmed link |
 
 Full reasoning for each: [docs/schema.md](https://github.com/CogentWizards/redundo/blob/main/docs/schema.md#the-six-buckets), or [`classify.py`](https://github.com/CogentWizards/redundo/blob/main/src/redundo/analyzer/classify.py)'s own module docstring.
+
+## Not a tracing platform
+
+Langfuse, Phoenix, and other observability platforms show you traces:
+spans, timings, a UI to browse them. That's real, valuable, and a
+different job. `redundo` doesn't show you traces, it adjudicates them.
+For every repeated call it finds, it issues one of the six verdicts
+above under a stated evidence rule, never a vague severity score. When
+the trace doesn't carry enough signal to decide, it says so directly:
+`unclassified` is a verdict too, not a fallback dressed up as an
+answer. Nobody else ships that abstention. The two aren't competitors:
+point one of those platforms' own OTLP export at `redundo` instead of
+choosing between them. One shows you what happened; the other tells
+you which of it was wasted.
 
 ## Modular by design
 

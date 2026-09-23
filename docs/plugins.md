@@ -89,6 +89,19 @@ keyword arguments (like `WasteAnalysis(keep_reasons=...)`), the CLI passes
 `keep_reasons=` through when present and falls back to no arguments on
 `TypeError`. Not every analysis needs that particular knob.
 
+Two more fields are optional on `Bucket`/`AnalysisResult`, both left empty
+by default and rendered only when you populate them:
+
+- `Bucket.insight_text`: a short, interpretive line about what one
+  specific bucket's finding actually means, distinct from `rule_text`
+  (the evidence rule) and `action_text` (what to do about it).
+  `WasteAnalysis` sets this only on `confirmed_waste`.
+- `AnalysisResult.highlights`: a "fix these first" list of pre-rendered
+  strings, already ranked in the order you want them read. Populate
+  this only when you have a real, defensible way to rank (never a
+  projection or a guess); leave it empty otherwise; report.py never
+  invents an order for you.
+
 Register it:
 
 ```toml

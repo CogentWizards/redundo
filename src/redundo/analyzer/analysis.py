@@ -14,10 +14,10 @@ That output shape is `AnalysisResult`: a coverage section, an ordered list
 of `Bucket`s (each just a label, a human-readable rule, and a `Slice` of
 count/cost/tokens -- generalized from what used to be a `Verdict`-keyed
 `Report`), per-model/per-workflow breakdowns of those buckets, sample
-reasons for spot-checking, and an optional closing footnote. `report.py`'s
-renderers depend only on this shape -- they don't know what a `Verdict`
-is, or what "waste" means; any conforming analysis gets full text/json/html
-rendering for free.
+reasons for spot-checking, an optional ranked list of highlights, and an
+optional closing footnote. `report.py`'s renderers depend only on this
+shape -- they don't know what a `Verdict` is, or what "waste" means; any
+conforming analysis gets full text/json/html rendering for free.
 """
 
 from __future__ import annotations
@@ -42,6 +42,12 @@ class Bucket:
     # a gap to fill in -- that's what keeps report.py generic over any
     # analysis, not just the one that happens to set this.
     action_text: str | None = None
+    # A short, interpretive framing line -- optional, distinct from
+    # action_text (which prescribes what to do) and rule_text (which
+    # states the evidence rule). This is for a bucket-specific reading of
+    # what the finding actually means, when the analysis has one worth
+    # saying. Absent means nothing to show, same convention as action_text.
+    insight_text: str | None = None
 
 
 @dataclass
@@ -54,6 +60,14 @@ class AnalysisResult:
     total_candidates: int = 0
     analysis_name: str = ""
     footnote: str | None = None
+    # Pre-rendered, ranked, human-readable strings: the specific things
+    # worth acting on first, in priority order. Optional and deliberately
+    # opaque to report.py -- an analysis populates this only when it has
+    # a real, defensible way to rank (e.g. WasteAnalysis ranks confirmed
+    # waste by its own real cost_usd, never a projection or a guess), and
+    # leaves it empty otherwise rather than inventing an order. Renderers
+    # show nothing when this is empty, same convention as footnote.
+    highlights: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         def slice_dict(s: Slice) -> dict:
@@ -101,6 +115,7 @@ class AnalysisResult:
                 key: {wf: slice_dict(s) for wf, s in wfs.items()}
                 for key, wfs in self.by_bucket_and_workflow.items()
             },
+            "highlights": list(self.highlights),
             "footnote": self.footnote,
         }
 

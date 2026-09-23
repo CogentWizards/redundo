@@ -320,3 +320,81 @@ def test_cross_task_coverage_notes_are_separate_and_silent_when_absent():
     notes2 = result2.coverage.extra_notes
     assert any("no confirmed relationship" in n for n in notes2)
     assert not any("same real workflow" in n for n in notes2)
+
+
+# --- insight_text -----------------------------------------------------------
+
+def test_only_confirmed_waste_gets_an_insight_text():
+    events = [
+        make_event(0, event_type="tool_call"),
+        make_event(1, event_type="tool_result", content_hash="same"),
+        make_event(2, event_type="tool_call", outcome="error"),
+        make_event(3, event_type="tool_result", content_hash="same", outcome="error"),
+    ]
+    result = run(events)
+    assert bucket(result, "confirmed_waste").insight_text is not None
+    assert "stuck, not working" in bucket(result, "confirmed_waste").insight_text
+    assert bucket(result, "likely_legitimate").insight_text is None
+    assert bucket(result, "unclassified").insight_text is None
+
+
+# --- highlights ---------------------------------------------------------------
+
+def _confirmed_waste_pair(task_id, cost_usd):
+    return [
+        make_event(0, event_type="tool_call", cost_usd=cost_usd, task_id=task_id),
+        make_event(1, event_type="tool_result", content_hash="same", task_id=task_id),
+        make_event(2, event_type="tool_call", cost_usd=cost_usd, outcome="error", task_id=task_id),
+        make_event(3, event_type="tool_result", content_hash="same", outcome="error",
+                    task_id=task_id),
+    ]
+
+
+def test_highlights_rank_confirmed_waste_by_real_cost_descending():
+    events = (
+        _confirmed_waste_pair("cheap", 0.01)
+        + _confirmed_waste_pair("expensive", 5.0)
+        + _confirmed_waste_pair("medium", 1.0)
+    )
+    result = run(events)
+    assert len(result.highlights) == 3
+    assert result.highlights[0].startswith("1. $5.00")
+    assert "task=expensive" in result.highlights[0]
+    assert result.highlights[1].startswith("2. $1.00")
+    assert "task=medium" in result.highlights[1]
+    assert result.highlights[2].startswith("3. $0.0100")
+    assert "task=cheap" in result.highlights[2]
+
+
+def test_highlights_capped_at_three():
+    events = []
+    for i in range(5):
+        events += _confirmed_waste_pair(f"t{i}", float(i + 1))
+    result = run(events)
+    assert len(result.highlights) == 3
+
+
+def test_highlights_never_include_unpriced_confirmed_waste_pairs():
+    events = [
+        make_event(0, event_type="tool_call"),  # no cost_usd
+        make_event(1, event_type="tool_result", content_hash="same"),
+        make_event(2, event_type="tool_call", outcome="error"),
+        make_event(3, event_type="tool_result", content_hash="same", outcome="error"),
+    ]
+    result = run(events)
+    assert bucket(result, "confirmed_waste").slice.count == 1
+    assert result.highlights == []
+
+
+def test_highlights_never_rank_other_buckets():
+    # A likely_legitimate pair (result changed) with real cost -- must
+    # never show up in "Fix these first", which is confirmed_waste only.
+    events = [
+        make_event(0, event_type="tool_call", cost_usd=9.0),
+        make_event(1, event_type="tool_result", content_hash="a"),
+        make_event(2, event_type="tool_call", cost_usd=9.0),
+        make_event(3, event_type="tool_result", content_hash="b"),  # result changed
+    ]
+    result = run(events)
+    assert bucket(result, "likely_legitimate").slice.count == 1
+    assert result.highlights == []

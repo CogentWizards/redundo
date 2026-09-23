@@ -155,6 +155,33 @@ def _fmt_usd(value: float) -> str:
     return f"${value:,.4f}" if value < 1 else f"${value:,.2f}"
 
 
+def _bucket_priced_fraction(s: Slice) -> float | None:
+    """What fraction of THIS bucket's own repeats carried a real cost_usd,
+    not the corpus-wide pricing_coverage_fraction. A bucket's dollar
+    figure should carry its own coverage caveat: the corpus could be 64%
+    priced overall while this specific bucket is 100% priced, or the
+    reverse, and only the bucket-level fraction is the honest caveat for
+    the bucket-level dollar figure sitting next to it. None when the
+    bucket has no repeats at all, "can't be spoken to," not 0%.
+    """
+    if s.count == 0:
+        return None
+    return (s.count - s.unpriced_count) / s.count
+
+
+def _priced_caveat(s: Slice) -> str:
+    """A plain-text caveat attached directly to a cost_usd line, not left
+    to a separate note elsewhere: "(2 of 3 repeat(s) priced)" whenever
+    this bucket's own dollar figure rests on a partial subset. Empty
+    string when every repeat in this bucket carried a real cost_usd --
+    nothing to caveat.
+    """
+    if not s.unpriced_count:
+        return ""
+    priced = s.count - s.unpriced_count
+    return f"  ({priced} of {s.count} repeat(s) priced)"
+
+
 def _coverage_lines(coverage: CoverageStats) -> list[str]:
     if coverage.total_events == 0:
         return ["Coverage: no events loaded."]
@@ -204,19 +231,24 @@ def to_text(
         lines.append(_projection_caption(calls_per_day))
     lines.append("")
 
+    if result.highlights:
+        lines.append("Fix these first:")
+        for highlight in result.highlights:
+            lines.append(f"  {highlight}")
+        lines.append("")
+
     for bucket in result.buckets:
         s = bucket.slice
         lines.append(f"{s.count} {bucket.key}: {bucket.rule_text}")
+        if bucket.insight_text:
+            lines.append(f"  {bucket.insight_text}")
+        lines.append(f"  cost_usd:   {s.cost_usd:.6f}" + _priced_caveat(s))
         projected = _projected_monthly_usd(s.cost_usd, total_calls, calls_per_day=calls_per_day)
         if projected is not None:
             lines.append(
-                f"  at {calls_per_day:,} calls/day: ~{_fmt_usd_per_month(projected)} projected"
+                f"  at {calls_per_day:,} calls/day: ~{_fmt_usd_per_month(projected)} "
+                "projected (hypothetical, see above)"
             )
-        lines.append(f"  cost_usd:   {s.cost_usd:.6f}" + (
-            "  (this sample only)" if projected is not None else ""
-        ) + (
-            f"  ({s.unpriced_count} repeat(s) had no cost_usd)" if s.unpriced_count else ""
-        ))
         lines.append(f"  tokens_in:  {s.tokens_in}")
         lines.append(f"  tokens_out: {s.tokens_out}")
 
@@ -574,18 +606,26 @@ def _bucket_section(
             f'{html.escape(bucket.action_text)}</p>'
         )
 
+    insight_html = ""
+    if bucket.insight_text:
+        insight_html = f'<p class="insight">{html.escape(bucket.insight_text)}</p>'
+
     tabs_html = _breakdown_tabs(bucket.key, by_model, by_workflow)
     open_attr = " open" if index == 0 else ""
     safe_id = html.escape(f"bucket-{bucket.key}", quote=True)
 
-    projected = _projected_monthly_usd(
-        bucket.slice.cost_usd, total_call_events, calls_per_day=calls_per_day
-    )
-    meta_value = (
-        f"~{html.escape(_fmt_usd_per_month(projected))} projected "
-        f"&middot; {html.escape(_fmt_usd(bucket.slice.cost_usd))} in this sample"
-        if projected is not None else html.escape(_fmt_usd(bucket.slice.cost_usd))
-    )
+    if bucket.slice.cost_usd > 0:
+        frac = _bucket_priced_fraction(bucket.slice)
+        caveat = f" ({frac * 100:.0f}% priced)" if frac is not None and frac < 1 else ""
+        meta_parts = [f"{html.escape(_fmt_usd(bucket.slice.cost_usd))} in this sample{caveat}"]
+        projected = _projected_monthly_usd(
+            bucket.slice.cost_usd, total_call_events, calls_per_day=calls_per_day
+        )
+        if projected is not None:
+            meta_parts.append(f"~{html.escape(_fmt_usd_per_month(projected))} projected")
+        meta_value = " &middot; ".join(meta_parts)
+    else:
+        meta_value = html.escape(_fmt_usd(bucket.slice.cost_usd))
 
     return f"""
 <details class="bucket" id="{safe_id}"{open_attr}>
@@ -599,6 +639,7 @@ def _bucket_section(
   </summary>
   <div class="bucket-body">
     <div class="rule-block">
+      {insight_html}
       <p class="rule">{html.escape(bucket.rule_text)}</p>
       {action_html}
     </div>
@@ -785,6 +826,7 @@ details.bucket[open] .chev {{ transform: rotate(90deg); }}
 .bucket-meta {{ font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; color: var(--ink3); }}
 .bucket-body {{ padding: 16px 0 0 23px; }}
 .rule-block {{ max-width: 66ch; border-left: 1px solid var(--line); padding-left: 15px; margin-bottom: 22px; }}
+.insight {{ margin: 0 0 10px; font-size: 14.5px; font-style: italic; color: var(--ink); }}
 .rule {{ margin: 0; font-size: 13.5px; color: var(--ink2); }}
 .action {{ margin: 8px 0 0; font-size: 13.5px; color: var(--ink); }}
 .action-label {{
@@ -820,6 +862,12 @@ details.cases[open] .chev2 {{ transform: rotate(90deg); }}
 .case {{
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55;
   background: var(--panel); border: 1px solid var(--hair); border-radius: 6px; padding: 10px 12px;
+}}
+/* highlights ("Fix these first") */
+.highlights {{ margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }}
+.highlights li {{
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; line-height: 1.6;
+  background: var(--panel); border: 1px solid var(--hair); border-radius: 6px; padding: 12px 14px;
 }}
 /* footer */
 .page-footer {{
@@ -866,9 +914,11 @@ a.quiet {{
 
 <section class="coverage">{coverage}</section>
 
+{highlights_section}
+
 <section>
   <h2 class="serif">Where the spend went</h2>
-  <p class="section-sub">Cost by verdict, across the priced subset. Select a row to open its detail.</p>
+  <p class="section-sub">{spend_section_sub}</p>
   {rows}
 </section>
 
@@ -887,6 +937,13 @@ a.quiet {{
 </body>
 </html>
 """
+
+_HIGHLIGHTS_SECTION_TEMPLATE = """
+<section>
+  <h2 class="serif">Fix these first</h2>
+  <p class="section-sub">Ranked by real cost_usd, never a projection. The highest-value repeats to kill first.</p>
+  <ul class="highlights">{items}</ul>
+</section>"""
 
 _UNPRICED_SECTION_TEMPLATE = """
 <section>
@@ -960,6 +1017,12 @@ def to_html(
         for i, b in enumerate(result.buckets)
     )
 
+    # The count is the direct, unimpeachable observation; a dollar figure
+    # is an inference over whatever subset of events happened to carry a
+    # real cost_usd. Every stat cell below leads with a count for that
+    # reason -- the top bucket's own dollar figure is demoted to its
+    # sub-line, with that bucket's own priced fraction attached right
+    # next to it, not left to a separate note elsewhere on the page.
     top = result.buckets[0] if result.buckets else None
     top_projected = (
         _projected_monthly_usd(top.slice.cost_usd, total_calls, calls_per_day=calls_per_day)
@@ -968,22 +1031,22 @@ def to_html(
     bucket_parts = " &middot; ".join(
         f"{b.slice.count} {html.escape(b.label.lower())}" for b in result.buckets if b.slice.count
     ) or "nothing classified"
-    if top_projected is not None:
-        top_value = html.escape(_fmt_usd_per_month(top_projected))
-        top_sub = html.escape(
-            f"{top.slice.count} pair(s) · {_fmt_usd(top.slice.cost_usd)} in this sample"
-        )
-    elif top and top.slice.cost_usd > 0:
-        top_value = html.escape(_fmt_usd(top.slice.cost_usd))
-        top_sub = html.escape(f"{top.slice.count} pair(s)")
+    if top and top.slice.cost_usd > 0:
+        top_value = str(top.slice.count)
+        top_frac = _bucket_priced_fraction(top.slice)
+        caveat = f" ({top_frac * 100:.0f}% priced)" if top_frac is not None and top_frac < 1 else ""
+        sub_parts = [f"{_fmt_usd(top.slice.cost_usd)} in this sample{caveat}"]
+        if top_projected is not None:
+            sub_parts.append(f"~{_fmt_usd_per_month(top_projected)} projected")
+        top_sub = html.escape(" · ".join(sub_parts))
     else:
         top_value = str(top.slice.count) if top else "0"
         top_sub = html.escape(f"{top.slice.count} pair(s)" if top else "no candidate pairs")
     stats = "".join([
-        _stat_cell(top.label if top else "Top bucket", top_value, top_sub) if top else "",
         _stat_cell(
             "Pairs evaluated", str(result.total_candidates), bucket_parts,
         ),
+        _stat_cell(top.label if top else "Top bucket", top_value, top_sub) if top else "",
         _stat_cell(
             "Trace coverage", f"{result.coverage.pricing_coverage_fraction * 100:.0f}%",
             html.escape(
@@ -999,6 +1062,22 @@ def to_html(
         f'<p class="projection-caption">{html.escape(_projection_caption(calls_per_day))}</p>'
         if any_bucket_priced and total_calls > 0 else ""
     )
+
+    highlights_section = ""
+    if result.highlights:
+        items_html = "".join(f"<li>{html.escape(h)}</li>" for h in result.highlights)
+        highlights_section = _HIGHLIGHTS_SECTION_TEMPLATE.format(items=items_html)
+
+    cov = result.coverage
+    if cov.total_events == 0:
+        spend_section_sub = "Cost by verdict."
+    else:
+        pct = cov.pricing_coverage_fraction * 100
+        spend_section_sub = html.escape(
+            f"Cost by verdict, across the {pct:.0f}% of events "
+            f"({cov.priced_events} of {cov.total_events}) that carried a price. "
+            "Select a row to open its detail."
+        )
 
     unpriced_section = ""
     if result.coverage.unpriced_events:
@@ -1028,6 +1107,8 @@ def to_html(
         stats=stats,
         projection_caption=projection_caption,
         coverage=coverage_html,
+        highlights_section=highlights_section,
+        spend_section_sub=spend_section_sub,
         rows=rows,
         sections=sections,
         footnote=html.escape(result.footnote or ""),

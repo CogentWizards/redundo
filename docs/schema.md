@@ -230,15 +230,30 @@ loaded corpus ever sets that key, the line is omitted entirely rather
 than reporting a fabricated "0%": silence here means "this dimension
 can't be spoken to for this data," not "everything failed."
 
-Every bucket's own dollar figure is also projected at an assumed call
-volume (1,000 calls/day by default, `--calls-per-day` to change it):
-"3 confirmed_waste ... at 1,000 calls/day: ~$52.50/mo projected". A
-sample trace is often a handful of calls captured during development,
-so the raw figure alone reads as too small to matter even when the
-underlying repeat pattern is real. The projection is always labeled a
-hypothetical, never a measurement: it scales this bucket's own
+A bucket's own count leads every bucket line ("3 confirmed_waste: ...")
+for a reason: it's a direct observation from the trace, not an
+inference. A dollar figure is always secondary to it, and always carries
+its own caveat rather than borrowing the corpus-wide one above: "cost_usd:
+0.028000" stays bare when every repeat in that bucket priced, or gets
+"(2 of 3 repeat(s) priced)" attached directly when it didn't, since a
+bucket's own priced fraction can differ from the corpus's. Only after
+that does the report project the bucket's own dollar figure to an
+assumed call volume (1,000 calls/day by default, `--calls-per-day` to
+change it): "at 1,000 calls/day: ~$52.50/mo projected (hypothetical, see
+above)". A sample trace is often a handful of calls captured during
+development, so the raw figure alone reads as too small to matter even
+when the underlying repeat pattern is real. The projection is always
+labeled a hypothetical, never a measurement: it scales this bucket's own
 cost-per-call ratio in the loaded sample to the assumed volume, which
 real traffic composition may not match.
+
+When at least one `confirmed_waste` pair carries a real `cost_usd`, the
+report also opens with a short "Fix these first" list: the top three
+`confirmed_waste` pairs ranked by that real dollar figure, never a
+projection or a guess. It's `AnalysisResult.highlights`, a pre-rendered,
+analysis-owned list report.py renders without knowing what's in it (see
+[docs/plugins.md](plugins.md)); empty, and rendered as nothing, when no
+`confirmed_waste` pair has cost data to rank by.
 
 A third line reports comparability: what fraction of tasks had at least
 one candidate pair (a repeated call) for the buckets below to say
