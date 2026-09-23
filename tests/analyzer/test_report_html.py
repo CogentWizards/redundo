@@ -190,7 +190,13 @@ def test_max_reasons_truncates_at_render_time():
     result = build(events)
     assert len(result.reasons["confirmed_waste"]) == 6  # WasteAnalysis kept all 6
     output = to_text(result, max_reasons=2)
-    assert output.count("step=2 (tool_call/search)") == 2
+    # The "    - " prefix is only ever used by the sample-cases list, never
+    # by "Fix these first" (a "N. $cost for ..." prefix instead), so this
+    # isolates reasons-list truncation from the unrelated highlights
+    # section, which also mentions "step=2 (tool_call/search)" for these
+    # same priced events but is never capped by max_reasons.
+    assert output.count("    - task=") == 2
+    assert output.count("step=2 (tool_call/search)") > 2
 
 
 def test_synthesized_cost_only_events_get_their_own_section_at_the_end():
@@ -258,8 +264,8 @@ def test_text_projection_defaults_to_1000_calls_per_day():
     result = build(_CONFIRMED_WASTE_EVENTS)
     text = to_text(result)
     assert "Dollar figures below are also projected at 1,000 calls/day" in text
-    assert "at 1,000 calls/day: ~$15,000.00/mo projected" in text
-    assert "cost_usd:   1.000000  (this sample only)" in text
+    assert "cost_usd:   1.000000" in text  # the real number leads, no caveat: fully priced
+    assert "at 1,000 calls/day: ~$15,000.00/mo projected (hypothetical, see above)" in text
 
 
 def test_text_projection_respects_calls_per_day_kwarg():
@@ -307,3 +313,108 @@ def test_no_projection_when_no_bucket_has_cost():
     assert "Dollar figures below are also projected" not in text
     page = to_html(result)
     assert '<p class="projection-caption">' not in page
+
+
+# --- lead with count, demote dollars -----------------------------------------
+
+def test_html_stat_grid_leads_with_pairs_evaluated_not_a_dollar_figure():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    page = to_html(result)
+    pairs_idx = page.index("Pairs evaluated")
+    top_bucket_idx = page.index("Confirmed waste")
+    coverage_idx = page.index("Trace coverage")
+    assert pairs_idx < top_bucket_idx < coverage_idx
+
+
+def test_html_top_bucket_stat_value_is_the_count_not_a_dollar_figure():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    page = to_html(result)
+    # The top bucket's own stat-value cell holds the bare count ("2"),
+    # never a dollar figure -- the dollar figure moved to stat-sub.
+    stat_cell = page[page.index('<p class="stat-label">Confirmed waste'):]
+    value_start = stat_cell.index('stat-value serif">') + len('stat-value serif">')
+    value_end = stat_cell.index("</p>", value_start)
+    assert stat_cell[value_start:value_end] == "1"
+
+
+def test_html_bucket_meta_attaches_priced_fraction_when_partial():
+    events = _CONFIRMED_WASTE_EVENTS + [
+        make_event(4, event_type="tool_call", cost_usd=None, task_id="t2"),
+        make_event(5, event_type="tool_result", content_hash="same", task_id="t2"),
+        make_event(6, event_type="tool_call", cost_usd=None, outcome="error", task_id="t2"),
+        make_event(7, event_type="tool_result", content_hash="same", outcome="error",
+                    task_id="t2"),
+    ]
+    result = build(events)
+    confirmed_waste = next(b for b in result.buckets if b.key == "confirmed_waste")
+    assert confirmed_waste.slice.unpriced_count == 1
+    page = to_html(result)
+    assert "(1 of 2 repeat(s) priced)" not in page  # text-mode phrasing, not HTML's
+    assert "(50% priced)" in page
+
+
+def test_html_bucket_meta_has_no_caveat_when_fully_priced():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    page = to_html(result)
+    assert "% priced)" not in page
+
+
+def test_text_priced_caveat_attached_to_cost_usd_line():
+    events = _CONFIRMED_WASTE_EVENTS + [
+        make_event(4, event_type="tool_call", cost_usd=None, task_id="t2"),
+        make_event(5, event_type="tool_result", content_hash="same", task_id="t2"),
+        make_event(6, event_type="tool_call", cost_usd=None, outcome="error", task_id="t2"),
+        make_event(7, event_type="tool_result", content_hash="same", outcome="error",
+                    task_id="t2"),
+    ]
+    result = build(events)
+    text = to_text(result)
+    assert "cost_usd:   1.000000  (1 of 2 repeat(s) priced)" in text
+
+
+def test_spend_section_states_the_real_coverage_percentage():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    page = to_html(result)
+    assert "across the 50% of events (2 of 4) that carried a price" in page
+
+
+# --- insight_text rendering ---------------------------------------------------
+
+def test_html_renders_confirmed_waste_insight_text():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    page = to_html(result)
+    assert 'class="insight"' in page
+    assert "stuck, not working" in page
+
+
+def test_text_renders_confirmed_waste_insight_text():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    text = to_text(result)
+    assert "Your agent repeated itself, learned nothing new, and still failed" in text
+
+
+# --- "Fix these first" -------------------------------------------------------
+
+def test_html_fix_these_first_section_present_when_highlights_exist():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    page = to_html(result)
+    assert "Fix these first" in page
+    assert '<ul class="highlights">' in page
+    assert "1. $1.00 for task=t1" in page
+
+
+def test_html_no_fix_these_first_section_when_no_highlights():
+    events = [
+        make_event(0, event_type="tool_call"),
+        make_event(1, event_type="tool_result", content_hash="same"),
+    ]
+    result = build(events)
+    page = to_html(result)
+    assert '<h2 class="serif">Fix these first</h2>' not in page
+
+
+def test_text_fix_these_first_present_when_highlights_exist():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    text = to_text(result)
+    assert "Fix these first:" in text
+    assert "  1. $1.00 for task=t1" in text

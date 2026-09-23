@@ -121,6 +121,20 @@ ACTION_TEXT: dict[Verdict, str] = {
     Verdict.LIKELY_LEGITIMATE: "Leave these alone. Cache them and you'll break polling and verification.",
     Verdict.UNCLASSIFIED: "Emit result hashes and task outcome, then re-run to get a verdict.",
 }
+
+# A framing line, not an evidence rule and not a prescription -- what a
+# confirmed_waste pair actually means for the agent that made it. Only
+# set for this one bucket: it's a specific reading of a specific
+# verdict, not a generic sentence report.py could apply anywhere.
+CONFIRMED_WASTE_INSIGHT_TEXT = (
+    "Your agent repeated itself, learned nothing new, and still failed: "
+    "these are the places it was stuck, not working."
+)
+
+# How many ranked pairs "Fix these first" surfaces. Small on purpose --
+# this is meant to read as a short, actionable list, not a second copy
+# of the sample-cases section below it.
+_TOP_HIGHLIGHTS = 3
 NEAR_DUPLICATE_ACTION_TEXT = "Nothing to do. When these appear, read them by hand."
 CROSS_TASK_REDUNDANCY_ACTION_TEXT = (
     "Read these by hand. A confirmed link exists between the two tasks, but not "
@@ -197,6 +211,8 @@ class WasteAnalysis(Analysis):
                     f"({repeat.event_type}/{repeat.name}): {c.reason}"
                 )
 
+        highlights = self._highlights(classifications)
+
         near_dup_slice, near_dup_by_model, near_dup_by_workflow, near_dup_reasons = (
             self._similarity_bucket_data(
                 near_pairs, self._keep_reasons,
@@ -225,6 +241,9 @@ class WasteAnalysis(Analysis):
             Bucket(
                 key=v.value, label=_LABELS[v], rule_text=RULE_TEXT[v], slice=slices[v],
                 action_text=ACTION_TEXT[v],
+                insight_text=(
+                    CONFIRMED_WASTE_INSIGHT_TEXT if v is Verdict.CONFIRMED_WASTE else None
+                ),
             )
             for v in _ORDER
         ]
@@ -296,7 +315,33 @@ class WasteAnalysis(Analysis):
             ),
             analysis_name=self.name,
             footnote=footnote,
+            highlights=highlights,
         )
+
+    @staticmethod
+    def _highlights(classifications) -> list[str]:
+        """The top `_TOP_HIGHLIGHTS` confirmed_waste pairs, ranked by their
+        own real cost_usd, descending. Never ranks by a projection or any
+        other derived figure -- only a real, directly-reported dollar
+        amount is a defensible ranking key. Returns [] when no
+        confirmed_waste pair has cost data to rank by, rather than
+        falling back to an arbitrary order dressed up as a ranking.
+        """
+        priced = [
+            c for c in classifications
+            if c.verdict is Verdict.CONFIRMED_WASTE and c.pair.repeat.cost_usd is not None
+        ]
+        priced.sort(key=lambda c: c.pair.repeat.cost_usd, reverse=True)
+
+        highlights = []
+        for rank, c in enumerate(priced[:_TOP_HIGHLIGHTS], start=1):
+            repeat = c.pair.repeat
+            cost_text = f"${repeat.cost_usd:,.4f}" if repeat.cost_usd < 1 else f"${repeat.cost_usd:,.2f}"
+            highlights.append(
+                f"{rank}. {cost_text} for task={c.pair.task_id} step={repeat.step_index} "
+                f"({repeat.event_type}/{repeat.name}): {c.reason}"
+            )
+        return highlights
 
     @staticmethod
     def _add_comparability_note(coverage, events: list[Event], classifications) -> None:

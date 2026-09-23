@@ -126,6 +126,7 @@ details.bucket[open] .chev { transform: rotate(90deg); }
 .bucket-meta { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; color: var(--ink3); }
 .bucket-body { padding: 16px 0 0 23px; }
 .rule-block { max-width: 66ch; border-left: 1px solid var(--line); padding-left: 15px; margin-bottom: 22px; }
+.insight { margin: 0 0 10px; font-size: 14.5px; font-style: italic; color: var(--ink); }
 .rule { margin: 0; font-size: 13.5px; color: var(--ink2); }
 .action { margin: 8px 0 0; font-size: 13.5px; color: var(--ink); }
 .action-label {
@@ -161,6 +162,12 @@ details.cases[open] .chev2 { transform: rotate(90deg); }
 .case {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55;
   background: var(--panel); border: 1px solid var(--hair); border-radius: 6px; padding: 10px 12px;
+}
+/* highlights ("Fix these first") */
+.highlights { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.highlights li {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; line-height: 1.6;
+  background: var(--panel); border: 1px solid var(--hair); border-radius: 6px; padding: 12px 14px;
 }
 /* footer */
 .page-footer {
@@ -222,15 +229,22 @@ a.quiet {
 </section>
 
 <section>
-  <div class="stat-grid"><div class="stat"><p class="stat-label">Confirmed waste</p><p class="stat-value serif">$52.50/mo</p><p class="stat-sub">3 pair(s) · $0.0280 in this sample</p></div><div class="stat"><p class="stat-label">Pairs evaluated</p><p class="stat-value serif">8</p><p class="stat-sub">3 confirmed waste &middot; 3 likely legitimate &middot; 2 unclassified</p></div><div class="stat"><p class="stat-label">Trace coverage</p><p class="stat-value serif">64%</p><div class="stat-bar"><span style="width:64%"></span></div><p class="stat-sub">16 of 25 events carried a price</p></div></div>
+  <div class="stat-grid"><div class="stat"><p class="stat-label">Pairs evaluated</p><p class="stat-value serif">8</p><p class="stat-sub">3 confirmed waste &middot; 3 likely legitimate &middot; 2 unclassified</p></div><div class="stat"><p class="stat-label">Confirmed waste</p><p class="stat-value serif">3</p><p class="stat-sub">$0.0280 in this sample · ~$52.50/mo projected</p></div><div class="stat"><p class="stat-label">Trace coverage</p><p class="stat-value serif">64%</p><div class="stat-bar"><span style="width:64%"></span></div><p class="stat-sub">16 of 25 events carried a price</p></div></div>
   <p class="projection-caption">Dollar figures below are also projected at 1,000 calls/day (30-day month), scaling this sample&#x27;s own cost-per-call rate in each bucket. A hypothetical, not a measurement of your real traffic.</p>
 </section>
 
 <section class="coverage"><p>16 of 25 events carried a price (64%). <strong>$0.1060</strong> of tracked spend is what this analysis actually covers. <strong>All amounts are USD</strong>, as reported by each event's own <code>cost_usd</code>; this report never converts or estimates a currency.</p><p>9 event(s) had no <code>cost_usd</code> and are excluded from every dollar figure above and below. Percentages are computed on the priced subset, not the total.</p><p>Cost basis: $0.1060 (100%) reported directly by the source.</p></section>
 
+
+<section>
+  <h2 class="serif">Fix these first</h2>
+  <p class="section-sub">Ranked by real cost_usd, never a projection. The highest-value repeats to kill first.</p>
+  <ul class="highlights"><li>1. $0.0200 for task=session-006 step=1 (llm_call/gpt-5.6): result identical; no intervening write; task terminated in failure</li><li>2. $0.0040 for task=session-001 step=2 (tool_call/web_search): result identical; no intervening write; task terminated in failure</li><li>3. $0.0040 for task=session-001 step=4 (tool_call/web_search): result identical; no intervening write; task terminated in failure</li></ul>
+</section>
+
 <section>
   <h2 class="serif">Where the spend went</h2>
-  <p class="section-sub">Cost by verdict, across the priced subset. Select a row to open its detail.</p>
+  <p class="section-sub">Cost by verdict, across the 64% of events (16 of 25) that carried a price. Select a row to open its detail.</p>
   
 <a class="row" href="#bucket-confirmed_waste">
   <span class="row-name">
@@ -303,11 +317,12 @@ a.quiet {
       <span class="chev">&#9656;</span>
       <span class="dot" style="background:oklch(0.55 0.15 38)"></span>
       <h3>Confirmed waste</h3>
-      <span class="bucket-meta">3 pair(s) &middot; ~$52.50/mo projected &middot; $0.0280 in this sample</span>
+      <span class="bucket-meta">3 pair(s) &middot; $0.0280 in this sample &middot; ~$52.50/mo projected</span>
     </span>
   </summary>
   <div class="bucket-body">
     <div class="rule-block">
+      <p class="insight">Your agent repeated itself, learned nothing new, and still failed: these are the places it was stuck, not working.</p>
       <p class="rule">The call repeated, the result didn&#x27;t change, nothing wrote to state in between, and the task still failed. All four have to be true. Drop any one and this is a guess, not a finding.</p>
       <p class="action"><span class="action-label">Action</span> Cache the result or guard the retry. This spend bought nothing.</p>
     </div>
@@ -335,11 +350,12 @@ a.quiet {
       <span class="chev">&#9656;</span>
       <span class="dot" style="background:oklch(0.55 0.13 142)"></span>
       <h3>Likely legitimate</h3>
-      <span class="bucket-meta">3 pair(s) &middot; ~$6.56/mo projected &middot; $0.0035 in this sample</span>
+      <span class="bucket-meta">3 pair(s) &middot; $0.0035 in this sample &middot; ~$6.56/mo projected</span>
     </span>
   </summary>
   <div class="bucket-body">
     <div class="rule-block">
+      
       <p class="rule">A specific reason it&#x27;s not waste: the result changed (polling worked), a write intervened (verification), or the task succeeded and neither the result nor the write status already confirms waste on its own.</p>
       <p class="action"><span class="action-label">Action</span> Leave these alone. Cache them and you&#x27;ll break polling and verification.</p>
     </div>
@@ -367,11 +383,12 @@ a.quiet {
       <span class="chev">&#9656;</span>
       <span class="dot" style="background:oklch(0.55 0.012 80)"></span>
       <h3>Unclassified</h3>
-      <span class="bucket-meta">2 pair(s) &middot; ~$41.25/mo projected &middot; $0.0220 in this sample</span>
+      <span class="bucket-meta">2 pair(s) &middot; $0.0220 in this sample &middot; ~$41.25/mo projected</span>
     </span>
   </summary>
   <div class="bucket-body">
     <div class="rule-block">
+      
       <p class="rule">Everything else. A required signal (the result, the write status, or the outcome) was missing from the trace, or the call already looks wasteful on its own and the task&#x27;s overall success can&#x27;t settle whether it actually mattered. No verdict here, and that&#x27;s on purpose.</p>
       <p class="action"><span class="action-label">Action</span> Emit result hashes and task outcome, then re-run to get a verdict.</p>
     </div>
@@ -404,6 +421,7 @@ a.quiet {
   </summary>
   <div class="bucket-body">
     <div class="rule-block">
+      
       <p class="rule">Arguments are similar but not identical to an earlier call on the same execution path (a SimHash fingerprint comparison, not exact content_hash equality). Surfaced for manual review, not a waste or legitimate verdict. See docs/hashing.md for what a similarity fingerprint can and can&#x27;t support.</p>
       <p class="action"><span class="action-label">Action</span> Nothing to do. When these appear, read them by hand.</p>
     </div>
@@ -422,6 +440,7 @@ a.quiet {
   </summary>
   <div class="bucket-body">
     <div class="rule-block">
+      
       <p class="rule">Same or near-identical call as an earlier one in a different task, and the two tasks are confirmed related (a source-reported delegation link, never inferred from timing or content). Surfaced for review, not a waste verdict: what changed between the two calls isn&#x27;t checked here yet.</p>
       <p class="action"><span class="action-label">Action</span> Read these by hand. A confirmed link exists between the two tasks, but not yet enough signal here to call it waste or legitimate.</p>
     </div>
@@ -440,6 +459,7 @@ a.quiet {
   </summary>
   <div class="bucket-body">
     <div class="rule-block">
+      
       <p class="rule">Same or near-identical call recurring across tasks with no confirmed relationship to each other. Not a waste or legitimate verdict, and not evidence the two tasks are related, most likely a common or generic operation, not redundant work.</p>
       <p class="action"><span class="action-label">Action</span> Nothing to do by default. If this recurs a lot, it may be worth caching or memoizing globally, but it isn&#x27;t evidence of wasted spend on its own.</p>
     </div>
@@ -487,7 +507,7 @@ a.quiet {
   </div>
   <div class="footer-meta">
     <p class="noprint"><a class="quiet" href="mailto:?subject=redundo%20waste%20report&body=Sharing%20a%20redundo%20waste-detection%20report%20%28attached%29.%0A%0Aredundo%20is%20open%20source%3A%20https%3A//github.com/CogentWizards/redundo">Share by email</a>. Attach this file, it's the whole report.</p>
-    <p class="meta">2026-09-22 17:31 UTC &middot; redundo v0.4.0</p>
+    <p class="meta">2026-09-23 18:01 UTC &middot; redundo v0.4.0</p>
   </div>
 </footer>
 </body>
