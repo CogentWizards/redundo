@@ -144,3 +144,19 @@ def test_cli_fails_on_invalid_json(tmp_path, capsys):
     (tmp_path / "bad.json").write_text("{not valid json", encoding="utf-8")
     exit_code = main([str(tmp_path)])
     assert exit_code == 1
+
+
+def test_cli_stamps_every_record_with_the_resolved_source_directory(tmp_path, capsys):
+    doc = traces_document([
+        span("s1", name="claude_code.interaction", start=0,
+             attributes={"session.id": "sess-1", "user_prompt": "hi"}),
+        span("s2", parent_span_id="s1", name="claude_code.llm_request", start=1,
+             attributes={"session.id": "sess-1", "model": "m", "success": True}),
+    ])
+    _write(tmp_path, "traces-1.json", doc)
+
+    exit_code = main([str(tmp_path)])
+    assert exit_code == 0
+    records = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    assert len(records) == 1
+    assert records[0]["metadata"]["source_path"] == str(tmp_path.resolve())

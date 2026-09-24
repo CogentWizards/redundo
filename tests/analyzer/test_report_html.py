@@ -130,7 +130,6 @@ def test_text_shows_rule_text_next_to_the_count():
 
 def test_html_shows_coverage_line():
     page = to_html(build(_confirmed_waste_events()))
-    assert "Trace coverage" in page
     # 2 of 4 events are priced ($1.00 each) -- the reader needs this number
     # before trusting any dollar figure below it.
     assert "2 of 4 events carried a price" in page
@@ -206,15 +205,18 @@ def test_synthesized_cost_only_events_get_their_own_section_at_the_end():
     ]
     result = build(events)
     text = to_text(result)
-    assert text.rstrip().endswith(
+    assert (
         "None of them can appear in any bucket, they have no content and "
         "no repeat to classify."
-    )
+    ) in text
     assert "Spend outside the trace structure:" in text
+    # Spot-checkable by hand, not just a count and a dollar figure.
+    assert text.rstrip().endswith("task=t1 step=0 (llm_call/search): billing-only, no matching span")
 
     page = to_html(result)
     assert "Spend outside the trace structure" in page
     assert page.index("Spend outside the trace structure") > page.index("The verdicts")
+    assert "Sample billing-only records to spot-check by hand" in page
 
 
 def test_no_synthesized_cost_only_section_when_there_are_none():
@@ -322,8 +324,8 @@ def test_html_stat_grid_leads_with_pairs_evaluated_not_a_dollar_figure():
     page = to_html(result)
     pairs_idx = page.index("Pairs evaluated")
     top_bucket_idx = page.index("Confirmed waste")
-    coverage_idx = page.index("Trace coverage")
-    assert pairs_idx < top_bucket_idx < coverage_idx
+    third_idx = page.index("Verdicts reached")  # confidence_stat, not Trace coverage
+    assert pairs_idx < top_bucket_idx < third_idx
 
 
 def test_html_top_bucket_stat_value_is_the_count_not_a_dollar_figure():
@@ -418,3 +420,74 @@ def test_text_fix_these_first_present_when_highlights_exist():
     text = to_text(result)
     assert "Fix these first:" in text
     assert "  1. $1.00 for task=t1" in text
+
+
+# --- confidence_stat replaces "Trace coverage" as the third stat cell -------
+
+def test_html_confidence_stat_replaces_trace_coverage_cell():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    assert result.confidence_stat is not None
+    page = to_html(result)
+    assert "Verdicts reached" in page
+    assert "Trace coverage" not in page
+
+
+def test_html_falls_back_to_trace_coverage_when_no_confidence_stat():
+    events = [
+        make_event(0, content_hash="a", metadata={"similarity_fingerprint": "0" * 16}),
+        make_event(1, content_hash="b", metadata={"similarity_fingerprint": "f" * 2 + "0" * 14}),
+    ]
+    result = build(events)
+    assert result.confidence_stat is None
+    page = to_html(result)
+    assert "Trace coverage" in page
+
+
+def test_text_confidence_stat_line_present():
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    text = to_text(result)
+    assert "Verdicts reached: 100% (1 of 1 exact repeats got a real verdict" in text
+
+
+# --- uninformative by-model/by-workflow breakdowns are suppressed -----------
+
+def test_breakdown_suppressed_when_only_unknown_model_and_unlabeled_workflow():
+    # _CONFIRMED_WASTE_EVENTS sets neither model nor workflow.
+    result = build(_CONFIRMED_WASTE_EVENTS)
+    page = to_html(result)
+    assert "By model" not in page
+    assert "By workflow" not in page
+    assert "(unknown model)" not in page
+    assert "(unlabeled workflow)" not in page
+
+
+def test_breakdown_shown_when_a_real_model_is_present():
+    events = [
+        make_event(0, event_type="tool_call", cost_usd=1.0, model="gpt-5.6"),
+        make_event(1, event_type="tool_result", content_hash="same"),
+        make_event(2, event_type="tool_call", cost_usd=1.0, outcome="error", model="gpt-5.6"),
+        make_event(3, event_type="tool_result", content_hash="same", outcome="error"),
+    ]
+    result = build(events)
+    page = to_html(result)
+    assert "By model" in page
+    assert "gpt-5.6" in page
+
+
+# --- source_path --------------------------------------------------------
+
+def test_source_path_shown_when_present():
+    events = [make_event(0, metadata={"source_path": "/tmp/otlp_traces"})]
+    result = build(events)
+    text = to_text(result)
+    assert "Captured from: /tmp/otlp_traces" in text
+    page = to_html(result)
+    assert "Captured from <code>/tmp/otlp_traces</code>" in page
+
+
+def test_source_path_absent_when_not_set():
+    result = build([make_event(0)])
+    text = to_text(result)
+    assert "Captured from:" not in text
+    page = to_html(result)
+    assert "Captured from" not in page

@@ -88,6 +88,19 @@ META_PARENT_TASK_LINK_KIND_KEY = "parent_task_link_kind"
 # actually read.
 META_CONTENT_BASIS_KEY = "content_basis"
 META_CONTENT_BASIS_OPAQUE = "opaque"
+# str: the local filesystem directory `redundo adapt` read this record's
+# source OTLP documents from, absolute, resolved at conversion time.
+# Stamped once, corpus-wide, by the `redundo adapt` CLI itself after a
+# source's own convert() returns -- no adapter sets this, so it's the
+# same for every record produced by one `redundo adapt` invocation.
+# Absent for NDJSON built by hand, by a script calling an adapter
+# directly, or by any other path that skips the CLI. A local, possibly
+# identifying path: it's meant to help the *same* user find the raw
+# capture behind a specific sample case again, not for redistribution --
+# a report carrying this key discloses local filesystem structure
+# (usernames in home-directory paths, project layout) if shared outside
+# the machine that produced it, same as any other locally-generated file.
+META_SOURCE_PATH_KEY = "source_path"
 
 
 class SchemaError(ValueError):

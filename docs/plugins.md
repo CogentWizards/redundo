@@ -89,8 +89,8 @@ keyword arguments (like `WasteAnalysis(keep_reasons=...)`), the CLI passes
 `keep_reasons=` through when present and falls back to no arguments on
 `TypeError`. Not every analysis needs that particular knob.
 
-Two more fields are optional on `Bucket`/`AnalysisResult`, both left empty
-by default and rendered only when you populate them:
+A few more fields are optional on `Bucket`/`AnalysisResult`, all left
+empty/`None` by default and rendered only when you populate them:
 
 - `Bucket.insight_text`: a short, interpretive line about what one
   specific bucket's finding actually means, distinct from `rule_text`
@@ -101,6 +101,24 @@ by default and rendered only when you populate them:
   this only when you have a real, defensible way to rank (never a
   projection or a guess); leave it empty otherwise; report.py never
   invents an order for you.
+- `AnalysisResult.confidence_stat`: a pre-rendered `(label, value, sub)`
+  headline stat, opaque to report.py the same way as the two above. When
+  present, it replaces the generic, pricing-only "Trace coverage" stat
+  cell at the top of the report. Use it when your analysis has its own,
+  more specific claim about how much of the trace it could actually
+  speak to (`WasteAnalysis` computes "how often a repeat reached a real
+  verdict" from its own three `Verdict` buckets); leave it `None` when
+  there's nothing to compute one from, rather than a placeholder cell.
+  `value`/`sub` are plain text, not markup: `to_html` escapes them itself,
+  the same as `footnote`.
+
+By-model/by-workflow breakdown tables also follow a shared convention:
+`redundo.analyzer.metrics.UNKNOWN_MODEL_LABEL`/`UNLABELED_WORKFLOW_LABEL`
+name the placeholder to use when an event has no real model/workflow
+value. A breakdown that's a single row of just that placeholder gets
+suppressed by report.py rather than rendered (it conveys nothing a
+reader can act on); using these exact two strings is what makes your
+analysis's own breakdowns get the same treatment.
 
 Register it:
 

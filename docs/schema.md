@@ -89,6 +89,18 @@ Keys `analyze` looks for. Absence is not a claim of a default value.
   distinct basis regardless of this key. `redundo analyze`'s own report
   states the dollar mixture across these, so a real billed amount and a
   bundled-price-table guess never look equally authoritative.
+- `metadata.source_path` (str, optional): the local directory `redundo
+  adapt` read this record's source OTLP documents from, absolute,
+  resolved at conversion time. Stamped once, corpus-wide, by the `redundo
+  adapt` CLI itself, not by any individual adapter. Absent for NDJSON
+  built by hand or by any path that skips the CLI. When every loaded
+  event agrees on the same value, `redundo analyze`'s report states it
+  up front ("Captured from: ...") so a reader can go find the raw
+  capture behind a specific sample case; when events disagree, nothing
+  is shown rather than guessing which one to display. A local,
+  potentially identifying path: sharing a report that carries this key
+  discloses local filesystem structure (a username in a home-directory
+  path, a project layout), same as any other locally-generated file.
 
 ## Design decisions
 
@@ -211,6 +223,7 @@ live.
 Every report opens with a coverage line, before any bucket:
 
 ```
+Captured from: /path/to/otlp_traces
 Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analysis actually covers.
   9 event(s) had no cost_usd and are excluded from every dollar figure below. Percentages are computed on the priced subset, not your total spend.
   Cost basis: $0.1060 (100%) reported directly by the source.
@@ -219,16 +232,33 @@ Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analy
 This is measured over the *entire loaded corpus*, not just the events
 that ended up in a candidate pair. The point is telling a reader what
 fraction of their total data the numbers below are even computed on,
-before they trust or forward those numbers. The cost basis line (see
-`metadata.cost_basis` above) states, for the priced subset, what
-fraction of those dollars were reported directly by the source versus
-estimated, apportioned, or synthesized by an adapter, omitted only when
-nothing is priced at all. If `metadata.task_id_source` is present on any
-event, a further line reports what fraction were grouped by a source's
-most precise available signal versus a fallback. If no source in the
-loaded corpus ever sets that key, the line is omitted entirely rather
-than reporting a fabricated "0%": silence here means "this dimension
-can't be spoken to for this data," not "everything failed."
+before they trust or forward those numbers. "Captured from" (see
+`metadata.source_path` above) only appears when every loaded event
+agrees on the same source directory, and is what turns a sample case a
+few lines below ("task=... step=...") into something a reader can
+actually go find on disk. The cost basis line (see `metadata.cost_basis`
+above) states, for the priced subset, what fraction of those dollars
+were reported directly by the source versus estimated, apportioned, or
+synthesized by an adapter, omitted only when nothing is priced at all.
+If `metadata.task_id_source` is present on any event, a further line
+reports what fraction were grouped by a source's most precise available
+signal versus a fallback. If no source in the loaded corpus ever sets
+that key, the line is omitted entirely rather than reporting a
+fabricated "0%": silence here means "this dimension can't be spoken to
+for this data," not "everything failed."
+
+Right after the pair count, a further line states how often the trace
+actually carried enough signal to decide at all: "Verdicts reached: 75%
+(6 of 8 exact repeats got a real verdict, 2 unclassified for missing
+signal)". This is deliberately not a dollar figure. It's computed only
+over the three real `Verdict` buckets (`confirmed_waste`,
+`likely_legitimate`, `unclassified`), never the three similarity-based
+ones, and it's what the report's own top stat-grid leads with too (in
+place of pricing coverage, which stays fully available in the coverage
+paragraph above it): this number, not how much of the corpus happened to
+carry a price, is what actually distinguishes an adjudicator from a
+tracing UI. See [docs/plugins.md](plugins.md) for `AnalysisResult.confidence_stat`,
+the generic, opaque-to-report.py field this is built on.
 
 A bucket's own count leads every bucket line ("3 confirmed_waste: ...")
 for a reason: it's a direct observation from the trace, not an
