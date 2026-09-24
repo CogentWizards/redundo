@@ -232,6 +232,7 @@ Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analy
   Cost basis: $0.1060 (100%) reported directly by the source.
 
 Candidate redundant-repeat pairs: 8
+Verdicts reached: 75% (6 of 8 exact repeats got a real verdict · 2 unclassified for missing signal)
 
 Fix these first:
   1. $0.0200 for task=session-006 step=1 (llm_call/gpt-5.6): result identical; no intervening write; task terminated in failure

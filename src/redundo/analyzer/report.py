@@ -22,7 +22,22 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .analysis import AnalysisResult, Bucket
-from .metrics import COST_BASIS_DIRECT, COST_BASIS_SYNTHESIZED, CoverageStats, Slice
+from .metrics import (
+    COST_BASIS_DIRECT,
+    COST_BASIS_SYNTHESIZED,
+    UNKNOWN_MODEL_LABEL,
+    UNLABELED_WORKFLOW_LABEL,
+    CoverageStats,
+    Slice,
+)
+
+# A breakdown carrying exactly one segment, and that segment is the
+# placeholder for "no real value reported," conveys nothing a reader
+# can act on -- a single row that just says "unknown" reads as broken,
+# not informative. _breakdown_table suppresses exactly this case; a
+# breakdown with a real segment (even just one, e.g. every call used the
+# same one real model) still renders, since that IS information.
+_UNINFORMATIVE_BREAKDOWN_LABELS = frozenset({UNKNOWN_MODEL_LABEL, UNLABELED_WORKFLOW_LABEL})
 
 # ---------------------------------------------------------------------------
 # Cost basis
@@ -186,12 +201,16 @@ def _coverage_lines(coverage: CoverageStats) -> list[str]:
     if coverage.total_events == 0:
         return ["Coverage: no events loaded."]
 
+    lines: list[str] = []
+    if coverage.source_path:
+        lines.append(f"Captured from: {coverage.source_path}")
+
     pct = coverage.pricing_coverage_fraction * 100
-    lines = [
+    lines.append(
         f"Coverage: {coverage.priced_events}/{coverage.total_events} events priced "
         f"({pct:.0f}%). {_fmt_usd(coverage.total_priced_cost_usd)} of tracked spend "
         "is what this analysis actually covers."
-    ]
+    )
     if coverage.unpriced_events:
         lines.append(
             f"  {coverage.unpriced_events} event(s) had no cost_usd and are excluded "
@@ -227,6 +246,9 @@ def to_text(
     lines.extend(_coverage_lines(result.coverage))
     lines.append("")
     lines.append(f"Candidate redundant-repeat pairs: {result.total_candidates}")
+    if result.confidence_stat:
+        label, value, sub = result.confidence_stat
+        lines.append(f"{label}: {value} ({sub})")
     if any_bucket_priced and total_calls > 0:
         lines.append(_projection_caption(calls_per_day))
     lines.append("")
@@ -292,6 +314,8 @@ def to_text(
             "above. None of them can appear in any bucket, they have no content "
             "and no repeat to classify."
         )
+        for sample in result.coverage.synthesized_cost_only_samples:
+            lines.append(f"    - {sample}")
 
     return "\n".join(lines)
 
@@ -451,14 +475,18 @@ def _coverage_html(coverage: CoverageStats) -> str:
     if coverage.total_events == 0:
         return "<p>Coverage: no events loaded.</p>"
 
+    parts: list[str] = []
+    if coverage.source_path:
+        parts.append(f"<p>Captured from <code>{html.escape(coverage.source_path)}</code>.</p>")
+
     pct = coverage.pricing_coverage_fraction * 100
-    parts = [
+    parts.append(
         f"<p>{coverage.priced_events} of {coverage.total_events} events carried a price "
         f"({pct:.0f}%). <strong>{html.escape(_fmt_usd(coverage.total_priced_cost_usd))}</strong> "
         "of tracked spend is what this analysis actually covers. "
         "<strong>All amounts are USD</strong>, as reported by each event's own "
         "<code>cost_usd</code>; this report never converts or estimates a currency.</p>"
-    ]
+    )
     if coverage.unpriced_events:
         parts.append(
             f"<p>{coverage.unpriced_events} event(s) had no <code>cost_usd</code> and are "
@@ -529,6 +557,8 @@ def _spend_rows(buckets: list[Bucket], *, total_call_events: int, calls_per_day:
 
 def _breakdown_table(title: str, rows: dict[str, Slice]) -> str:
     if not rows:
+        return ""
+    if len(rows) == 1 and next(iter(rows)) in _UNINFORMATIVE_BREAKDOWN_LABELS:
         return ""
     body = "".join(
         f'<tr><td class="rowkey">{html.escape(key)}</td><td class="num">{s.count}</td>'
@@ -971,6 +1001,7 @@ _UNTRACEABLE_SPEND_SECTION_TEMPLATE = """
   </div>
   <div class="rule-block">
     <p class="rule">A billing-only record: <code>cost_usd</code> is real, but there was no span to attach it to, so it was synthesized rather than silently dropped. Already included in the totals above. It can never appear in a bucket, it has no content and no repeat to classify.</p>
+    {samples}
   </div>
 </section>"""
 
@@ -1042,19 +1073,30 @@ def to_html(
     else:
         top_value = str(top.slice.count) if top else "0"
         top_sub = html.escape(f"{top.slice.count} pair(s)" if top else "no candidate pairs")
-    stats = "".join([
-        _stat_cell(
-            "Pairs evaluated", str(result.total_candidates), bucket_parts,
-        ),
-        _stat_cell(top.label if top else "Top bucket", top_value, top_sub) if top else "",
-        _stat_cell(
+    # The third stat cell leads with the analysis's own confidence signal
+    # (did the trace carry enough evidence to reach a real verdict) when
+    # it has one -- that's the actual differentiator, not how much of the
+    # corpus happened to carry a price. Falls back to pricing coverage
+    # when the analysis has no confidence_stat to offer (e.g. zero
+    # exact-match candidate pairs), so the grid never loses a third cell.
+    if result.confidence_stat:
+        label, value, sub = result.confidence_stat
+        third_cell = _stat_cell(html.escape(label), html.escape(value), html.escape(sub))
+    else:
+        third_cell = _stat_cell(
             "Trace coverage", f"{result.coverage.pricing_coverage_fraction * 100:.0f}%",
             html.escape(
                 f"{result.coverage.priced_events} of {result.coverage.total_events} "
                 "events carried a price"
             ),
             bar_pct=result.coverage.pricing_coverage_fraction * 100,
+        )
+    stats = "".join([
+        _stat_cell(
+            "Pairs evaluated", str(result.total_candidates), bucket_parts,
         ),
+        _stat_cell(top.label if top else "Top bucket", top_value, top_sub) if top else "",
+        third_cell,
     ])
 
     any_bucket_priced = any(b.slice.cost_usd > 0 for b in result.buckets)
@@ -1094,9 +1136,14 @@ def to_html(
 
     untraceable_spend_section = ""
     if result.coverage.synthesized_cost_only_events:
+        untraceable_samples_html = _sample_cases_html(
+            result.coverage.synthesized_cost_only_samples[:max_reasons],
+            label="Sample billing-only records to spot-check by hand",
+        )
         untraceable_spend_section = _UNTRACEABLE_SPEND_SECTION_TEMPLATE.format(
             count=result.coverage.synthesized_cost_only_events,
             cost=html.escape(_fmt_usd(result.coverage.synthesized_cost_only_usd)),
+            samples=untraceable_samples_html,
         )
 
     return _HTML_TEMPLATE.format(

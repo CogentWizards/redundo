@@ -59,22 +59,6 @@ defeats exact result-identity comparison) -- seeing the same shape of
 gap independently on a second, unrelated source is itself a useful
 signal about where redundo's masking needs to get more thorough.
 
-**Session B** is a single, sequential turn: calculate something, repeat
-the exact same calculation verbatim (nothing intervening), save the
-result to a file, repeat once more to double-check, then a nearby but
-different calculation. This one *is* fully same-task, sequential, no
-parallelism -- and does produce a real finding: the two verbatim-repeated
-calculations exact-match on the call side, but classify as
-`likely_legitimate` ("result changed") rather than `confirmed_waste`,
-because the tool's own result payload carries a small amount of
-per-call execution metadata alongside the actual answer, which isn't
-byte-identical between calls even though the answer is. This is the same
-family of finding as the `openclaw-daily-briefing` demo's README
-documents in more depth (a wrapper carrying volatile per-call data
-defeats exact result-identity comparison) -- seeing the same shape of
-gap independently on a second, unrelated source is itself a useful
-signal about where redundo's masking needs to get more thorough.
-
 ## Why single-invocation sessions, not multi-turn `--resume`
 
 An earlier version of this demo drove Session B as five separate

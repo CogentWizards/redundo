@@ -15,7 +15,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .schema import META_COST_BASIS_KEY, META_SYNTHESIZED_COST_ONLY_KEY, Event
+from .schema import (
+    META_COST_BASIS_KEY,
+    META_SOURCE_PATH_KEY,
+    META_SYNTHESIZED_COST_ONLY_KEY,
+    Event,
+)
 
 # What counts as "a call" for the call-volume denominator below: an
 # llm_call or a tool_call, the two event types that represent an actual
@@ -34,6 +39,16 @@ COST_BASIS_DIRECT = "direct_from_source"
 # stronger, more specific statement about the record's origin than any
 # ordinary cost_basis value.
 COST_BASIS_SYNTHESIZED = "synthesized_billing_only"
+
+
+# Shared convention for "this event had no real model/workflow value" --
+# not specific to WasteAnalysis, any analysis segmenting by model or
+# workflow should use these same two strings so report.py can recognize
+# and suppress a by-model/by-workflow breakdown that's carrying zero real
+# information (every segment is this one placeholder), rather than
+# showing a single-row table that just says "unknown" and looks broken.
+UNKNOWN_MODEL_LABEL = "(unknown model)"
+UNLABELED_WORKFLOW_LABEL = "(unlabeled workflow)"
 
 
 @dataclass
@@ -143,6 +158,18 @@ class CoverageStats:
     # rests on a real span versus a billing record alone.
     synthesized_cost_only_events: int = 0
     synthesized_cost_only_usd: float = 0.0
+    # A handful of the actual synthesized records, same format and same
+    # cap as unpriced_samples -- so "there's real untraceable spend" is
+    # spot-checkable by hand too, not just a count and a dollar figure.
+    synthesized_cost_only_samples: list[str] = field(default_factory=list)
+
+    # The local directory `redundo adapt` read this corpus from (see
+    # schema.py's META_SOURCE_PATH_KEY), when every loaded event agrees
+    # on the same one. None when no event sets it (hand-built NDJSON, or
+    # any path that skips the `redundo adapt` CLI) or when events
+    # disagree (a corpus hand-assembled from more than one adapt run) --
+    # never a guess at which one to show.
+    source_path: str | None = None
 
     @property
     def pricing_coverage_fraction(self) -> float:
@@ -168,6 +195,7 @@ def compute_generic_coverage(events: list[Event], *, max_samples: int = 20) -> C
     analysis's percentages are even computed on.
     """
     coverage = CoverageStats(total_events=len(events))
+    source_paths: set[str] = set()
 
     for event in events:
         if event.event_type in _CALL_EVENT_TYPES:
@@ -205,6 +233,15 @@ def compute_generic_coverage(events: list[Event], *, max_samples: int = 20) -> C
             coverage.synthesized_cost_only_events += 1
             if event.cost_usd is not None:
                 coverage.synthesized_cost_only_usd += event.cost_usd
+            if len(coverage.synthesized_cost_only_samples) < max_samples:
+                coverage.synthesized_cost_only_samples.append(
+                    f"task={event.task_id} step={event.step_index} "
+                    f"({event.event_type}/{event.name}): billing-only, no matching span"
+                )
+
+        source_path = metadata.get(META_SOURCE_PATH_KEY)
+        if isinstance(source_path, str) and source_path:
+            source_paths.add(source_path)
 
         source = metadata.get("task_id_source")
         if source == "conversation_id":
@@ -215,5 +252,8 @@ def compute_generic_coverage(events: list[Event], *, max_samples: int = 20) -> C
             coverage.events_degraded_task_id += 1
         # any other value (including absent): not reported by this source,
         # not counted in either direction.
+
+    if len(source_paths) == 1:
+        coverage.source_path = next(iter(source_paths))
 
     return coverage

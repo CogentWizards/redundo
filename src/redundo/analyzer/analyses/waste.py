@@ -45,7 +45,12 @@ from ..classify import Verdict, classify_pair
 from ..cross_task_candidates import CrossTaskPair, find_cross_task_pairs
 from ..cycles import find_candidate_pairs
 from ..lineage import group_by_task
-from ..metrics import Slice, compute_generic_coverage
+from ..metrics import (
+    UNKNOWN_MODEL_LABEL,
+    UNLABELED_WORKFLOW_LABEL,
+    Slice,
+    compute_generic_coverage,
+)
 from ..near_duplicates import DEFAULT_SIMILARITY_THRESHOLD, find_near_duplicate_pairs
 from ..schema import Event
 from ..task_graph import build_task_graph, same_component
@@ -203,8 +208,8 @@ class WasteAnalysis(Analysis):
         for c in classifications:
             repeat = c.pair.repeat
             slices[c.verdict].add(repeat)
-            by_model[c.verdict][repeat.model or "(unknown model)"].add(repeat)
-            by_workflow[c.verdict][repeat.workflow or "(unlabeled workflow)"].add(repeat)
+            by_model[c.verdict][repeat.model or UNKNOWN_MODEL_LABEL].add(repeat)
+            by_workflow[c.verdict][repeat.workflow or UNLABELED_WORKFLOW_LABEL].add(repeat)
             if len(reasons[c.verdict]) < self._keep_reasons:
                 reasons[c.verdict].append(
                     f"task={c.pair.task_id} step={repeat.step_index} "
@@ -291,6 +296,28 @@ class WasteAnalysis(Analysis):
                 "a confident wrong classification here is worse than an honest unknown."
             )
 
+        # How often a repeat actually got a real verdict (confirmed_waste
+        # or likely_legitimate) rather than unclassified, over the three
+        # real Verdict buckets only -- near_duplicate/cross_task_redundancy/
+        # recurring_pattern are a different kind of finding (similarity,
+        # never a verdict), so they don't belong in this denominator.
+        # This is deliberately NOT a dollar figure: it's a claim about
+        # how often the trace carried enough signal to decide at all,
+        # which is what actually distinguishes an adjudicator from a
+        # tracing UI, not how much of the corpus happened to carry a
+        # price. None when there's nothing to compute it from.
+        verdicted = waste + legit
+        verdictable = verdicted + unclassified
+        confidence_stat = None
+        if verdictable > 0:
+            pct = verdicted / verdictable * 100
+            confidence_stat = (
+                "Verdicts reached",
+                f"{pct:.0f}%",
+                f"{verdicted} of {verdictable} exact repeats got a real verdict "
+                f"· {unclassified} unclassified for missing signal",
+            )
+
         by_bucket_and_model = {v.value: dict(by_model[v]) for v in _ORDER}
         by_bucket_and_model[_NEAR_DUPLICATE_KEY] = dict(near_dup_by_model)
         by_bucket_and_model[_CROSS_TASK_REDUNDANCY_KEY] = dict(cross_task_by_model)
@@ -316,6 +343,7 @@ class WasteAnalysis(Analysis):
             analysis_name=self.name,
             footnote=footnote,
             highlights=highlights,
+            confidence_stat=confidence_stat,
         )
 
     @staticmethod
@@ -441,8 +469,8 @@ class WasteAnalysis(Analysis):
         for pair in pairs:
             repeat = pair.repeat
             slice_.add(repeat)
-            by_model[repeat.model or "(unknown model)"].add(repeat)
-            by_workflow[repeat.workflow or "(unlabeled workflow)"].add(repeat)
+            by_model[repeat.model or UNKNOWN_MODEL_LABEL].add(repeat)
+            by_workflow[repeat.workflow or UNLABELED_WORKFLOW_LABEL].add(repeat)
             if len(reasons) < keep_reasons:
                 reasons.append(reason_fn(pair))
         return slice_, by_model, by_workflow, reasons

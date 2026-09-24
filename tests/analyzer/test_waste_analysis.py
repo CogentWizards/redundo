@@ -398,3 +398,51 @@ def test_highlights_never_rank_other_buckets():
     result = run(events)
     assert bucket(result, "likely_legitimate").slice.count == 1
     assert result.highlights == []
+
+
+# --- confidence_stat ----------------------------------------------------
+
+def test_confidence_stat_none_when_no_exact_match_pairs_at_all():
+    result = run([])
+    assert result.confidence_stat is None
+
+
+def test_confidence_stat_computed_over_the_three_verdict_buckets_only():
+    # confirmed_waste (identical result, no write, task failed):
+    confirmed = [
+        make_event(0, event_type="tool_call"),
+        make_event(1, event_type="tool_result", content_hash="same"),
+        make_event(2, event_type="tool_call", outcome="error"),
+        make_event(3, event_type="tool_result", content_hash="same", outcome="error"),
+    ]
+    # unclassified (no result correlation at all):
+    unclassified = [
+        make_event(0, event_type="tool_call", task_id="t2"),
+        make_event(1, event_type="tool_call", task_id="t2"),
+    ]
+    result = run(confirmed + unclassified)
+    assert bucket(result, "confirmed_waste").slice.count == 1
+    assert bucket(result, "unclassified").slice.count == 1
+    label, value, sub = result.confidence_stat
+    assert label == "Verdicts reached"
+    assert value == "50%"
+    assert "1 of 2 exact repeats got a real verdict" in sub
+    assert "1 unclassified" in sub
+
+
+def test_confidence_stat_ignores_near_duplicate_and_cross_task_pairs():
+    # Two near-identical (not identical) calls -- a near_duplicate pair,
+    # never one of the three real Verdict buckets, so it must never
+    # affect the confidence_stat denominator.
+    zero_fp = "0" * 16
+    close_fp = "f" * 2 + "0" * 14  # within default Hamming threshold
+    events = [
+        make_event(0, content_hash="a", metadata={"similarity_fingerprint": zero_fp}),
+        make_event(1, content_hash="b", metadata={"similarity_fingerprint": close_fp}),
+    ]
+    result = run(events)
+    assert bucket(result, "near_duplicate").slice.count == 1
+    assert bucket(result, "confirmed_waste").slice.count == 0
+    assert bucket(result, "likely_legitimate").slice.count == 0
+    assert bucket(result, "unclassified").slice.count == 0
+    assert result.confidence_stat is None

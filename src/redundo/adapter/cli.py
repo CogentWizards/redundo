@@ -105,6 +105,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"redundo adapt: {exc}", file=sys.stderr)
         return 1
 
+    # Stamped here, once, corpus-wide -- not by any individual adapter,
+    # which has no reason to know or care where its own input documents
+    # came from. This is what lets a report later point a reader back at
+    # the raw capture behind a specific sample case. See schema.py's
+    # META_SOURCE_PATH_KEY for the privacy note: a local path is real
+    # information about the machine that produced it.
+    resolved_source = str(args.otlp_dir.resolve())
+    for record in records:
+        metadata = record.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["source_path"] = resolved_source
+        record["metadata"] = metadata
+
     if args.output:
         try:
             with args.output.open("w", encoding="utf-8") as handle:

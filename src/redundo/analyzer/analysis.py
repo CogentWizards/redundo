@@ -68,6 +68,18 @@ class AnalysisResult:
     # leaves it empty otherwise rather than inventing an order. Renderers
     # show nothing when this is empty, same convention as footnote.
     highlights: list[str] = field(default_factory=list)
+    # A pre-rendered (label, value, sub) headline stat, optional and
+    # opaque to report.py, same convention as highlights above. When
+    # present, this is what a reader sees FIRST as the report's own
+    # confidence signal -- report.py shows it in place of the generic,
+    # cost-coverage-only "Trace coverage" stat cell, since a dollar
+    # coverage figure isn't the right headline for an analysis whose
+    # real claim is "did we reach a real verdict," not "how much did we
+    # price." WasteAnalysis computes it from its own three real Verdict
+    # buckets (confirmed_waste/likely_legitimate/unclassified); leaves it
+    # None when there's nothing to compute a confidence figure from
+    # (zero exact-match candidate pairs) rather than inventing one.
+    confidence_stat: tuple[str, str, str] | None = None
 
     def as_dict(self) -> dict:
         def slice_dict(s: Slice) -> dict:
@@ -101,8 +113,14 @@ class AnalysisResult:
                     basis: {"events": stat.events, "usd": round(stat.usd, 6)}
                     for basis, stat in self.coverage.cost_by_basis.items()
                 },
+                "source_path": self.coverage.source_path,
                 "extra_notes": list(self.coverage.extra_notes),
             },
+            "confidence_stat": (
+                {"label": self.confidence_stat[0], "value": self.confidence_stat[1],
+                 "sub": self.confidence_stat[2]}
+                if self.confidence_stat else None
+            ),
             "by_bucket": {
                 b.key: {"label": b.label, "rule_text": b.rule_text, **slice_dict(b.slice)}
                 for b in self.buckets
