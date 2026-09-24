@@ -84,6 +84,17 @@ def test_fourth_bucket_gets_its_own_palette_color_not_a_wraparound():
     assert _palette_for(3) != _palette_for(0)
 
 
+def test_all_six_waste_analysis_buckets_get_distinct_colors():
+    # The real regression: _PALETTE had 4 colors for 6 buckets, so
+    # position 4 (cross_task_redundancy) wrapped to position 0's red
+    # (confirmed_waste's "waste verdict" color) and position 5
+    # (recurring_pattern) wrapped to position 1's green (likely_
+    # legitimate's "legitimate verdict" color) -- both buckets whose own
+    # rule_text says "not a waste or legitimate verdict."
+    colors = [_palette_for(i) for i in range(6)]
+    assert len(set(colors)) == 6
+
+
 def test_html_escapes_untrusted_trace_content():
     payload = '<script>alert(1)</script>'
     events = [
@@ -211,11 +222,11 @@ def test_synthesized_cost_only_events_get_their_own_section_at_the_end():
     ) in text
     assert "Spend outside the trace structure:" in text
     # Spot-checkable by hand, not just a count and a dollar figure.
-    assert text.rstrip().endswith("task=t1 step=0 (llm_call/search): billing-only, no matching span")
+    assert text.rstrip().endswith("task=A step=0 (llm_call/search): billing-only, no matching span")
 
     page = to_html(result)
     assert "Spend outside the trace structure" in page
-    assert page.index("Spend outside the trace structure") > page.index("The verdicts")
+    assert page.index("Spend outside the trace structure") > page.index("Exact repeats")
     assert "Sample billing-only records to spot-check by hand" in page
 
 
@@ -402,7 +413,7 @@ def test_html_fix_these_first_section_present_when_highlights_exist():
     page = to_html(result)
     assert "Fix these first" in page
     assert '<ul class="highlights">' in page
-    assert "1. $1.00 for task=t1" in page
+    assert "1. $1.00 for task=A" in page
 
 
 def test_html_no_fix_these_first_section_when_no_highlights():
@@ -419,7 +430,7 @@ def test_text_fix_these_first_present_when_highlights_exist():
     result = build(_CONFIRMED_WASTE_EVENTS)
     text = to_text(result)
     assert "Fix these first:" in text
-    assert "  1. $1.00 for task=t1" in text
+    assert "  1. $1.00 for task=A" in text
 
 
 # --- confidence_stat replaces "Trace coverage" as the third stat cell -------
@@ -446,19 +457,33 @@ def test_html_falls_back_to_trace_coverage_when_no_confidence_stat():
 def test_text_confidence_stat_line_present():
     result = build(_CONFIRMED_WASTE_EVENTS)
     text = to_text(result)
-    assert "Verdicts reached: 100% (1 of 1 exact repeats got a real verdict" in text
+    # n=1 is below the percent-display threshold: a bare fraction.
+    assert "Verdicts reached: 1/1 (exact repeats judged" in text
+
+
+def test_confidence_stat_shows_a_percentage_once_denominator_is_large_enough():
+    events = []
+    for i in range(5):
+        task_id = f"t{i}"
+        events.append(make_event(0, event_type="tool_call", task_id=task_id))
+        events.append(make_event(1, event_type="tool_call", task_id=task_id))
+    result = build(events)
+    label, value, sub = result.confidence_stat
+    assert "%" in value
 
 
 # --- uninformative by-model/by-workflow breakdowns are suppressed -----------
 
-def test_breakdown_suppressed_when_only_unknown_model_and_unlabeled_workflow():
-    # _CONFIRMED_WASTE_EVENTS sets neither model nor workflow.
+def test_breakdown_still_shown_when_only_unknown_model_and_unlabeled_workflow():
+    # _CONFIRMED_WASTE_EVENTS sets neither model nor workflow -- a
+    # tool_call bucket legitimately has no model concept at all, and
+    # that's real information (not a rendering bug to hide).
     result = build(_CONFIRMED_WASTE_EVENTS)
     page = to_html(result)
-    assert "By model" not in page
-    assert "By workflow" not in page
-    assert "(unknown model)" not in page
-    assert "(unlabeled workflow)" not in page
+    assert "By model" in page
+    assert "By workflow" in page
+    assert "(unknown model)" in page
+    assert "(unlabeled workflow)" in page
 
 
 def test_breakdown_shown_when_a_real_model_is_present():
@@ -474,20 +499,212 @@ def test_breakdown_shown_when_a_real_model_is_present():
     assert "gpt-5.6" in page
 
 
-# --- source_path --------------------------------------------------------
+# --- source_path is never rendered in a report ------------------------------
+# coverage.source_path exists (see metrics.py) and is exposed in JSON, but
+# a human-facing report never states a local filesystem path -- that's a
+# fact about the machine that produced the report, not about the trace.
 
-def test_source_path_shown_when_present():
+def test_source_path_never_rendered_even_when_present():
     events = [make_event(0, metadata={"source_path": "/tmp/otlp_traces"})]
     result = build(events)
     text = to_text(result)
-    assert "Captured from: /tmp/otlp_traces" in text
+    assert "/tmp/otlp_traces" not in text
+    assert "Captured from" not in text
     page = to_html(result)
-    assert "Captured from <code>/tmp/otlp_traces</code>" in page
-
-
-def test_source_path_absent_when_not_set():
-    result = build([make_event(0)])
-    text = to_text(result)
-    assert "Captured from:" not in text
-    page = to_html(result)
+    assert "/tmp/otlp_traces" not in page
     assert "Captured from" not in page
+
+
+# --- grouped sections (Bucket.group / AnalysisResult.group_descriptions) ---
+
+def _mixed_group_events():
+    zero_fp = "0" * 16
+    close_fp = "f" * 2 + "0" * 14  # Hamming distance 8, within default threshold
+    return [
+        # confirmed_waste pair (task t1):
+        make_event(0, event_type="tool_call", task_id="t1"),
+        make_event(1, event_type="tool_result", content_hash="same", task_id="t1"),
+        make_event(2, event_type="tool_call", outcome="error", task_id="t1"),
+        make_event(3, event_type="tool_result", content_hash="same", outcome="error", task_id="t1"),
+        # near_duplicate pair (task t2):
+        make_event(0, task_id="t2", content_hash="a", metadata={"similarity_fingerprint": zero_fp}),
+        make_event(1, task_id="t2", content_hash="b", metadata={"similarity_fingerprint": close_fp}),
+    ]
+
+
+def test_headline_splits_by_group_without_naming_confirmed_waste():
+    from redundo.analyzer.report import _headline
+
+    result = build(_mixed_group_events())
+    _, headline = _headline(result)
+    assert "exact repeats" in headline
+    assert "similar or related" in headline
+    assert "waste" not in headline.lower()
+
+
+def test_html_renders_two_group_sections_not_one_flat_verdicts_section():
+    page = to_html(build(_mixed_group_events()))
+    assert '<h2 class="serif">Exact repeats</h2>' in page
+    assert '<h2 class="serif">Similar or related</h2>' in page
+    assert "The verdicts" not in page
+    # Exact repeats comes first (confirmed_waste kept first in order).
+    assert page.index("Exact repeats") < page.index("Similar or related")
+
+
+def test_text_renders_two_group_headers():
+    text = to_text(build(_mixed_group_events()))
+    assert "Exact repeats:" in text
+    assert "Similar or related:" in text
+    assert text.index("Exact repeats:") < text.index("Similar or related:")
+
+
+def test_ungrouped_analysis_still_renders_one_flat_verdicts_section():
+    # A conforming third-party AnalysisResult that never sets Bucket.group
+    # must render exactly like before this feature existed.
+    from redundo.analyzer.analysis import AnalysisResult, Bucket
+    from redundo.analyzer.metrics import Slice, compute_generic_coverage
+
+    result = AnalysisResult(
+        coverage=compute_generic_coverage([]),
+        buckets=[Bucket(key="a", label="A", rule_text="rule a", slice=Slice(count=1))],
+        analysis_name="custom",
+    )
+    page = to_html(result)
+    assert '<h2 class="serif">The verdicts</h2>' in page
+
+
+# --- no bucket auto-opens; insight/action suppressed at zero ----------------
+
+def test_no_bucket_is_open_by_default():
+    page = to_html(build(_confirmed_waste_events()))
+    assert "<details" in page
+    assert " open>" not in page and "\" open>" not in page.replace('id="bucket-confirmed_waste"', "")
+
+
+def test_empty_confirmed_waste_bucket_suppresses_insight_and_action():
+    # A trace with a real near_duplicate pair but zero confirmed_waste.
+    zero_fp = "0" * 16
+    close_fp = "f" * 2 + "0" * 14
+    events = [
+        make_event(0, content_hash="a", metadata={"similarity_fingerprint": zero_fp}),
+        make_event(1, content_hash="b", metadata={"similarity_fingerprint": close_fp}),
+    ]
+    result = build(events)
+    assert next(b for b in result.buckets if b.key == "confirmed_waste").slice.count == 0
+    page = to_html(result)
+    assert "stuck, not working" not in page
+    assert "Cache the result or guard the retry" not in page
+    text = to_text(result)
+    assert "stuck, not working" not in text
+
+
+# --- bar suppression at small max_value --------------------------------------
+
+def test_bars_suppressed_when_max_bucket_value_is_small():
+    # _confirmed_waste_events() has exactly one candidate pair -> every
+    # bucket's count is 0 or 1, max_value=1, which used to render every
+    # nonzero bucket's bar at width:100%.
+    page = to_html(build(_confirmed_waste_events()))
+    assert "row-no-bars" in page
+    assert '<span class="row-track">' not in page
+
+
+def test_bars_shown_when_max_bucket_value_is_large_enough():
+    events = []
+    for i in range(4):
+        events.append(make_event(0, event_type="tool_call", task_id=f"t{i}"))
+        events.append(make_event(1, event_type="tool_result", content_hash="same", task_id=f"t{i}"))
+        events.append(make_event(2, event_type="tool_call", outcome="error", task_id=f"t{i}"))
+        events.append(make_event(3, event_type="tool_result", content_hash="same", outcome="error",
+                                   task_id=f"t{i}"))
+    page = to_html(build(events))
+    assert '<span class="row-track">' in page
+
+
+# --- "Where the spend went" retitled when nothing is priced ------------------
+
+def test_spend_section_retitled_when_no_bucket_has_cost():
+    events = [
+        make_event(0, event_type="tool_call"),
+        make_event(1, event_type="tool_result", content_hash="same"),
+        make_event(2, event_type="tool_call", outcome="error"),
+        make_event(3, event_type="tool_result", content_hash="same", outcome="error"),
+    ]
+    result = build(events)
+    assert not any(b.slice.cost_usd > 0 for b in result.buckets)
+    page = to_html(result)
+    assert "Where the repeats landed" in page
+    assert "Where the spend went" not in page
+    # The bucket-meta lines (the six-times-over "$0.0000" the coverage
+    # regression was about) are suppressed; the coverage paragraph's own
+    # real $0.0000 total (an accurate fact: nothing was priced) is fine.
+    assert '<span class="bucket-meta">0 pair(s)</span>' in page
+    assert '<span class="bucket-meta">1 pair(s)</span>' in page
+
+
+def test_spend_section_keeps_cost_framing_when_something_is_priced():
+    page = to_html(build(_confirmed_waste_events()))
+    assert "Where the spend went" in page
+
+
+# --- task ID legend and shortening -------------------------------------------
+
+def test_task_ids_shortened_and_legend_rendered():
+    events = [
+        make_event(0, event_type="tool_call", task_id="210f09cc-0969-4d3c-9626-03ae71dea57a"),
+        make_event(1, event_type="tool_result", content_hash="same",
+                    task_id="210f09cc-0969-4d3c-9626-03ae71dea57a"),
+        make_event(2, event_type="tool_call", outcome="error",
+                    task_id="210f09cc-0969-4d3c-9626-03ae71dea57a"),
+        make_event(3, event_type="tool_result", content_hash="same", outcome="error",
+                    task_id="210f09cc-0969-4d3c-9626-03ae71dea57a"),
+    ]
+    result = build(events)
+    page = to_html(result)
+    assert "210f09cc-0969-4d3c-9626-03ae71dea57a" not in page.split("Task ID legend")[0]
+    assert "task=A" in page
+    assert "Task ID legend" in page
+    assert "task A = 210f09cc-0969-4d3c-9626-03ae71dea57a" in page
+
+    text = to_text(result)
+    assert "task=A" in text
+    assert "Task legend:" in text
+    assert "task A = 210f09cc-0969-4d3c-9626-03ae71dea57a" in text
+
+
+def test_two_distinct_tasks_get_two_distinct_labels_in_first_seen_order():
+    events = [
+        make_event(0, event_type="tool_call", task_id="task-zzz"),
+        make_event(1, event_type="tool_result", content_hash="same", task_id="task-zzz"),
+        make_event(2, event_type="tool_call", outcome="error", task_id="task-zzz"),
+        make_event(3, event_type="tool_result", content_hash="same", outcome="error", task_id="task-zzz"),
+        make_event(0, event_type="tool_call", task_id="task-aaa"),
+        make_event(1, event_type="tool_result", content_hash="same2", task_id="task-aaa"),
+        make_event(2, event_type="tool_call", outcome="error", task_id="task-aaa"),
+        make_event(3, event_type="tool_result", content_hash="same2", outcome="error", task_id="task-aaa"),
+    ]
+    result = build(events)
+    text = to_text(result)
+    # task-zzz's own candidate pair is classified first (reasons/highlights
+    # are built in classification order), so it gets label A.
+    assert "task A = task-zzz" in text
+    assert "task B = task-aaa" in text
+
+
+def test_no_legend_when_no_task_ids_appear_in_rendered_text():
+    # Priced and un-repeated: no unpriced_samples, no reasons, no
+    # highlights -- nowhere for a task= reference to come from at all.
+    result = build([make_event(0, cost_usd=1.0)])
+    text = to_text(result)
+    assert "Task legend:" not in text
+    page = to_html(result)
+    assert "Task ID legend" not in page
+
+
+# --- "waste" no longer frames the whole document -----------------------------
+
+def test_footer_and_email_never_say_waste():
+    page = to_html(build(_confirmed_waste_events()))
+    assert "waste report" not in page.lower()
+    assert "waste-detection" not in page.lower()
+    assert "what's wasted" not in page.lower()

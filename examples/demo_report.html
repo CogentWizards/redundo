@@ -87,6 +87,10 @@ h2 .info { margin-left: 4px; }
   display: grid; grid-template-columns: minmax(140px, 1.1fr) minmax(0, 3fr) 112px 18px; align-items: center; gap: 18px;
   padding: 15px 0; border-top: 1px solid var(--hair); text-decoration: none; color: inherit;
 }
+/* No bar column at all when every bucket's max is too small for a bar
+   to mean anything (see show_bars in _spend_rows) -- the name column
+   takes the space the bar would have used instead of leaving it blank. */
+.row-no-bars { grid-template-columns: minmax(140px, 3fr) 112px 18px; }
 .row:last-child { border-bottom: 1px solid var(--hair); }
 .row-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
@@ -113,6 +117,7 @@ h2 .info { margin-left: 4px; }
   .row-name { grid-area: name; }
   .row-value { grid-area: value; }
   .row-track { grid-area: bar; }
+  .row-no-bars { grid-template-areas: "name value"; }
   .rowgo { display: none; }
 }
 /* buckets */
@@ -224,94 +229,100 @@ a.quiet {
 
 <section>
   <p class="eyebrow">Event analysis</p>
-  <h1 class="serif">Eight repeat pairs. Three were confirmed waste.</h1>
+  <h1 class="serif">Eight repeat pairs. Eight were exact repeats; zero were similar or related.</h1>
   <p class="subtitle">Every pair below is a call your agent made more than once on the same execution path.</p>
 </section>
 
 <section>
-  <div class="stat-grid"><div class="stat"><p class="stat-label">Pairs evaluated</p><p class="stat-value serif">8</p><p class="stat-sub">3 confirmed waste &middot; 3 likely legitimate &middot; 2 unclassified</p></div><div class="stat"><p class="stat-label">Confirmed waste</p><p class="stat-value serif">3</p><p class="stat-sub">$0.0280 in this sample · ~$52.50/mo projected</p></div><div class="stat"><p class="stat-label">Verdicts reached</p><p class="stat-value serif">75%</p><p class="stat-sub">6 of 8 exact repeats got a real verdict · 2 unclassified for missing signal</p></div></div>
+  <div class="stat-grid"><div class="stat"><p class="stat-label">Pairs evaluated</p><p class="stat-value serif">8</p><p class="stat-sub">3 confirmed waste &middot; 3 likely legitimate &middot; 2 unclassified</p></div><div class="stat"><p class="stat-label">Confirmed waste</p><p class="stat-value serif">3</p><p class="stat-sub">$0.0280 in this sample · ~$52.50/mo projected</p></div><div class="stat"><p class="stat-label">Verdicts reached</p><p class="stat-value serif">6/8 (75%)</p><p class="stat-sub">exact repeats judged; 2 unclassified for missing signal</p></div></div>
   <p class="projection-caption">Dollar figures below are also projected at 1,000 calls/day (30-day month), scaling this sample&#x27;s own cost-per-call rate in each bucket. A hypothetical, not a measurement of your real traffic.</p>
 </section>
 
-<section class="coverage"><p>16 of 25 events carried a price (64%). <strong>$0.1060</strong> of tracked spend is what this analysis actually covers. <strong>All amounts are USD</strong>, as reported by each event's own <code>cost_usd</code>; this report never converts or estimates a currency.</p><p>9 event(s) had no <code>cost_usd</code> and are excluded from every dollar figure above and below. Percentages are computed on the priced subset, not the total.</p><p>Cost basis: $0.1060 (100%) reported directly by the source.</p></section>
+<section class="coverage"><p>16 of 25 events carried a price (64%). <strong>$0.1060</strong> of tracked spend is what this analysis actually covers. <strong>All amounts are USD</strong>, as reported by each event's own <code>cost_usd</code>; this report never converts or estimates a currency.</p><p>9 event(s) had no <code>cost_usd</code> and are excluded from every dollar figure above and below. Percentages are computed on the priced subset, not the total.</p><p>Cost basis: $0.1060 (100%) reported directly by the source.</p>
+<details class="cases">
+  <summary><span class="chev2">&#9656;</span> Task ID legend (7)</summary>
+  <ul class="caselist"><li class="case">task A = session-006</li><li class="case">task B = session-001</li><li class="case">task C = session-002</li><li class="case">task D = session-003</li><li class="case">task E = session-004</li><li class="case">task F = session-005</li><li class="case">task G = session-007</li></ul>
+</details></section>
 
 
 <section>
   <h2 class="serif">Fix these first</h2>
   <p class="section-sub">Ranked by real cost_usd, never a projection. The highest-value repeats to kill first.</p>
-  <ul class="highlights"><li>1. $0.0200 for task=session-006 step=1 (llm_call/gpt-5.6): result identical; no intervening write; task terminated in failure</li><li>2. $0.0040 for task=session-001 step=2 (tool_call/web_search): result identical; no intervening write; task terminated in failure</li><li>3. $0.0040 for task=session-001 step=4 (tool_call/web_search): result identical; no intervening write; task terminated in failure</li></ul>
+  <ul class="highlights"><li>1. $0.0200 for task=A step=1 (llm_call/gpt-5.6): result identical; no intervening write; task terminated in failure</li><li>2. $0.0040 for task=B step=2 (tool_call/web_search): result identical; no intervening write; task terminated in failure</li><li>3. $0.0040 for task=B step=4 (tool_call/web_search): result identical; no intervening write; task terminated in failure</li></ul>
 </section>
 
 <section>
   <h2 class="serif">Where the spend went</h2>
-  <p class="section-sub">Cost by verdict, across the 64% of events (16 of 25) that carried a price. Select a row to open its detail.</p>
+  <p class="section-sub">Cost by bucket, across the 64% of events (16 of 25) that carried a price. Select a row to open its detail.</p>
   
-<a class="row" href="#bucket-confirmed_waste">
+<a class="row row-no-bars" href="#bucket-confirmed_waste">
   <span class="row-name">
     <span class="dot" style="background:oklch(0.55 0.15 38)"></span>
     <span class="rowname">Confirmed waste</span>
     <span class="row-count">3</span>
   </span>
-  <span class="row-track"><span class="bar rowfill" style="width:100.0%;background:oklch(0.93 0.035 38);border-left:2px solid oklch(0.55 0.15 38)"></span></span>
+  
   <span class="row-value"><span class="row-value-main">$52.50/mo</span><span class="row-value-sample">$0.0280 sample</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
-<a class="row" href="#bucket-likely_legitimate">
+<a class="row row-no-bars" href="#bucket-likely_legitimate">
   <span class="row-name">
     <span class="dot" style="background:oklch(0.55 0.13 142)"></span>
     <span class="rowname">Likely legitimate</span>
     <span class="row-count">3</span>
   </span>
-  <span class="row-track"><span class="bar rowfill" style="width:12.5%;background:oklch(0.93 0.032 142);border-left:2px solid oklch(0.55 0.13 142)"></span></span>
+  
   <span class="row-value"><span class="row-value-main">$6.56/mo</span><span class="row-value-sample">$0.0035 sample</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
-<a class="row" href="#bucket-unclassified">
+<a class="row row-no-bars" href="#bucket-unclassified">
   <span class="row-name">
     <span class="dot" style="background:oklch(0.55 0.012 80)"></span>
     <span class="rowname">Unclassified</span>
     <span class="row-count">2</span>
   </span>
-  <span class="row-track"><span class="bar rowfill" style="width:78.6%;background:oklch(0.93 0.004 80);border-left:2px solid oklch(0.55 0.012 80)"></span></span>
+  
   <span class="row-value"><span class="row-value-main">$41.25/mo</span><span class="row-value-sample">$0.0220 sample</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
-<a class="row" href="#bucket-near_duplicate">
+<a class="row row-no-bars" href="#bucket-near_duplicate">
   <span class="row-name">
     <span class="dot" style="background:oklch(0.55 0.14 258)"></span>
     <span class="rowname">Near duplicate</span>
     <span class="row-count">0</span>
   </span>
-  <span class="row-track"><span class="bar rowfill" style="width:1.5%;background:oklch(0.93 0.033 258);border-left:2px solid oklch(0.55 0.14 258)"></span></span>
+  
   <span class="row-value"><span class="row-value-main">$0.0000</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
-<a class="row" href="#bucket-cross_task_redundancy">
+<a class="row row-no-bars" href="#bucket-cross_task_redundancy">
   <span class="row-name">
-    <span class="dot" style="background:oklch(0.55 0.15 38)"></span>
+    <span class="dot" style="background:oklch(0.55 0.13 310)"></span>
     <span class="rowname">Cross-task redundancy</span>
     <span class="row-count">0</span>
   </span>
-  <span class="row-track"><span class="bar rowfill" style="width:1.5%;background:oklch(0.93 0.035 38);border-left:2px solid oklch(0.55 0.15 38)"></span></span>
+  
   <span class="row-value"><span class="row-value-main">$0.0000</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
-<a class="row" href="#bucket-recurring_pattern">
+<a class="row row-no-bars" href="#bucket-recurring_pattern">
   <span class="row-name">
-    <span class="dot" style="background:oklch(0.55 0.13 142)"></span>
+    <span class="dot" style="background:oklch(0.55 0.10 195)"></span>
     <span class="rowname">Recurring pattern</span>
     <span class="row-count">0</span>
   </span>
-  <span class="row-track"><span class="bar rowfill" style="width:1.5%;background:oklch(0.93 0.032 142);border-left:2px solid oklch(0.55 0.13 142)"></span></span>
+  
   <span class="row-value"><span class="row-value-main">$0.0000</span></span>
   <span class="rowgo">&rarr;</span>
 </a>
 </section>
 
+
 <section>
-  <h2 class="serif">The verdicts</h2>
+  <h2 class="serif">Exact repeats</h2>
+  <p class="section-sub">Byte-identical calls on the same execution path. Each one judged under the four-condition rule above.</p>
   
-<details class="bucket" id="bucket-confirmed_waste" open>
+<details class="bucket" id="bucket-confirmed_waste">
   <summary>
     <span class="bucket-head">
       <span class="chev">&#9656;</span>
@@ -340,7 +351,7 @@ a.quiet {
     
 <details class="cases">
   <summary><span class="chev2">&#9656;</span> Sample cases to spot-check by hand (3)</summary>
-  <ul class="caselist"><li class="case">task=session-001 step=2 (tool_call/web_search): result identical; no intervening write; task terminated in failure</li><li class="case">task=session-001 step=4 (tool_call/web_search): result identical; no intervening write; task terminated in failure</li><li class="case">task=session-006 step=1 (llm_call/gpt-5.6): result identical; no intervening write; task terminated in failure</li></ul>
+  <ul class="caselist"><li class="case">task=B step=2 (tool_call/web_search): result identical; no intervening write; task terminated in failure</li><li class="case">task=B step=4 (tool_call/web_search): result identical; no intervening write; task terminated in failure</li><li class="case">task=A step=1 (llm_call/gpt-5.6): result identical; no intervening write; task terminated in failure</li></ul>
 </details>
   </div>
 </details>
@@ -373,7 +384,7 @@ a.quiet {
     
 <details class="cases">
   <summary><span class="chev2">&#9656;</span> Sample cases to spot-check by hand (3)</summary>
-  <ul class="caselist"><li class="case">task=session-002 step=3 (tool_call/read_file): result changed; write intervened at step 2</li><li class="case">task=session-003 step=2 (tool_call/get_stock_price): result changed</li><li class="case">task=session-004 step=2 (tool_call/ping_endpoint): result changed</li></ul>
+  <ul class="caselist"><li class="case">task=C step=3 (tool_call/read_file): result changed; write intervened at step 2</li><li class="case">task=D step=2 (tool_call/get_stock_price): result changed</li><li class="case">task=E step=2 (tool_call/ping_endpoint): result changed</li></ul>
 </details>
   </div>
 </details>
@@ -388,7 +399,7 @@ a.quiet {
   </summary>
   <div class="bucket-body">
     <div class="rule-block">
-      
+      <p class="insight">A whole task succeeding doesn&#x27;t confirm any one repeated call inside it actually mattered: that&#x27;s a call-level question, and task-level outcome isn&#x27;t a substitute for the missing call-level answer.</p>
       <p class="rule">Everything else. A required signal (the result, the write status, or the outcome) was missing from the trace, or the call already looks wasteful on its own and the task&#x27;s overall success can&#x27;t settle whether it actually mattered. No verdict here, and that&#x27;s on purpose.</p>
       <p class="action"><span class="action-label">Action</span> Emit result hashes and task outcome, then re-run to get a verdict.</p>
     </div>
@@ -406,10 +417,16 @@ a.quiet {
     
 <details class="cases">
   <summary><span class="chev2">&#9656;</span> Sample cases to spot-check by hand (2)</summary>
-  <ul class="caselist"><li class="case">task=session-005 step=1 (tool_call/legacy_lookup): no legitimate-use signal fired, but result not observable for one or both calls; task terminal outcome not recorded</li><li class="case">task=session-007 step=1 (llm_call/gpt-5.6): no legitimate-use signal fired, but result not observable for one or both calls</li></ul>
+  <ul class="caselist"><li class="case">task=F step=1 (tool_call/legacy_lookup): no legitimate-use signal fired, but result not observable for one or both calls; task terminal outcome not recorded</li><li class="case">task=G step=1 (llm_call/gpt-5.6): no legitimate-use signal fired, but result not observable for one or both calls</li></ul>
 </details>
   </div>
 </details>
+  <p class="footnote coverage">Unclassified pairs are reported with a count and no verdict, deliberately: a confident wrong classification here is worse than an honest unknown.</p>
+</section>
+<section>
+  <h2 class="serif">Similar or related</h2>
+  <p class="section-sub">Similar-but-not-identical or cross-task matches. A resemblance claim, never a waste or legitimate verdict on its own.</p>
+  
 <details class="bucket" id="bucket-near_duplicate">
   <summary>
     <span class="bucket-head">
@@ -422,8 +439,8 @@ a.quiet {
   <div class="bucket-body">
     <div class="rule-block">
       
-      <p class="rule">Arguments are similar but not identical to an earlier call on the same execution path (a SimHash fingerprint comparison, not exact content_hash equality). Surfaced for manual review, not a waste or legitimate verdict. See docs/hashing.md for what a similarity fingerprint can and can&#x27;t support.</p>
-      <p class="action"><span class="action-label">Action</span> Nothing to do. When these appear, read them by hand.</p>
+      <p class="rule">Arguments are similar but not identical to an earlier call on the same execution path (a SimHash fingerprint comparison, not exact content_hash equality), a similarity claim only. See https://github.com/CogentWizards/redundo/blob/main/docs/hashing.md for what a similarity fingerprint can and can&#x27;t support.</p>
+      
     </div>
     
     
@@ -433,7 +450,7 @@ a.quiet {
   <summary>
     <span class="bucket-head">
       <span class="chev">&#9656;</span>
-      <span class="dot" style="background:oklch(0.55 0.15 38)"></span>
+      <span class="dot" style="background:oklch(0.55 0.13 310)"></span>
       <h3>Cross-task redundancy</h3>
       <span class="bucket-meta">0 pair(s) &middot; $0.0000</span>
     </span>
@@ -441,8 +458,8 @@ a.quiet {
   <div class="bucket-body">
     <div class="rule-block">
       
-      <p class="rule">Same or near-identical call as an earlier one in a different task, and the two tasks are confirmed related (a source-reported delegation link, never inferred from timing or content). Surfaced for review, not a waste verdict: what changed between the two calls isn&#x27;t checked here yet.</p>
-      <p class="action"><span class="action-label">Action</span> Read these by hand. A confirmed link exists between the two tasks, but not yet enough signal here to call it waste or legitimate.</p>
+      <p class="rule">Same or near-identical call as an earlier one in a different task, where the two tasks are confirmed related (a source-reported delegation link, never inferred from timing or content). What changed between the two calls isn&#x27;t checked here yet.</p>
+      
     </div>
     
     
@@ -452,7 +469,7 @@ a.quiet {
   <summary>
     <span class="bucket-head">
       <span class="chev">&#9656;</span>
-      <span class="dot" style="background:oklch(0.55 0.13 142)"></span>
+      <span class="dot" style="background:oklch(0.55 0.10 195)"></span>
       <h3>Recurring pattern</h3>
       <span class="bucket-meta">0 pair(s) &middot; $0.0000</span>
     </span>
@@ -460,14 +477,14 @@ a.quiet {
   <div class="bucket-body">
     <div class="rule-block">
       
-      <p class="rule">Same or near-identical call recurring across tasks with no confirmed relationship to each other. Not a waste or legitimate verdict, and not evidence the two tasks are related, most likely a common or generic operation, not redundant work.</p>
-      <p class="action"><span class="action-label">Action</span> Nothing to do by default. If this recurs a lot, it may be worth caching or memoizing globally, but it isn&#x27;t evidence of wasted spend on its own.</p>
+      <p class="rule">Same or near-identical call recurring across tasks with no confirmed relationship to each other, most likely a common or generic operation. Not evidence the two tasks are related.</p>
+      
     </div>
     
     
   </div>
 </details>
-  <p class="footnote coverage">Unclassified pairs are reported with a count and no verdict, deliberately: a confident wrong classification here is worse than an honest unknown.</p>
+  
 </section>
 
 
@@ -485,7 +502,7 @@ a.quiet {
     
 <details class="cases">
   <summary><span class="chev2">&#9656;</span> Sample unpriced events to spot-check by hand (9)</summary>
-  <ul class="caselist"><li class="case">task=session-001 step=1 (tool_result/web_search): no cost_usd recorded</li><li class="case">task=session-001 step=3 (tool_result/web_search): no cost_usd recorded</li><li class="case">task=session-001 step=5 (tool_result/web_search): no cost_usd recorded</li><li class="case">task=session-002 step=1 (tool_result/read_file): no cost_usd recorded</li><li class="case">task=session-002 step=4 (tool_result/read_file): no cost_usd recorded</li><li class="case">task=session-003 step=1 (tool_result/get_stock_price): no cost_usd recorded</li><li class="case">task=session-003 step=3 (tool_result/get_stock_price): no cost_usd recorded</li><li class="case">task=session-004 step=1 (tool_result/ping_endpoint): no cost_usd recorded</li><li class="case">task=session-004 step=3 (tool_result/ping_endpoint): no cost_usd recorded</li></ul>
+  <ul class="caselist"><li class="case">task=B step=1 (tool_result/web_search): no cost_usd recorded</li><li class="case">task=B step=3 (tool_result/web_search): no cost_usd recorded</li><li class="case">task=B step=5 (tool_result/web_search): no cost_usd recorded</li><li class="case">task=C step=1 (tool_result/read_file): no cost_usd recorded</li><li class="case">task=C step=4 (tool_result/read_file): no cost_usd recorded</li><li class="case">task=D step=1 (tool_result/get_stock_price): no cost_usd recorded</li><li class="case">task=D step=3 (tool_result/get_stock_price): no cost_usd recorded</li><li class="case">task=E step=1 (tool_result/ping_endpoint): no cost_usd recorded</li><li class="case">task=E step=3 (tool_result/ping_endpoint): no cost_usd recorded</li></ul>
 </details>
   </div>
 </section>
@@ -496,7 +513,7 @@ a.quiet {
 
 <footer class="page-footer">
   <div>
-    <p class="tagline">Generated with <strong>redundo</strong>. Point it at your agent's OTLP traces, get a report on what's wasted.</p>
+    <p class="tagline">Generated with <strong>redundo</strong>. Point it at your agent's OTLP traces, get a verdict on every repeated call, not a guess.</p>
     <p class="reassurance">Self-contained file. No data left your machine to produce it.</p>
   </div>
   <div class="noprint footer-links">
@@ -506,8 +523,8 @@ a.quiet {
     <a class="quiet" href="https://github.com/CogentWizards/redundo/issues">Report an issue</a>
   </div>
   <div class="footer-meta">
-    <p class="noprint"><a class="quiet" href="mailto:?subject=redundo%20waste%20report&body=Sharing%20a%20redundo%20waste-detection%20report%20%28attached%29.%0A%0Aredundo%20is%20open%20source%3A%20https%3A//github.com/CogentWizards/redundo">Share by email</a>. Attach this file, it's the whole report.</p>
-    <p class="meta">2026-09-24 18:05 UTC &middot; redundo v0.4.1</p>
+    <p class="noprint"><a class="quiet" href="mailto:?subject=redundo%20event%20analysis%20report&body=Sharing%20a%20redundo%20report%20%28attached%29.%0A%0Aredundo%20is%20open%20source%3A%20https%3A//github.com/CogentWizards/redundo">Share by email</a>. Attach this file, it's the whole report.</p>
+    <p class="meta">2026-09-24 19:42 UTC &middot; redundo v0.4.1</p>
   </div>
 </footer>
 </body>

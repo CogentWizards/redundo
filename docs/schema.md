@@ -93,14 +93,14 @@ Keys `analyze` looks for. Absence is not a claim of a default value.
   adapt` read this record's source OTLP documents from, absolute,
   resolved at conversion time. Stamped once, corpus-wide, by the `redundo
   adapt` CLI itself, not by any individual adapter. Absent for NDJSON
-  built by hand or by any path that skips the CLI. When every loaded
-  event agrees on the same value, `redundo analyze`'s report states it
-  up front ("Captured from: ...") so a reader can go find the raw
-  capture behind a specific sample case; when events disagree, nothing
-  is shown rather than guessing which one to display. A local,
-  potentially identifying path: sharing a report that carries this key
-  discloses local filesystem structure (a username in a home-directory
-  path, a project layout), same as any other locally-generated file.
+  built by hand or by any path that skips the CLI. Available on
+  `CoverageStats.source_path` (when every loaded event agrees on the same
+  value) and in `--format json` output, for a caller that wants to
+  correlate a report back to its raw capture programmatically. Never
+  rendered in the text or HTML report: it's a local, potentially
+  identifying path (a username in a home-directory path, a project
+  layout), and a report is meant to be readable, and shareable, without
+  disclosing where on disk it came from.
 
 ## Design decisions
 
@@ -202,6 +202,21 @@ separate runs of the same long-lived workflow, or separate agents
 delegated to from the same one, neither of which the first four buckets
 can see at all (they're scoped to a single task by design).
 
+These six buckets mix two different axes, and the report says so
+structurally rather than listing all six under one heading:
+`confirmed_waste`, `likely_legitimate`, and `unclassified` are verdicts,
+a judgment about whether a repeat mattered; `near_duplicate`,
+`cross_task_redundancy`, and `recurring_pattern` are match types, a
+claim about how two calls resemble each other, never a verdict on their
+own. The report renders them as two sections, "Exact repeats" (the three
+verdicts, byte-identical calls) and "Similar or related" (the three
+match-type buckets), each with its own description, so a reader never
+mistakes "four repeat pairs" for "four verdicts" when only some of them
+were byte-identical in the first place. See
+[docs/plugins.md](plugins.md) for `Bucket.group`/
+`AnalysisResult.group_descriptions`, the generic field this grouping is
+built on.
+
 The rule itself is printed next to every count in the actual report
 output, not left implicit in a label. `"42 confirmed_waste"` is a claim;
 `"42 confirmed_waste: repeated call, unchanged result, no intervening
@@ -223,7 +238,6 @@ live.
 Every report opens with a coverage line, before any bucket:
 
 ```
-Captured from: /path/to/otlp_traces
 Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analysis actually covers.
   9 event(s) had no cost_usd and are excluded from every dollar figure below. Percentages are computed on the priced subset, not your total spend.
   Cost basis: $0.1060 (100%) reported directly by the source.
@@ -232,11 +246,13 @@ Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analy
 This is measured over the *entire loaded corpus*, not just the events
 that ended up in a candidate pair. The point is telling a reader what
 fraction of their total data the numbers below are even computed on,
-before they trust or forward those numbers. "Captured from" (see
-`metadata.source_path` above) only appears when every loaded event
-agrees on the same source directory, and is what turns a sample case a
-few lines below ("task=... step=...") into something a reader can
-actually go find on disk. The cost basis line (see `metadata.cost_basis`
+before they trust or forward those numbers. When any sample case in the
+report refers to a task (`"task=... step=..."`), the report shortens the
+real task_id to a short label (`task=A`, `task=B`, ...) and prints a
+one-time legend mapping each label back to its real id, right after this
+coverage block, so a reader can still go find the raw event without
+twenty repetitions of the same UUID cluttering every reason string. The
+cost basis line (see `metadata.cost_basis`
 above) states, for the priced subset, what fraction of those dollars
 were reported directly by the source versus estimated, apportioned, or
 synthesized by an adapter, omitted only when nothing is priced at all.
@@ -248,16 +264,19 @@ fabricated "0%": silence here means "this dimension can't be spoken to
 for this data," not "everything failed."
 
 Right after the pair count, a further line states how often the trace
-actually carried enough signal to decide at all: "Verdicts reached: 75%
-(6 of 8 exact repeats got a real verdict, 2 unclassified for missing
-signal)". This is deliberately not a dollar figure. It's computed only
-over the three real `Verdict` buckets (`confirmed_waste`,
-`likely_legitimate`, `unclassified`), never the three similarity-based
-ones, and it's what the report's own top stat-grid leads with too (in
-place of pricing coverage, which stays fully available in the coverage
-paragraph above it): this number, not how much of the corpus happened to
-carry a price, is what actually distinguishes an adjudicator from a
-tracing UI. See [docs/plugins.md](plugins.md) for `AnalysisResult.confidence_stat`,
+actually carried enough signal to decide at all: "Verdicts reached: 6/8
+(75%) (exact repeats judged; 2 unclassified for missing signal)". This is
+deliberately not a dollar figure. It's computed only over the three real
+`Verdict` buckets (`confirmed_waste`, `likely_legitimate`,
+`unclassified`), never the three similarity-based ones, and it's what
+the report's own top stat-grid leads with too (in place of pricing
+coverage, which stays fully available in the coverage paragraph above
+it): this number, not how much of the corpus happened to carry a price,
+is what actually distinguishes an adjudicator from a tracing UI. The
+fraction drops its percentage below a denominator of 5 ("1/2", not "1/2
+(50%)") rather than overclaiming precision on a handful of repeats, see
+`redundo.analyzer.metrics.format_fraction`. See
+[docs/plugins.md](plugins.md) for `AnalysisResult.confidence_stat`,
 the generic, opaque-to-report.py field this is built on.
 
 A bucket's own count leads every bucket line ("3 confirmed_waste: ...")

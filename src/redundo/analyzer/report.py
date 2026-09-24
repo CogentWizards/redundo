@@ -8,6 +8,17 @@ renderers for free. A `Bucket.action_text`, when an analysis sets one, is
 the one place bucket-specific prose can reach the HTML report without
 this module knowing what it means; see analysis.py's own docstring on
 that field for why it's optional.
+
+Nothing in the document-level chrome (the h1, the footer tagline, the
+share-by-email subject/body) names "waste": `confirmed_waste` is one of
+six possible findings, earned by classify.py's own four-condition rule,
+not what the report as a whole is about. Three of the six buckets state
+in their own rule_text that they are explicitly *not* a waste verdict;
+framing the whole document around the one bucket that is would make
+those three read as the report coming up empty rather than making a
+distinct kind of finding. The headline (_headline) and bucket order
+still keep confirmed_waste first and prominent -- that's a different
+claim from naming it in the frame.
 """
 
 from __future__ import annotations
@@ -22,22 +33,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .analysis import AnalysisResult, Bucket
-from .metrics import (
-    COST_BASIS_DIRECT,
-    COST_BASIS_SYNTHESIZED,
-    UNKNOWN_MODEL_LABEL,
-    UNLABELED_WORKFLOW_LABEL,
-    CoverageStats,
-    Slice,
-)
-
-# A breakdown carrying exactly one segment, and that segment is the
-# placeholder for "no real value reported," conveys nothing a reader
-# can act on -- a single row that just says "unknown" reads as broken,
-# not informative. _breakdown_table suppresses exactly this case; a
-# breakdown with a real segment (even just one, e.g. every call used the
-# same one real model) still renders, since that IS information.
-_UNINFORMATIVE_BREAKDOWN_LABELS = frozenset({UNKNOWN_MODEL_LABEL, UNLABELED_WORKFLOW_LABEL})
+from .metrics import COST_BASIS_DIRECT, COST_BASIS_SYNTHESIZED, CoverageStats, Slice
 
 # ---------------------------------------------------------------------------
 # Cost basis
@@ -56,7 +52,7 @@ _COST_BASIS_LABELS: dict[str, str] = {
     "estimated_from_bundled_pricing_table": "estimated from a bundled pricing table",
     "apportioned_from_metrics_by_tokens": "apportioned from an aggregate metrics counter",
     "apportioned_from_metrics_equal_split": "apportioned from an aggregate metrics counter",
-    COST_BASIS_SYNTHESIZED: "synthesized from a billing-only record with no matching span",
+    COST_BASIS_SYNTHESIZED: "reconstructed from a billing record with no matching span",
 }
 
 
@@ -170,6 +166,83 @@ def _fmt_usd(value: float) -> str:
     return f"${value:,.4f}" if value < 1 else f"${value:,.2f}"
 
 
+# ---------------------------------------------------------------------------
+# Task ID legend
+#
+# A real task_id is often a raw UUID (or another source's own opaque
+# scheme), and one that repeats can appear a dozen times across a
+# report's reasons/highlights/samples -- unreadable, and nothing to
+# visually anchor on while scanning. This builds a short "task A"/"task
+# B" label per distinct task_id actually referenced in what's about to
+# be rendered (first-appearance order), and a legend maps each label
+# back to its real value once. JSON output is untouched -- a consumer
+# correlating against other systems needs the real id, not a label that
+# only means something inside this one report.
+# ---------------------------------------------------------------------------
+
+_TASK_ID_RE = re.compile(r"task=(\S+)")
+
+
+def _collect_task_ids(*string_lists: list[str]) -> list[str]:
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    for strings in string_lists:
+        for s in strings:
+            for m in _TASK_ID_RE.finditer(s):
+                tid = m.group(1)
+                if tid not in seen_set:
+                    seen_set.add(tid)
+                    seen.append(tid)
+    return seen
+
+
+def _short_label(n: int) -> str:
+    """0->A, 1->B, ..., 25->Z, 26->AA, 27->AB, ... -- spreadsheet-column
+    style, so this never runs out of labels regardless of task count.
+    """
+    n += 1
+    letters = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def _build_task_labels(result: AnalysisResult) -> dict[str, str]:
+    ids = _collect_task_ids(
+        result.highlights,
+        *result.reasons.values(),
+        result.coverage.unpriced_samples,
+        result.coverage.synthesized_cost_only_samples,
+    )
+    return {tid: _short_label(i) for i, tid in enumerate(ids)}
+
+
+def _apply_task_labels(text: str, labels: dict[str, str]) -> str:
+    if not labels:
+        return text
+    return _TASK_ID_RE.sub(lambda m: f"task={labels.get(m.group(1), m.group(1))}", text)
+
+
+def _task_legend_lines(labels: dict[str, str]) -> list[str]:
+    by_label = sorted(labels.items(), key=lambda kv: kv[1])
+    return [f"task {label} = {tid}" for tid, label in by_label]
+
+
+def _task_legend_html(labels: dict[str, str]) -> str:
+    if not labels:
+        return ""
+    items = "".join(
+        f'<li class="case">task {html.escape(label)} = {html.escape(tid)}</li>'
+        for tid, label in sorted(labels.items(), key=lambda kv: kv[1])
+    )
+    return f"""
+<details class="cases">
+  <summary><span class="chev2">&#9656;</span> Task ID legend ({len(labels)})</summary>
+  <ul class="caselist">{items}</ul>
+</details>"""
+
+
 def _bucket_priced_fraction(s: Slice) -> float | None:
     """What fraction of THIS bucket's own repeats carried a real cost_usd,
     not the corpus-wide pricing_coverage_fraction. A bucket's dollar
@@ -202,9 +275,6 @@ def _coverage_lines(coverage: CoverageStats) -> list[str]:
         return ["Coverage: no events loaded."]
 
     lines: list[str] = []
-    if coverage.source_path:
-        lines.append(f"Captured from: {coverage.source_path}")
-
     pct = coverage.pricing_coverage_fraction * 100
     lines.append(
         f"Coverage: {coverage.priced_events}/{coverage.total_events} events priced "
@@ -241,9 +311,15 @@ def to_text(
 ) -> str:
     total_calls = result.coverage.total_call_events
     any_bucket_priced = any(b.slice.cost_usd > 0 for b in result.buckets)
+    task_labels = _build_task_labels(result)
 
     lines: list[str] = []
     lines.extend(_coverage_lines(result.coverage))
+    if task_labels:
+        lines.append("")
+        lines.append("Task legend:")
+        for legend_line in _task_legend_lines(task_labels):
+            lines.append(f"  {legend_line}")
     lines.append("")
     lines.append(f"Candidate redundant-repeat pairs: {result.total_candidates}")
     if result.confidence_stat:
@@ -256,52 +332,68 @@ def to_text(
     if result.highlights:
         lines.append("Fix these first:")
         for highlight in result.highlights:
-            lines.append(f"  {highlight}")
+            lines.append(f"  {_apply_task_labels(highlight, task_labels)}")
         lines.append("")
 
-    for bucket in result.buckets:
-        s = bucket.slice
-        lines.append(f"{s.count} {bucket.key}: {bucket.rule_text}")
-        if bucket.insight_text:
-            lines.append(f"  {bucket.insight_text}")
-        lines.append(f"  cost_usd:   {s.cost_usd:.6f}" + _priced_caveat(s))
-        projected = _projected_monthly_usd(s.cost_usd, total_calls, calls_per_day=calls_per_day)
-        if projected is not None:
-            lines.append(
-                f"  at {calls_per_day:,} calls/day: ~{_fmt_usd_per_month(projected)} "
-                "projected (hypothetical, see above)"
-            )
-        lines.append(f"  tokens_in:  {s.tokens_in}")
-        lines.append(f"  tokens_out: {s.tokens_out}")
+    groups = _group_buckets(result.buckets)
+    for group_index, (group, bucket_list) in enumerate(groups):
+        if group:
+            lines.append(f"{group}:")
+            sub = result.group_descriptions.get(group, "")
+            if sub:
+                lines.append(f"  {sub}")
+            lines.append("")
 
-        by_model = result.by_bucket_and_model.get(bucket.key, {})
-        if by_model:
-            lines.append("  by model:")
-            for model, ms in sorted(by_model.items(), key=lambda kv: -kv[1].count):
-                lines.append(
-                    f"    {model}: count={ms.count} cost_usd={ms.cost_usd:.6f} "
-                    f"tokens_in={ms.tokens_in} tokens_out={ms.tokens_out}"
+        for bucket in bucket_list:
+            s = bucket.slice
+            lines.append(f"{s.count} {bucket.key}: {bucket.rule_text}")
+            if bucket.insight_text and s.count:
+                lines.append(f"  {bucket.insight_text}")
+            if any_bucket_priced:
+                lines.append(f"  cost_usd:   {s.cost_usd:.6f}" + _priced_caveat(s))
+                projected = _projected_monthly_usd(
+                    s.cost_usd, total_calls, calls_per_day=calls_per_day
                 )
+                if projected is not None:
+                    lines.append(
+                        f"  at {calls_per_day:,} calls/day: ~{_fmt_usd_per_month(projected)} "
+                        "projected (hypothetical, see above)"
+                    )
+            lines.append(f"  tokens_in:  {s.tokens_in}")
+            lines.append(f"  tokens_out: {s.tokens_out}")
 
-        by_workflow = result.by_bucket_and_workflow.get(bucket.key, {})
-        if by_workflow:
-            lines.append("  by workflow:")
-            for wf, ws in sorted(by_workflow.items(), key=lambda kv: -kv[1].count):
-                lines.append(
-                    f"    {wf}: count={ws.count} cost_usd={ws.cost_usd:.6f} "
-                    f"tokens_in={ws.tokens_in} tokens_out={ws.tokens_out}"
-                )
+            by_model = result.by_bucket_and_model.get(bucket.key, {})
+            if by_model:
+                lines.append("  by model:")
+                for model, ms in sorted(by_model.items(), key=lambda kv: -kv[1].count):
+                    lines.append(
+                        f"    {model}: count={ms.count} cost_usd={ms.cost_usd:.6f} "
+                        f"tokens_in={ms.tokens_in} tokens_out={ms.tokens_out}"
+                    )
 
-        reasons = result.reasons.get(bucket.key, [])[:max_reasons]
-        if reasons:
-            lines.append("  sample cases (spot-check these by hand):")
-            for reason in reasons:
-                lines.append(f"    - {reason}")
+            by_workflow = result.by_bucket_and_workflow.get(bucket.key, {})
+            if by_workflow:
+                lines.append("  by workflow:")
+                for wf, ws in sorted(by_workflow.items(), key=lambda kv: -kv[1].count):
+                    lines.append(
+                        f"    {wf}: count={ws.count} cost_usd={ws.cost_usd:.6f} "
+                        f"tokens_in={ws.tokens_in} tokens_out={ws.tokens_out}"
+                    )
 
-        lines.append("")
+            reasons = result.reasons.get(bucket.key, [])[:max_reasons]
+            if reasons:
+                lines.append("  sample cases (spot-check these by hand):")
+                for reason in reasons:
+                    lines.append(f"    - {_apply_task_labels(reason, task_labels)}")
 
-    if result.footnote:
-        lines.append(result.footnote)
+            lines.append("")
+
+        # Goes with the FIRST group, same reasoning as the HTML renderer:
+        # for WasteAnalysis this is about unclassified specifically,
+        # which lives in "Exact repeats" (deliberately ordered first).
+        if group_index == 0 and result.footnote:
+            lines.append(result.footnote)
+            lines.append("")
 
     if result.coverage.synthesized_cost_only_events:
         lines.append("")
@@ -310,12 +402,12 @@ def to_text(
             f"  {result.coverage.synthesized_cost_only_events} event(s) "
             f"({_fmt_usd(result.coverage.synthesized_cost_only_usd)}) have real "
             "cost_usd but no matching span at all: billing-only records, "
-            "synthesized so this spend isn't silently missing from the totals "
+            "reconstructed so this spend isn't silently missing from the totals "
             "above. None of them can appear in any bucket, they have no content "
             "and no repeat to classify."
         )
         for sample in result.coverage.synthesized_cost_only_samples:
-            lines.append(f"    - {sample}")
+            lines.append(f"    - {_apply_task_labels(sample, task_labels)}")
 
     return "\n".join(lines)
 
@@ -355,14 +447,26 @@ def to_text(
 # no <script> tag, anywhere in this file.
 # ---------------------------------------------------------------------------
 
-# (accent, accent-fill-light, accent-fill-dark): oklch, cycled by bucket
-# POSITION the same way the old hex _PALETTE was. accent-fill is the bar's
-# own background tint; accent is its border/dot/text color.
+# (accent, accent-fill-light, accent-fill-dark): oklch, by bucket
+# POSITION. accent-fill is the bar's own background tint; accent is its
+# border/dot/text color.
+#
+# Six distinct hues, not four cycled -- WasteAnalysis's six buckets used
+# to wrap a 4-color palette at position 4, which put cross_task_redundancy
+# in the same red as confirmed_waste and recurring_pattern in the same
+# green as likely_legitimate: two buckets whose own rule_text says "not a
+# waste or legitimate verdict" rendered in exactly the colors that mean
+# "waste verdict" and "legitimate verdict." Verdict buckets (positions
+# 0-2: red/green/gray) and match-type buckets (positions 3-5: blue/
+# violet/teal) are deliberately drawn from different hue families so a
+# reader never mistakes a resemblance claim for a judgment by color alone.
 _PALETTE: tuple[tuple[str, str, str], ...] = (
-    ("oklch(0.55 0.15 38)", "oklch(0.93 0.035 38)", "oklch(0.32 0.055 38)"),
-    ("oklch(0.55 0.13 142)", "oklch(0.93 0.032 142)", "oklch(0.32 0.05 142)"),
-    ("oklch(0.55 0.012 80)", "oklch(0.93 0.004 80)", "oklch(0.30 0.006 80)"),
-    ("oklch(0.55 0.14 258)", "oklch(0.93 0.033 258)", "oklch(0.32 0.05 258)"),
+    ("oklch(0.55 0.15 38)", "oklch(0.93 0.035 38)", "oklch(0.32 0.055 38)"),   # red: confirmed_waste
+    ("oklch(0.55 0.13 142)", "oklch(0.93 0.032 142)", "oklch(0.32 0.05 142)"), # green: likely_legitimate
+    ("oklch(0.55 0.012 80)", "oklch(0.93 0.004 80)", "oklch(0.30 0.006 80)"),  # gray: unclassified
+    ("oklch(0.55 0.14 258)", "oklch(0.93 0.033 258)", "oklch(0.32 0.05 258)"), # blue: near_duplicate
+    ("oklch(0.55 0.13 310)", "oklch(0.93 0.032 310)", "oklch(0.32 0.05 310)"), # violet: cross_task_redundancy
+    ("oklch(0.55 0.10 195)", "oklch(0.93 0.028 195)", "oklch(0.32 0.04 195)"), # teal: recurring_pattern
 )
 
 _REPO_URL = "https://github.com/CogentWizards/redundo"
@@ -427,9 +531,13 @@ def _installed_version() -> str:
 
 
 def _mailto_share_href() -> str:
-    subject = "redundo waste report"
+    # Deliberately not "waste report"/"waste-detection report": confirmed
+    # waste is one of six possible verdicts this report can reach, not
+    # what the report as a whole is about -- see the module-level note
+    # on why "waste" doesn't frame the whole document.
+    subject = "redundo event analysis report"
     body = (
-        "Sharing a redundo waste-detection report (attached).\n\n"
+        "Sharing a redundo report (attached).\n\n"
         f"redundo is open source: {_REPO_URL}"
     )
     return f"mailto:?subject={quote(subject)}&body={quote(body)}"
@@ -445,12 +553,43 @@ def _number_word(n: int) -> str:
     return f"{n:,}"
 
 
+def _group_buckets(buckets: list[Bucket]) -> list[tuple[str | None, list[Bucket]]]:
+    """Buckets in original order, chunked by consecutive Bucket.group
+    value (first-seen order, not sorted -- an analysis is expected to
+    already emit same-group buckets consecutively, same as WasteAnalysis
+    does). A bucket with group=None never merges with a named group on
+    either side, so an analysis that never sets .group renders as one
+    single implicit group, unchanged from before this field existed.
+    """
+    groups: list[tuple[str | None, list[Bucket]]] = []
+    for b in buckets:
+        if groups and groups[-1][0] == b.group:
+            groups[-1][1].append(b)
+        else:
+            groups.append((b.group, [b]))
+    return groups
+
+
+def _named_group_totals(buckets: list[Bucket]) -> list[tuple[str, int]]:
+    """(group label, total count) for each *named* group, in first-seen
+    order. Buckets with group=None contribute nothing here -- there's no
+    group name to attach their count to.
+    """
+    return [
+        (group, sum(b.slice.count for b in bs))
+        for group, bs in _group_buckets(buckets)
+        if group is not None
+    ]
+
+
 def _headline(result: AnalysisResult) -> tuple[str, str]:
-    """The report's opening sentence: how many pairs were evaluated, and
-    how many landed in the analysis's own most prominent bucket (position 0
-    in result.buckets: the analysis orders its own buckets, this renderer
-    just trusts that order, same as everywhere else it uses bucket
-    position). Returns (eyebrow, headline).
+    """The report's opening sentence: how many repeat patterns were found
+    in total, and, when the analysis distinguishes groups (see
+    Bucket.group), how they split across them. Returns (eyebrow,
+    headline). Deliberately never names or counts any one specific
+    bucket: the six-buckets-under-one-frame problem this fixes is exactly
+    that naming the loudest bucket here made the whole report read as
+    being about that one finding.
 
     The eyebrow is always the generic "Event analysis", not
     result.analysis_name ("waste"): the bucket labels and the headline
@@ -461,13 +600,18 @@ def _headline(result: AnalysisResult) -> tuple[str, str]:
     total = result.total_candidates
     if total == 0 or not result.buckets:
         return eyebrow, "No repeated calls found."
-    top = result.buckets[0]
     noun = "pair" if total == 1 else "pairs"
-    verb = "was" if top.slice.count == 1 else "were"
-    headline = (
-        f"{_number_word(total).capitalize()} repeat {noun}. "
-        f"{_number_word(top.slice.count).capitalize()} {verb} {html.escape(top.label.lower())}."
-    )
+    headline = f"{_number_word(total).capitalize()} repeat {noun}."
+
+    group_totals = _named_group_totals(result.buckets)
+    if len(group_totals) >= 2:
+        clauses = []
+        for i, (group, count) in enumerate(group_totals):
+            verb = "was" if count == 1 else "were"
+            number = _number_word(count)
+            number = number.capitalize() if i == 0 else number
+            clauses.append(f"{number} {verb} {html.escape(group.lower())}")
+        headline += " " + "; ".join(clauses) + "."
     return eyebrow, headline
 
 
@@ -476,9 +620,6 @@ def _coverage_html(coverage: CoverageStats) -> str:
         return "<p>Coverage: no events loaded.</p>"
 
     parts: list[str] = []
-    if coverage.source_path:
-        parts.append(f"<p>Captured from <code>{html.escape(coverage.source_path)}</code>.</p>")
-
     pct = coverage.pricing_coverage_fraction * 100
     parts.append(
         f"<p>{coverage.priced_events} of {coverage.total_events} events carried a price "
@@ -523,6 +664,12 @@ def _spend_rows(buckets: list[Bucket], *, total_call_events: int, calls_per_day:
     use_cost = any(b.slice.cost_usd > 0 for b in buckets)
     values = [b.slice.cost_usd if use_cost else b.slice.count for b in buckets]
     max_value = max(values) or 1
+    # Below this, every bucket is 0, 1, or 2 of whatever's being measured,
+    # and normalizing to that small a max makes a single-item bucket
+    # render at width:100% -- indistinguishable from genuine saturation.
+    # A bar needs real dynamic range to say anything; below it, the plain
+    # count/value text already says the whole story.
+    show_bars = max_value >= 3
 
     rows = []
     for i, bucket in enumerate(buckets):
@@ -541,14 +688,20 @@ def _spend_rows(buckets: list[Bucket], *, total_call_events: int, calls_per_day:
         else:
             value_html = f'<span class="row-value-main">{bucket.slice.count} pair(s)</span>'
         anchor = html.escape(f"#bucket-{bucket.key}", quote=True)
+        track_html = (
+            f'<span class="row-track"><span class="bar rowfill" '
+            f'style="width:{pct:.1f}%;background:{fill};border-left:2px solid {accent}"></span></span>'
+            if show_bars else ""
+        )
+        row_class = "row" if show_bars else "row row-no-bars"
         rows.append(f"""
-<a class="row" href="{anchor}">
+<a class="{row_class}" href="{anchor}">
   <span class="row-name">
     <span class="dot" style="background:{accent}"></span>
     <span class="rowname">{html.escape(bucket.label)}</span>
     <span class="row-count">{bucket.slice.count}</span>
   </span>
-  <span class="row-track"><span class="bar rowfill" style="width:{pct:.1f}%;background:{fill};border-left:2px solid {accent}"></span></span>
+  {track_html}
   <span class="row-value">{value_html}</span>
   <span class="rowgo">&rarr;</span>
 </a>""")
@@ -557,8 +710,6 @@ def _spend_rows(buckets: list[Bucket], *, total_call_events: int, calls_per_day:
 
 def _breakdown_table(title: str, rows: dict[str, Slice]) -> str:
     if not rows:
-        return ""
-    if len(rows) == 1 and next(iter(rows)) in _UNINFORMATIVE_BREAKDOWN_LABELS:
         return ""
     body = "".join(
         f'<tr><td class="rowkey">{html.escape(key)}</td><td class="num">{s.count}</td>'
@@ -621,30 +772,41 @@ def _bucket_section(
     max_reasons: int,
     total_call_events: int,
     calls_per_day: int,
+    any_priced: bool,
+    task_labels: dict[str, str],
 ) -> str:
     by_model = result.by_bucket_and_model.get(bucket.key, {})
     by_workflow = result.by_bucket_and_workflow.get(bucket.key, {})
-    reasons = result.reasons.get(bucket.key, [])[:max_reasons]
+    reasons = [
+        _apply_task_labels(r, task_labels)
+        for r in result.reasons.get(bucket.key, [])[:max_reasons]
+    ]
     accent, *_ = _palette_for(index)
+    empty = bucket.slice.count == 0
 
     reasons_html = _sample_cases_html(reasons)
 
+    # An action or insight line reads as "here's what this bucket found"
+    # -- showing either one on a bucket with zero pairs claims a finding
+    # that doesn't exist (an empty confirmed_waste bucket displaying
+    # "your agent was stuck" when nothing repeated at all).
     action_html = ""
-    if bucket.action_text:
+    if bucket.action_text and not empty:
         action_html = (
             f'<p class="action"><span class="action-label">Action</span> '
             f'{html.escape(bucket.action_text)}</p>'
         )
 
     insight_html = ""
-    if bucket.insight_text:
+    if bucket.insight_text and not empty:
         insight_html = f'<p class="insight">{html.escape(bucket.insight_text)}</p>'
 
     tabs_html = _breakdown_tabs(bucket.key, by_model, by_workflow)
-    open_attr = " open" if index == 0 else ""
     safe_id = html.escape(f"bucket-{bucket.key}", quote=True)
 
-    if bucket.slice.cost_usd > 0:
+    if not any_priced:
+        meta_value = ""
+    elif bucket.slice.cost_usd > 0:
         frac = _bucket_priced_fraction(bucket.slice)
         caveat = f" ({frac * 100:.0f}% priced)" if frac is not None and frac < 1 else ""
         meta_parts = [f"{html.escape(_fmt_usd(bucket.slice.cost_usd))} in this sample{caveat}"]
@@ -656,15 +818,16 @@ def _bucket_section(
         meta_value = " &middot; ".join(meta_parts)
     else:
         meta_value = html.escape(_fmt_usd(bucket.slice.cost_usd))
+    meta = f"{bucket.slice.count} pair(s)" + (f" &middot; {meta_value}" if meta_value else "")
 
     return f"""
-<details class="bucket" id="{safe_id}"{open_attr}>
+<details class="bucket" id="{safe_id}">
   <summary>
     <span class="bucket-head">
       <span class="chev">&#9656;</span>
       <span class="dot" style="background:{accent}"></span>
       <h3>{html.escape(bucket.label)}</h3>
-      <span class="bucket-meta">{bucket.slice.count} pair(s) &middot; {meta_value}</span>
+      <span class="bucket-meta">{meta}</span>
     </span>
   </summary>
   <div class="bucket-body">
@@ -677,6 +840,67 @@ def _bucket_section(
     {reasons_html}
   </div>
 </details>"""
+
+
+def _grouped_bucket_sections(
+    result: AnalysisResult,
+    *,
+    max_reasons: int,
+    total_call_events: int,
+    calls_per_day: int,
+    any_priced: bool,
+    task_labels: dict[str, str],
+) -> str:
+    """One <section> per distinct Bucket.group (see _group_buckets), each
+    with its own heading and, when the analysis provided one, its own
+    subheading from AnalysisResult.group_descriptions. Six buckets
+    answering two different questions (did this repeat get a verdict,
+    versus does this repeat merely resemble something) used to render
+    under one flat "The verdicts" heading, which implied all six were the
+    same kind of finding on one axis. An analysis that never sets .group
+    still renders as a single section titled "The verdicts", unchanged
+    from before this existed.
+
+    The footnote is appended inside the FIRST section, not the last, and
+    not given its own wrapper: for WasteAnalysis it's specifically about
+    unclassified, which lives in "Exact repeats" (deliberately ordered
+    first). An analysis with only one implicit group has the same
+    section either way.
+    """
+    groups = _group_buckets(result.buckets)
+    footnote_html = (
+        f'<p class="footnote coverage">{html.escape(result.footnote)}</p>'
+        if result.footnote else ""
+    )
+
+    section_htmls = []
+    bucket_index = 0
+    for i, (group, bucket_list) in enumerate(groups):
+        title = html.escape(group) if group else "The verdicts"
+        sub = result.group_descriptions.get(group, "") if group else ""
+        sub_html = f'<p class="section-sub">{html.escape(sub)}</p>' if sub else ""
+        bodies = []
+        for b in bucket_list:
+            bodies.append(_bucket_section(
+                result, b, index=bucket_index, max_reasons=max_reasons,
+                total_call_events=total_call_events, calls_per_day=calls_per_day,
+                any_priced=any_priced, task_labels=task_labels,
+            ))
+            bucket_index += 1
+        # The footnote goes with the FIRST group, not the last: for
+        # WasteAnalysis it's about unclassified specifically, which lives
+        # in "Exact repeats" (deliberately ordered first -- see
+        # _VERDICT_GROUP). An analysis that doesn't group at all has one
+        # group total, so "first" and "last" are the same thing there.
+        trailing = footnote_html if i == 0 else ""
+        section_htmls.append(f"""
+<section>
+  <h2 class="serif">{title}</h2>
+  {sub_html}
+  {"".join(bodies)}
+  {trailing}
+</section>""")
+    return "".join(section_htmls)
 
 
 def _header_html() -> str:
@@ -712,7 +936,7 @@ def _footer_html() -> str:
     return f"""
 <footer class="page-footer">
   <div>
-    <p class="tagline">Generated with <strong>redundo</strong>. Point it at your agent's OTLP traces, get a report on what's wasted.</p>
+    <p class="tagline">Generated with <strong>redundo</strong>. Point it at your agent's OTLP traces, get a verdict on every repeated call, not a guess.</p>
     <p class="reassurance">Self-contained file. No data left your machine to produce it.</p>
   </div>
   <div class="noprint footer-links">
@@ -817,6 +1041,10 @@ h2 .info {{ margin-left: 4px; }}
   display: grid; grid-template-columns: minmax(140px, 1.1fr) minmax(0, 3fr) 112px 18px; align-items: center; gap: 18px;
   padding: 15px 0; border-top: 1px solid var(--hair); text-decoration: none; color: inherit;
 }}
+/* No bar column at all when every bucket's max is too small for a bar
+   to mean anything (see show_bars in _spend_rows) -- the name column
+   takes the space the bar would have used instead of leaving it blank. */
+.row-no-bars {{ grid-template-columns: minmax(140px, 3fr) 112px 18px; }}
 .row:last-child {{ border-bottom: 1px solid var(--hair); }}
 .row-name {{ display: flex; align-items: center; gap: 10px; min-width: 0; }}
 .dot {{ width: 7px; height: 7px; border-radius: 50%; flex: none; }}
@@ -843,6 +1071,7 @@ h2 .info {{ margin-left: 4px; }}
   .row-name {{ grid-area: name; }}
   .row-value {{ grid-area: value; }}
   .row-track {{ grid-area: bar; }}
+  .row-no-bars {{ grid-template-areas: "name value"; }}
   .rowgo {{ display: none; }}
 }}
 /* buckets */
@@ -942,21 +1171,17 @@ a.quiet {{
   {projection_caption}
 </section>
 
-<section class="coverage">{coverage}</section>
+<section class="coverage">{coverage}{legend}</section>
 
 {highlights_section}
 
 <section>
-  <h2 class="serif">Where the spend went</h2>
+  <h2 class="serif">{spend_section_title}</h2>
   <p class="section-sub">{spend_section_sub}</p>
   {rows}
 </section>
 
-<section>
-  <h2 class="serif">The verdicts</h2>
-  {sections}
-  <p class="footnote coverage">{footnote}</p>
-</section>
+{sections}
 
 {unpriced_section}
 
@@ -1000,7 +1225,7 @@ _UNTRACEABLE_SPEND_SECTION_TEMPLATE = """
     <div class="stat"><p class="stat-label">Spend</p><p class="stat-value serif">{cost}</p></div>
   </div>
   <div class="rule-block">
-    <p class="rule">A billing-only record: <code>cost_usd</code> is real, but there was no span to attach it to, so it was synthesized rather than silently dropped. Already included in the totals above. It can never appear in a bucket, it has no content and no repeat to classify.</p>
+    <p class="rule">A billing-only record: <code>cost_usd</code> is real, but there was no span to attach it to, so it was reconstructed rather than silently dropped. Already included in the totals above. It can never appear in a bucket, it has no content and no repeat to classify.</p>
     {samples}
   </div>
 </section>"""
@@ -1037,15 +1262,15 @@ def to_html(
     interactivity; there is no <script> tag anywhere in the output.
     """
     total_calls = result.coverage.total_call_events
+    any_bucket_priced = any(b.slice.cost_usd > 0 for b in result.buckets)
+    task_labels = _build_task_labels(result)
     eyebrow, headline = _headline(result)
     coverage_html = _coverage_html(result.coverage)
+    legend_html = _task_legend_html(task_labels)
     rows = _spend_rows(result.buckets, total_call_events=total_calls, calls_per_day=calls_per_day)
-    sections = "".join(
-        _bucket_section(
-            result, b, index=i, max_reasons=max_reasons,
-            total_call_events=total_calls, calls_per_day=calls_per_day,
-        )
-        for i, b in enumerate(result.buckets)
+    sections = _grouped_bucket_sections(
+        result, max_reasons=max_reasons, total_call_events=total_calls,
+        calls_per_day=calls_per_day, any_priced=any_bucket_priced, task_labels=task_labels,
     )
 
     # The count is the direct, unimpeachable observation; a dollar figure
@@ -1099,7 +1324,6 @@ def to_html(
         third_cell,
     ])
 
-    any_bucket_priced = any(b.slice.cost_usd > 0 for b in result.buckets)
     projection_caption = (
         f'<p class="projection-caption">{html.escape(_projection_caption(calls_per_day))}</p>'
         if any_bucket_priced and total_calls > 0 else ""
@@ -1107,16 +1331,31 @@ def to_html(
 
     highlights_section = ""
     if result.highlights:
-        items_html = "".join(f"<li>{html.escape(h)}</li>" for h in result.highlights)
+        items_html = "".join(
+            f"<li>{html.escape(_apply_task_labels(h, task_labels))}</li>"
+            for h in result.highlights
+        )
         highlights_section = _HIGHLIGHTS_SECTION_TEMPLATE.format(items=items_html)
 
     cov = result.coverage
-    if cov.total_events == 0:
-        spend_section_sub = "Cost by verdict."
+    if not any_bucket_priced:
+        # Every classified pair in this run happened to be unpriced (an
+        # unpriced tool call, most commonly) -- "cost by verdict" would
+        # promise a dollar breakdown that doesn't exist. Pair counts
+        # instead, honestly.
+        spend_section_title = "Where the repeats landed"
+        spend_section_sub = (
+            "Pair counts by bucket. No bucket in this run carried a price. "
+            "Select a row to open its detail."
+        )
+    elif cov.total_events == 0:
+        spend_section_title = "Where the spend went"
+        spend_section_sub = "Cost by bucket."
     else:
+        spend_section_title = "Where the spend went"
         pct = cov.pricing_coverage_fraction * 100
         spend_section_sub = html.escape(
-            f"Cost by verdict, across the {pct:.0f}% of events "
+            f"Cost by bucket, across the {pct:.0f}% of events "
             f"({cov.priced_events} of {cov.total_events}) that carried a price. "
             "Select a row to open its detail."
         )
@@ -1124,7 +1363,8 @@ def to_html(
     unpriced_section = ""
     if result.coverage.unpriced_events:
         unpriced_samples_html = _sample_cases_html(
-            result.coverage.unpriced_samples[:max_reasons],
+            [_apply_task_labels(s, task_labels)
+             for s in result.coverage.unpriced_samples[:max_reasons]],
             label="Sample unpriced events to spot-check by hand",
         )
         unpriced_section = _UNPRICED_SECTION_TEMPLATE.format(
@@ -1137,7 +1377,8 @@ def to_html(
     untraceable_spend_section = ""
     if result.coverage.synthesized_cost_only_events:
         untraceable_samples_html = _sample_cases_html(
-            result.coverage.synthesized_cost_only_samples[:max_reasons],
+            [_apply_task_labels(s, task_labels)
+             for s in result.coverage.synthesized_cost_only_samples[:max_reasons]],
             label="Sample billing-only records to spot-check by hand",
         )
         untraceable_spend_section = _UNTRACEABLE_SPEND_SECTION_TEMPLATE.format(
@@ -1154,11 +1395,12 @@ def to_html(
         stats=stats,
         projection_caption=projection_caption,
         coverage=coverage_html,
+        legend=legend_html,
         highlights_section=highlights_section,
+        spend_section_title=spend_section_title,
         spend_section_sub=spend_section_sub,
         rows=rows,
         sections=sections,
-        footnote=html.escape(result.footnote or ""),
         unpriced_section=unpriced_section,
         untraceable_spend_section=untraceable_spend_section,
     )

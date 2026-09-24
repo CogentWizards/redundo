@@ -232,19 +232,25 @@ Coverage: 16/25 events priced (64%). $0.1060 of tracked spend is what this analy
   Cost basis: $0.1060 (100%) reported directly by the source.
 
 Candidate redundant-repeat pairs: 8
-Verdicts reached: 75% (6 of 8 exact repeats got a real verdict · 2 unclassified for missing signal)
+Verdicts reached: 6/8 (75%) (exact repeats judged; 2 unclassified for missing signal)
 
 Fix these first:
-  1. $0.0200 for task=session-006 step=1 (llm_call/gpt-5.6): result identical; no intervening write; task terminated in failure
+  1. $0.0200 for task=A step=1 (llm_call/gpt-5.6): result identical; no intervening write; task terminated in failure
 
+Exact repeats:
 3 confirmed_waste: repeated call, unchanged result, no intervening write, task failed
   Your agent repeated itself, learned nothing new, and still failed: these are the places it was stuck, not working.
   at 1,000 calls/day: ~$52.50/mo projected
 3 likely_legitimate: result changed, or a write intervened
 2 unclassified: a required signal was missing from the trace, no verdict, on purpose
+
+Similar or related:
 0 near_duplicate / 0 cross_task_redundancy / 0 recurring_pattern
 ```
 
+`task=A` is a short label, not a rename: the report prints a legend
+mapping it back to the real task id once, right after the coverage
+block, so a reader doesn't scroll past the same UUID a dozen times.
 Every count above traces back to a real, checkable case in
 [`examples/demo_trace.jsonl`](https://github.com/CogentWizards/redundo/blob/main/examples/demo_trace.jsonl). Full report:
 [`examples/demo_report.html`](https://github.com/CogentWizards/redundo/blob/main/examples/demo_report.html). Three live,

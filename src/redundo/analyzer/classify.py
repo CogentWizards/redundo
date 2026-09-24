@@ -153,7 +153,7 @@ def classify_pair(pair: CandidatePair, lineage: TaskLineage) -> Classification:
         # information.
         reason = (
             f"{result_note}; {write_note}; task succeeded, but that doesn't confirm "
-            "this specific repeated call contributed -- task-level outcome isn't a "
+            "this specific repeated call contributed: task-level outcome isn't a "
             "substitute for the missing call-level answer"
         )
     else:

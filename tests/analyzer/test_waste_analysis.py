@@ -324,7 +324,7 @@ def test_cross_task_coverage_notes_are_separate_and_silent_when_absent():
 
 # --- insight_text -----------------------------------------------------------
 
-def test_only_confirmed_waste_gets_an_insight_text():
+def test_confirmed_waste_and_unclassified_get_insight_text_not_likely_legitimate():
     events = [
         make_event(0, event_type="tool_call"),
         make_event(1, event_type="tool_result", content_hash="same"),
@@ -335,7 +335,8 @@ def test_only_confirmed_waste_gets_an_insight_text():
     assert bucket(result, "confirmed_waste").insight_text is not None
     assert "stuck, not working" in bucket(result, "confirmed_waste").insight_text
     assert bucket(result, "likely_legitimate").insight_text is None
-    assert bucket(result, "unclassified").insight_text is None
+    assert bucket(result, "unclassified").insight_text is not None
+    assert "call-level answer" in bucket(result, "unclassified").insight_text
 
 
 # --- highlights ---------------------------------------------------------------
@@ -425,8 +426,10 @@ def test_confidence_stat_computed_over_the_three_verdict_buckets_only():
     assert bucket(result, "unclassified").slice.count == 1
     label, value, sub = result.confidence_stat
     assert label == "Verdicts reached"
-    assert value == "50%"
-    assert "1 of 2 exact repeats got a real verdict" in sub
+    # n=2 is below the percent-display threshold: a bare fraction, not a
+    # percentage that overclaims precision on two data points.
+    assert value == "1/2"
+    assert "exact repeats judged" in sub
     assert "1 unclassified" in sub
 
 
