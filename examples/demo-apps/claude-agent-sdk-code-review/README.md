@@ -14,22 +14,36 @@ First run sets up a local venv with the Claude Agent SDK (`pip install
 claude-agent-sdk`); needs `claude` on your `PATH` and you logged in
 already. Takes a couple of minutes end to end.
 
+## The finding that actually matters here
+
+Session A below does something almost any "agent waste" tool would flag
+without a second thought: it repeats a failing check verbatim and stops.
+redundo doesn't flag it as `confirmed_waste`. Not because it missed the
+repeat, it sees the repeat clearly: identical arguments, identical
+result, nothing written in between. It holds back because Claude Code's
+own telemetry has no way to say "the task itself failed," only "the API
+call succeeded," and redundo refuses to promote a human's confident read
+of the transcript into a verdict the trace itself can't support. See
+[docs/schema.md](https://github.com/CogentWizards/redundo/blob/main/docs/schema.md#the-six-buckets)
+for why `unclassified` is a real answer here, not a gap in this tool.
+
+That's the actual pitch, spelled out in the main README's [Not a tracing
+platform](https://github.com/CogentWizards/redundo/blob/main/README.md#not-a-tracing-platform)
+section: a tracing UI would show you this exact repeat and let you draw
+whatever conclusion you want from it. redundo adjudicates under a stated
+evidence rule instead, and says so plainly when the rule can't be met.
+Nobody else ships that abstention. This run is a live, unscripted example
+of it holding the line, not a best-case demo picked to make the tool look
+good.
+
 ## What it does
 
 **Session A** investigates a real failing test, then deliberately
 re-runs the exact same check once more before stopping, without fixing
 anything: identical arguments, identical (failing) result, nothing
-written in between. A human skimming this transcript would call it
-`confirmed_waste` without a second thought. On real captured data it
-lands in `unclassified` instead, and that's deliberate, not a bug in the
-demo: redundo requires the *trace itself* to confirm the task ended in
-failure, not just the call-level repeat, and the session's last recorded
-event is Claude's own closing message, which succeeds as an API call
-regardless of what it says. redundo won't borrow "a human would call
-this waste" to fill that gap; see the `unclassified` reason string this
-run prints for the exact signal that's missing. That refusal to guess is
-the entire point of the tool, and this is a real, unforced example of it
-holding the line.
+written in between. On real captured data this lands in `unclassified`,
+for the reason above; see the `unclassified` reason string this run
+prints for the exact signal that's missing.
 
 **Session B** investigates the same failure, researches the correct fix
 online (twice, rephrased slightly the second time), fixes the bug, and
@@ -60,6 +74,13 @@ redundo itself, now merged: the `claude-code` adapter never populated
 source at all), and a task's synthesized cost-only record (Claude Code's
 own session-title-generation call) was silently blanking out
 `terminal_outcome` on every real capture that had one. Both are fixed.
-What's still an open, tracked limitation is the deeper reason Session A
-lands in `unclassified`: see the follow-up task on preserving a tool
-call's real outcome even when its content can't be captured.
+
+What's left, and won't be "fixed" the same way: a Claude Code session's
+last recorded event is always the model's own closing reply, an API call
+that succeeds regardless of what it says, so `terminal_outcome` (see
+[docs/schema.md](https://github.com/CogentWizards/redundo/blob/main/docs/schema.md#design-decisions))
+can never read "failure" for a normal session. That's a structural
+property of Claude Code's own telemetry, confirmed independently on a
+second, unrelated source (see the `openclaw-daily-briefing` demo's own
+README), not a bug redundo can patch without inventing a signal the
+trace doesn't actually provide.

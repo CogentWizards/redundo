@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the Hermes research-assistant demo end to end: starts a local OTLP
 # receiver (hermes-otel's own config, ~/.hermes/hermes_otel.yaml, points at
-# a fixed http://localhost:4318/v1/traces -- no per-run override, so this
+# a fixed http://localhost:4318/v1/traces, no per-run override, so this
 # script owns that port for the duration of the run), drives two real
 # `hermes` conversations, converts and analyzes what got captured, and
 # prints the report plus where to find the full HTML version.
@@ -21,7 +21,7 @@ echo "Working directory: $WORK_DIR"
 
 cleanup() {
   # `uv run` doesn't reliably forward SIGTERM to the actual `redundo
-  # collect` child process it spawns -- killing just $COLLECT_PID (the
+  # collect` child process it spawns. Killing just $COLLECT_PID (the
   # `uv run` wrapper) can leave the real collector running and holding
   # the port, orphaned, for every later run to trip over. Match on the
   # trace dir, which is unique per run, to find and kill the real

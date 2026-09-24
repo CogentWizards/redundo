@@ -1,5 +1,5 @@
 """A tiny "daily briefing assistant" built on OpenClaw and our own
-openclaw-localtrace plugin -- the redundo demo app for the
+openclaw-localtrace plugin, the redundo demo app for the
 openclaw-localtrace adapter. Drives two real conversations against a
 real, running OpenClaw Gateway (one `openclaw agent` CLI invocation per
 turn, --session-key keeping each conversation's turns in one session),
@@ -7,7 +7,7 @@ and prints each turn's reply as it comes back.
 
 Session A asks for a quick tech-news search, gets a generic,
 unhelpful result, and re-runs the *exact same* search once more before
-giving up -- a repeated, identical tool call with nothing written in
+giving up: a repeated, identical tool call with nothing written in
 between. On real data this lands in `unclassified`, not
 `confirmed_waste`, for the same reason Session A does in the
 claude-agent-sdk-code-review demo: the task's last recorded event is the
@@ -17,10 +17,10 @@ even though a human would call the repeat pointless. See that demo's
 README for the fuller explanation; it's the same limitation, confirmed a
 second time against a different real source.
 
-Session B searches, saves the result to a file (a real write --
+Session B searches, saves the result to a file (a real write,
 `write_file` is one of openclaw-localtrace's default `mutatingToolNames`),
 then re-runs the *exact same* search again to double check before
-sending -- a real write-then-recheck loop, `likely_legitimate` regardless
+sending, a real write-then-recheck loop, `likely_legitimate` regardless
 of whether the search results themselves happened to change. Two more
 searches, each rephrased to look at the story from a different angle,
 give two `near_duplicate` candidates.
@@ -28,8 +28,8 @@ give two `near_duplicate` candidates.
 The exact tool arguments (query/count/freshness) are spelled out
 explicitly in the prompts and asked for "verbatim" on repeats, since
 redundo's exact-match detection compares the whole tool call, and
-leaving the model to reword a query on its own -- even one meant to be
-identical -- would land the repeat in near_duplicate instead of the
+leaving the model to reword a query on its own, even one meant to be
+identical, would land the repeat in near_duplicate instead of the
 clean exact-match story these sessions are built to demonstrate.
 
 Run via run.sh, which points openclaw-localtrace's outputDir at a fresh
@@ -49,9 +49,9 @@ SESSION_A_TURNS = [
     "count 5, freshness \"day\", and tell me what you find. Just that one "
     "search for now.",
     "That's too generic to put in a briefing. Before we try anything "
-    "else, run that exact same web_search call again, verbatim -- same "
+    "else, run that exact same web_search call again, verbatim, same "
     "query \"top technology news today\", same count 5, same freshness "
-    "\"day\" -- to see if the results are any different this time.",
+    "\"day\", to see if the results are any different this time.",
 ]
 
 SESSION_B_TURNS = [
@@ -60,9 +60,9 @@ SESSION_B_TURNS = [
     "don't save anything yet.",
     "Save what you found to a file named briefing.md in the working "
     "directory.",
-    "Now run that exact same web_search call again, verbatim -- same "
+    "Now run that exact same web_search call again, verbatim, same "
     "query \"top technology news today\", same count 5, same freshness "
-    "\"day\" -- to double check the briefing is still accurate before I "
+    "\"day\", to double check the briefing is still accurate before I "
     "send it out.",
     "Also search for today's top story specifically, phrased however "
     "reads best to you, as a supplementary check before I finalize this.",
@@ -125,11 +125,11 @@ def main() -> None:
 
     run_id = uuid.uuid4().hex[:8]
     _run_session(
-        "Session A -- quick search, re-checked once, left unresolved",
+        "Session A: quick search, re-checked once, left unresolved",
         args.agent, f"agent:{args.agent}:demo-briefing-a-{run_id}", SESSION_A_TURNS,
     )
     _run_session(
-        "Session B -- search, save, recheck, cross-check twice",
+        "Session B: search, save, recheck, cross-check twice",
         args.agent, f"agent:{args.agent}:demo-briefing-b-{run_id}", SESSION_B_TURNS,
     )
 

@@ -1,14 +1,14 @@
-"""A tiny "code review bot" built on the real Claude Agent SDK -- the
+"""A tiny "code review bot" built on the real Claude Agent SDK, the
 redundo demo app for the claude-code adapter (the SDK shares it with
 the CLI). Drives two real sessions against fixture_repo (a copy handed
 to it via --repo, never the checked-in template) and prints each turn's
 reply as it streams, so the terminal narrates the story live.
 
 Session A investigates a real test failure and deliberately re-checks
-it once more before stopping, without fixing anything -- a repeated,
+it once more before stopping, without fixing anything: a repeated,
 identical, failed call with nothing written in between.
 Session B investigates, researches the correct fix online (twice,
-rephrased), fixes it, and re-verifies -- a real write-then-recheck
+rephrased), fixes it, and re-verifies: a real write-then-recheck
 loop, plus two similar-not-identical research calls.
 
 A pinned venv with pytest is created inside the working copy by run.sh
@@ -18,7 +18,7 @@ without the model needing to go discover an interpreter first. That
 discovery detour is realistic (it really does happen against a bare
 machine) but it makes each Bash call's arguments a little different
 every time, which is death for the exact-repeat story this demo depends
-on -- so the venv is created ahead of time, off-screen, on purpose.
+on. So the venv is created ahead of time, off-screen, on purpose.
 
 The system prompt also carries one small appended rule: when asked to
 repeat a prior Bash call verbatim, reuse its exact `command` and
@@ -150,10 +150,10 @@ async def main() -> None:
     args = parser.parse_args()
 
     await _run_session(
-        "Session A -- investigate (deliberately left unresolved)", args.repo, SESSION_A_PROMPTS,
+        "Session A: investigate (deliberately left unresolved)", args.repo, SESSION_A_PROMPTS,
     )
     await _run_session(
-        "Session B -- investigate, research, fix, verify", args.repo, SESSION_B_PROMPTS,
+        "Session B: investigate, research, fix, verify", args.repo, SESSION_B_PROMPTS,
     )
 
 

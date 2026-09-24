@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs the code-review-bot demo end to end: starts a local OTLP receiver,
 # drives two real Claude Agent SDK sessions against a fresh copy of
-# fixture_repo, converts and analyzes what got captured, and prints a
-# one-line takeaway plus where to find the full HTML report.
+# fixture_repo, converts and analyzes what got captured, and prints the
+# report plus a short note on what its confirmed_waste count means.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,7 +29,7 @@ REDUNDO_ROOT="$(cd "$HERE/../../.." && pwd)"
 
 cleanup() {
   # `uv run` doesn't reliably forward SIGTERM to the actual `redundo
-  # collect` child process it spawns -- killing just $COLLECT_PID (the
+  # collect` child process it spawns. Killing just $COLLECT_PID (the
   # `uv run` wrapper) can leave the real collector running and holding
   # the port, orphaned, for every later run to trip over. Match on the
   # trace dir, which is unique per run, to find and kill the real
@@ -69,5 +69,11 @@ echo
 echo "================================================================"
 uv run redundo analyze "$WORK_DIR/trace.jsonl" --format text
 echo "================================================================"
+echo
+echo "If confirmed_waste reads 0 above: that's not this tool missing"
+echo "Session A's repeat, it sees it. Claude Code's own telemetry has no"
+echo "way to say the TASK failed, only that the API call succeeded, and"
+echo "redundo refuses to guess past that. See the 'unclassified' reason"
+echo "string above, and this app's own README, for the full story."
 echo
 echo "Full report: $WORK_DIR/report.html"
