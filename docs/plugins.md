@@ -95,7 +95,11 @@ empty/`None` by default and rendered only when you populate them:
 - `Bucket.insight_text`: a short, interpretive line about what one
   specific bucket's finding actually means, distinct from `rule_text`
   (the evidence rule) and `action_text` (what to do about it).
-  `WasteAnalysis` sets this only on `confirmed_waste`.
+  `WasteAnalysis` sets this on `confirmed_waste` and `unclassified`.
+  report.py suppresses both `insight_text` and `action_text` when the
+  bucket is empty (`slice.count == 0`): a zero-pair bucket has nothing
+  to interpret or act on, so an insight line written for the non-empty
+  case would otherwise render as if it found something.
 - `AnalysisResult.highlights`: a "fix these first" list of pre-rendered
   strings, already ranked in the order you want them read. Populate
   this only when you have a real, defensible way to rank (never a
@@ -110,15 +114,32 @@ empty/`None` by default and rendered only when you populate them:
   verdict" from its own three `Verdict` buckets); leave it `None` when
   there's nothing to compute one from, rather than a placeholder cell.
   `value`/`sub` are plain text, not markup: `to_html` escapes them itself,
-  the same as `footnote`.
+  the same as `footnote`. Consider `redundo.analyzer.metrics.format_fraction`
+  for the `value`: it drops the percentage below a minimum denominator
+  (default 5) rather than overclaiming precision on a small sample, e.g.
+  `"1/2"` instead of `"1/2 (50%)"`.
+- `Bucket.group`/`AnalysisResult.group_descriptions`: an optional way to
+  split your buckets into labeled sections instead of one flat list,
+  when your buckets mix more than one axis. `WasteAnalysis` has six
+  buckets spanning two axes, verdicts (`confirmed_waste`,
+  `likely_legitimate`, `unclassified`) and match types (`near_duplicate`,
+  `cross_task_redundancy`, `recurring_pattern`), and lists all six under
+  one heading would make them look mutually exclusive on one dimension
+  when they aren't. Set the same string on every bucket that belongs to
+  one section, and add that string as a key in `group_descriptions`
+  mapping it to one sentence of explanation; report.py renders one
+  `<section>` per distinct group, in first-appearance order, each with
+  its own heading and description. An analysis that never sets `.group`
+  renders exactly as before, one flat list under a generic "The
+  verdicts" heading.
 
-By-model/by-workflow breakdown tables also follow a shared convention:
+By-model/by-workflow breakdowns also follow a shared convention:
 `redundo.analyzer.metrics.UNKNOWN_MODEL_LABEL`/`UNLABELED_WORKFLOW_LABEL`
 name the placeholder to use when an event has no real model/workflow
-value. A breakdown that's a single row of just that placeholder gets
-suppressed by report.py rather than rendered (it conveys nothing a
-reader can act on); using these exact two strings is what makes your
-analysis's own breakdowns get the same treatment.
+value (e.g. a tool_call, which rarely carries a model at all). Using
+these exact two strings, instead of inventing your own placeholder
+text, is what keeps a reader's expectations consistent across every
+analysis's breakdowns.
 
 Register it:
 

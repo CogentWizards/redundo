@@ -48,6 +48,18 @@ class Bucket:
     # what the finding actually means, when the analysis has one worth
     # saying. Absent means nothing to show, same convention as action_text.
     insight_text: str | None = None
+    # An opaque grouping key -- optional, and NOT a second taxonomy
+    # report.py understands. WasteAnalysis's six buckets answer two
+    # different questions (did this repeat get a verdict, versus does
+    # this repeat merely resemble something), and listing all six flat
+    # under one heading makes them look like one mutually-exclusive
+    # dimension when they aren't. When buckets set this, report.py
+    # renders one section per distinct group (first-seen order) instead
+    # of one flat list, using AnalysisResult.group_descriptions for each
+    # section's own subheading. Buckets that leave this unset (or every
+    # bucket in a conforming AnalysisResult, for any analysis that
+    # doesn't use this) all render in one flat section, unchanged.
+    group: str | None = None
 
 
 @dataclass
@@ -80,6 +92,11 @@ class AnalysisResult:
     # None when there's nothing to compute a confidence figure from
     # (zero exact-match candidate pairs) rather than inventing one.
     confidence_stat: tuple[str, str, str] | None = None
+    # One-sentence subheading per distinct Bucket.group value, keyed by
+    # that same opaque group string. Only consulted when at least one
+    # bucket sets .group; a group with no entry here just renders with
+    # no subheading rather than report.py inventing one.
+    group_descriptions: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         def slice_dict(s: Slice) -> dict:
@@ -122,7 +139,8 @@ class AnalysisResult:
                 if self.confidence_stat else None
             ),
             "by_bucket": {
-                b.key: {"label": b.label, "rule_text": b.rule_text, **slice_dict(b.slice)}
+                b.key: {"label": b.label, "rule_text": b.rule_text, "group": b.group,
+                         **slice_dict(b.slice)}
                 for b in self.buckets
             },
             "by_bucket_and_model": {
@@ -133,6 +151,7 @@ class AnalysisResult:
                 key: {wf: slice_dict(s) for wf, s in wfs.items()}
                 for key, wfs in self.by_bucket_and_workflow.items()
             },
+            "group_descriptions": dict(self.group_descriptions),
             "highlights": list(self.highlights),
             "footnote": self.footnote,
         }

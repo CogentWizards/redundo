@@ -50,6 +50,7 @@ from ..metrics import (
     UNLABELED_WORKFLOW_LABEL,
     Slice,
     compute_generic_coverage,
+    format_fraction,
 )
 from ..near_duplicates import DEFAULT_SIMILARITY_THRESHOLD, find_near_duplicate_pairs
 from ..schema import Event
@@ -85,13 +86,16 @@ RULE_TEXT: dict[Verdict, str] = {
 
 # Deliberately not phrased as a verdict ("waste"/"legitimate") -- this
 # bucket only claims similarity, at a threshold someone chose (see
-# near_duplicates.DEFAULT_SIMILARITY_THRESHOLD), never an outcome.
+# near_duplicates.DEFAULT_SIMILARITY_THRESHOLD), never an outcome. The
+# "not a verdict" framing itself lives in the group label report.py
+# renders above it (see _MATCH_TYPE_GROUP below), not repeated in every
+# one of these three texts the way it used to be.
 NEAR_DUPLICATE_RULE_TEXT = (
     "Arguments are similar but not identical to an earlier call on the same "
     "execution path (a SimHash fingerprint comparison, not exact content_hash "
-    "equality). Surfaced for manual review, not a waste or legitimate verdict. "
-    "See docs/hashing.md for what a similarity fingerprint can and can't "
-    "support."
+    "equality), a similarity claim only. See "
+    "https://github.com/CogentWizards/redundo/blob/main/docs/hashing.md for "
+    "what a similarity fingerprint can and can't support."
 )
 
 _CROSS_TASK_REDUNDANCY_KEY = "cross_task_redundancy"
@@ -99,23 +103,22 @@ _CROSS_TASK_REDUNDANCY_LABEL = "Cross-task redundancy"
 _RECURRING_PATTERN_KEY = "recurring_pattern"
 _RECURRING_PATTERN_LABEL = "Recurring pattern"
 
-# Also not phrased as a verdict: a real, source-confirmed link connects
-# the two tasks (see task_graph.py), but whether the repeat actually
-# wasted anything isn't checked here, see the module docstring.
+# A real, source-confirmed link connects the two tasks (see
+# task_graph.py), but whether the repeat actually wasted anything isn't
+# checked here, see the module docstring.
 CROSS_TASK_REDUNDANCY_RULE_TEXT = (
-    "Same or near-identical call as an earlier one in a different task, and the "
-    "two tasks are confirmed related (a source-reported delegation link, never "
-    "inferred from timing or content). Surfaced for review, not a waste "
-    "verdict: what changed between the two calls isn't checked here yet."
+    "Same or near-identical call as an earlier one in a different task, where "
+    "the two tasks are confirmed related (a source-reported delegation link, "
+    "never inferred from timing or content). What changed between the two "
+    "calls isn't checked here yet."
 )
 # Deliberately not phrased as a finding about the two tasks at all: no
 # link connects them, so this is purely a statement about how often this
-# content recurs, never a claim that it's related, wasteful, or legitimate.
+# content recurs, never a claim that it's related.
 RECURRING_PATTERN_RULE_TEXT = (
     "Same or near-identical call recurring across tasks with no confirmed "
-    "relationship to each other. Not a waste or legitimate verdict, and not "
-    "evidence the two tasks are related, most likely a common or generic "
-    "operation, not redundant work."
+    "relationship to each other, most likely a common or generic operation. "
+    "Not evidence the two tasks are related."
 )
 
 # One short, prescriptive line per bucket -- optional on Bucket itself (see
@@ -135,6 +138,25 @@ CONFIRMED_WASTE_INSIGHT_TEXT = (
     "Your agent repeated itself, learned nothing new, and still failed: "
     "these are the places it was stuck, not working."
 )
+# The clearest statement of this whole tool's abstention principle,
+# promoted out of a per-pair reason string (classify.py's own
+# terminal-success-tie-breaker case) into a standing framing line for
+# the bucket itself, generalized past that one case: unclassified is
+# where a signal the verdict needed was genuinely missing, not where
+# nothing happened.
+UNCLASSIFIED_INSIGHT_TEXT = (
+    "A whole task succeeding doesn't confirm any one repeated call inside it "
+    "actually mattered: that's a call-level question, and task-level outcome "
+    "isn't a substitute for the missing call-level answer."
+)
+# Only these two of the three real verdicts get one: likely_legitimate's
+# own rule_text already says everything worth framing, and giving every
+# bucket an insight line would just be a second rule_text, not a real
+# interpretation.
+INSIGHT_TEXT: dict[Verdict, str] = {
+    Verdict.CONFIRMED_WASTE: CONFIRMED_WASTE_INSIGHT_TEXT,
+    Verdict.UNCLASSIFIED: UNCLASSIFIED_INSIGHT_TEXT,
+}
 
 # How many ranked pairs "Fix these first" surfaces. Small on purpose --
 # this is meant to read as a short, actionable list, not a second copy
@@ -143,11 +165,11 @@ _TOP_HIGHLIGHTS = 3
 NEAR_DUPLICATE_ACTION_TEXT = "Nothing to do. When these appear, read them by hand."
 CROSS_TASK_REDUNDANCY_ACTION_TEXT = (
     "Read these by hand. A confirmed link exists between the two tasks, but not "
-    "yet enough signal here to call it waste or legitimate."
+    "yet enough signal here for a verdict."
 )
 RECURRING_PATTERN_ACTION_TEXT = (
     "Nothing to do by default. If this recurs a lot, it may be worth caching or "
-    "memoizing globally, but it isn't evidence of wasted spend on its own."
+    "memoizing globally."
 )
 
 _ORDER = (Verdict.CONFIRMED_WASTE, Verdict.LIKELY_LEGITIMATE, Verdict.UNCLASSIFIED)
@@ -156,6 +178,25 @@ _LABELS = {
     Verdict.LIKELY_LEGITIMATE: "Likely legitimate",
     Verdict.UNCLASSIFIED: "Unclassified",
 }
+
+# Two different questions, not one flat list of six equally-weighted
+# buckets: did this repeat get a verdict (confirmed_waste/
+# likely_legitimate/unclassified, decided under classify.py's
+# four-condition rule), or does this repeat merely resemble something
+# (near_duplicate/cross_task_redundancy/recurring_pattern, a similarity
+# or relatedness claim, never a verdict). Bucket.group and these two
+# descriptions are what let report.py render that as two sections
+# instead of one, without report.py needing to know what a Verdict is.
+_VERDICT_GROUP = "Exact repeats"
+_VERDICT_GROUP_DESCRIPTION = (
+    "Byte-identical calls on the same execution path. Each one judged under "
+    "the four-condition rule above."
+)
+_MATCH_TYPE_GROUP = "Similar or related"
+_MATCH_TYPE_GROUP_DESCRIPTION = (
+    "Similar-but-not-identical or cross-task matches. A resemblance claim, "
+    "never a waste or legitimate verdict on its own."
+)
 
 
 class WasteAnalysis(Analysis):
@@ -226,8 +267,9 @@ class WasteAnalysis(Analysis):
                     f"({pair.repeat.event_type}/{pair.repeat.name}): similar to step="
                     f"{pair.original.step_index} (Hamming distance "
                     f"{pair.hamming_distance}/64 bits, threshold "
-                    f"{self._near_duplicate_threshold}): similar, not identical; "
-                    "not a waste verdict"
+                    f"{self._near_duplicate_threshold}, tuned so a near-identical URL "
+                    "match at 8 bits counts and a genuinely unrelated pair at 34 "
+                    "bits doesn't): similar, not identical, not a verdict"
                 ),
             )
         )
@@ -246,9 +288,8 @@ class WasteAnalysis(Analysis):
             Bucket(
                 key=v.value, label=_LABELS[v], rule_text=RULE_TEXT[v], slice=slices[v],
                 action_text=ACTION_TEXT[v],
-                insight_text=(
-                    CONFIRMED_WASTE_INSIGHT_TEXT if v is Verdict.CONFIRMED_WASTE else None
-                ),
+                insight_text=INSIGHT_TEXT.get(v),
+                group=_VERDICT_GROUP,
             )
             for v in _ORDER
         ]
@@ -259,6 +300,7 @@ class WasteAnalysis(Analysis):
                 rule_text=NEAR_DUPLICATE_RULE_TEXT,
                 slice=near_dup_slice,
                 action_text=NEAR_DUPLICATE_ACTION_TEXT,
+                group=_MATCH_TYPE_GROUP,
             )
         )
         buckets.append(
@@ -268,6 +310,7 @@ class WasteAnalysis(Analysis):
                 rule_text=CROSS_TASK_REDUNDANCY_RULE_TEXT,
                 slice=cross_task_slice,
                 action_text=CROSS_TASK_REDUNDANCY_ACTION_TEXT,
+                group=_MATCH_TYPE_GROUP,
             )
         )
         buckets.append(
@@ -276,6 +319,7 @@ class WasteAnalysis(Analysis):
                 label=_RECURRING_PATTERN_LABEL,
                 rule_text=RECURRING_PATTERN_RULE_TEXT,
                 slice=recurring_slice,
+                group=_MATCH_TYPE_GROUP,
                 action_text=RECURRING_PATTERN_ACTION_TEXT,
             )
         )
@@ -310,12 +354,10 @@ class WasteAnalysis(Analysis):
         verdictable = verdicted + unclassified
         confidence_stat = None
         if verdictable > 0:
-            pct = verdicted / verdictable * 100
             confidence_stat = (
                 "Verdicts reached",
-                f"{pct:.0f}%",
-                f"{verdicted} of {verdictable} exact repeats got a real verdict "
-                f"· {unclassified} unclassified for missing signal",
+                format_fraction(verdicted, verdictable),
+                f"exact repeats judged; {unclassified} unclassified for missing signal",
             )
 
         by_bucket_and_model = {v.value: dict(by_model[v]) for v in _ORDER}
@@ -344,6 +386,10 @@ class WasteAnalysis(Analysis):
             footnote=footnote,
             highlights=highlights,
             confidence_stat=confidence_stat,
+            group_descriptions={
+                _VERDICT_GROUP: _VERDICT_GROUP_DESCRIPTION,
+                _MATCH_TYPE_GROUP: _MATCH_TYPE_GROUP_DESCRIPTION,
+            },
         )
 
     @staticmethod
@@ -397,10 +443,9 @@ class WasteAnalysis(Analysis):
 
         if not events_without:
             return
-        pct = (tasks_with_pairs / tasks_total * 100) if tasks_total else 0.0
         cost_text = f"${cost_without:,.4f}" if cost_without < 1 else f"${cost_without:,.2f}"
         coverage.extra_notes.append(
-            f"{tasks_with_pairs}/{tasks_total} tasks ({pct:.0f}%) had at least one "
+            f"{format_fraction(tasks_with_pairs, tasks_total)} tasks had at least one "
             "repeated call for redundancy detection to examine. The rest, "
             f"{cost_text} of tracked spend across {events_without} event(s), had "
             "nothing that repeated at all, so nothing appears for them in the "
@@ -423,10 +468,9 @@ class WasteAnalysis(Analysis):
         task_ids_with_near_pairs = {p.task_id for p in near_pairs}
         tasks_total = len({e.task_id for e in events})
         tasks_with_near_pairs = len(task_ids_with_near_pairs)
-        pct = (tasks_with_near_pairs / tasks_total * 100) if tasks_total else 0.0
         coverage.extra_notes.append(
-            f"{tasks_with_near_pairs}/{tasks_total} tasks ({pct:.0f}%) also had at least "
-            f"one near-duplicate call ({len(near_pairs)} such pair(s) total): similar, "
+            f"{format_fraction(tasks_with_near_pairs, tasks_total)} tasks also had at "
+            f"least one near-duplicate call ({len(near_pairs)} such pair(s) total): similar, "
             "not identical, arguments to an earlier call on the same execution path. A "
             "separate, lower-confidence signal from the exact-match note above; see the "
             "near_duplicate bucket below."

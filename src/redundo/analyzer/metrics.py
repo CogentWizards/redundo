@@ -43,10 +43,12 @@ COST_BASIS_SYNTHESIZED = "synthesized_billing_only"
 
 # Shared convention for "this event had no real model/workflow value" --
 # not specific to WasteAnalysis, any analysis segmenting by model or
-# workflow should use these same two strings so report.py can recognize
-# and suppress a by-model/by-workflow breakdown that's carrying zero real
-# information (every segment is this one placeholder), rather than
-# showing a single-row table that just says "unknown" and looks broken.
+# workflow should use these same two strings for consistency. A bucket
+# built entirely from tool_call events (which never carry a model in
+# most sources) or from a source that never sets workflow legitimately
+# renders as a single row of this placeholder -- that's the honest
+# answer, not a rendering bug, and report.py shows it rather than hiding
+# a real (if unlabeled) row of data.
 UNKNOWN_MODEL_LABEL = "(unknown model)"
 UNLABELED_WORKFLOW_LABEL = "(unlabeled workflow)"
 
@@ -184,6 +186,24 @@ class CoverageStats:
         if self.events_with_task_id_source_reported == 0:
             return None
         return self.events_confident_task_id / self.events_with_task_id_source_reported
+
+
+# Below this denominator, a percentage claims more precision than a
+# small sample actually supports -- "50%" on n=2 reads as a real,
+# stable rate when it's really one coin flip. format_fraction drops the
+# percentage entirely below the threshold and shows the plain fraction
+# instead, which is exactly as informative and doesn't overclaim.
+_MIN_DENOMINATOR_FOR_PERCENT = 5
+
+
+def format_fraction(numerator: int, denominator: int, *, min_denominator: int = _MIN_DENOMINATOR_FOR_PERCENT) -> str:
+    if denominator <= 0:
+        return f"{numerator}/{denominator}"
+    frac = f"{numerator}/{denominator}"
+    if denominator < min_denominator:
+        return frac
+    pct = numerator / denominator * 100
+    return f"{frac} ({pct:.0f}%)"
 
 
 def compute_generic_coverage(events: list[Event], *, max_samples: int = 20) -> CoverageStats:
