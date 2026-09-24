@@ -6,7 +6,7 @@
 #
 # Requires: `openclaw` on PATH, already configured with a working model
 # provider (this uses whatever agent --agent points at, default
-# "agentsmith" -- see `openclaw agents list`), and the openclaw-localtrace
+# "agentsmith", see `openclaw agents list`), and the openclaw-localtrace
 # plugin already installed and enabled (see that plugin's own README).
 set -euo pipefail
 
@@ -23,7 +23,7 @@ echo "Working directory: $WORK_DIR"
 # `cmd || echo null` would NOT do what it looks like here: on failure,
 # $(...) still captures whatever `cmd` already wrote to stdout before
 # failing (config get's own error is JSON on stdout, not stderr) *and*
-# the fallback's output, concatenated -- not one or the other. Capture
+# the fallback's output, concatenated, not one or the other. Capture
 # and check the exit status separately instead.
 if PREVIOUS_OUTPUT_DIR="$(openclaw config get plugins.entries.openclaw-localtrace.config.outputDir --json 2>/dev/null)"; then
   : # PREVIOUS_OUTPUT_DIR holds the real, previously-authored value
@@ -34,7 +34,7 @@ fi
 cleanup() {
   # `openclaw gateway run` re-execs into a separate `openclaw-gateway`
   # process whose argv isn't visible to `ps`/`pkill -f` on this platform
-  # (it shows up as a bare, argument-less "openclaw-gateway") -- killing
+  # (it shows up as a bare, argument-less "openclaw-gateway"). Killing
   # just $GATEWAY_PID (the wrapper) can leave the real gateway running
   # and holding the port, orphaned, for the next run to trip over.
   # Killing whatever actually holds the port is precise regardless of

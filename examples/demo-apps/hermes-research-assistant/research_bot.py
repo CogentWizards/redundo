@@ -1,4 +1,4 @@
-"""A tiny "research assistant with delegation" built on Hermes -- the
+"""A tiny "research assistant with delegation" built on Hermes, the
 redundo demo app for the openinference adapter (Hermes exports via
 OpenInference semantic conventions). Drives two real, single-invocation
 `hermes -z "..."` conversations and prints each one's reply.
@@ -8,32 +8,31 @@ turns. That's a deliberate, verified choice, not a style preference: a
 real multi-turn Hermes conversation driven via separate CLI invocations
 (one process, and one OTel trace, per turn) hits a currently-tracked bug
 in redundo's openinference adapter, where step numbering restarts at
-zero for every trace even when several traces share one real task_id --
+zero for every trace even when several traces share one real task_id,
 silently colliding on (task_id, step_index) and corrupting lineage-based
 candidate-pair detection for that task. See this demo's README for the
 full explanation and the tracked follow-up. Keeping each session to one
 `-z` call keeps everything in a single trace, which does not hit that
-bug -- and Hermes genuinely can and does call several tools in sequence
+bug, and Hermes genuinely can and does call several tools in sequence
 within one turn, so this loses none of the "multi-step workflow" story.
 
 Session A asks for a research topic and lets the agent delegate it to
-two subagents via Hermes's real `delegate_task` tool -- a real,
+two subagents via Hermes's real `delegate_task` tool, a real,
 overlapping-topic multi-agent workflow (confirmed live: Hermes batches
 both subagent goals into one `delegate_task` call, and both subagents'
 own tool calls run for real, concurrently). Two subagents working in
 parallel are lineage *siblings*, not one an ancestor of the other, so
 redundo correctly never flags their overlapping calls against each
-other here -- that would be flagging normal fan-out as waste. Catching
+other here, that would be flagging normal fan-out as waste. Catching
 this kind of cross-agent overlap is exactly what the `cross_task_redundancy`
-bucket exists for, and is precisely why it needs its own task_id per
-subagent (a second, separate adapter gap, also tracked) rather than
-reusing same-task lineage matching. This session is honestly a "what
-this app is building toward" demonstration right now, not a bucket that
-fires today.
+bucket exists for. With redundo's own task_id-per-span and
+parent_task_id fixes merged (see this demo's README), this session now
+genuinely populates `cross_task_redundancy` on a live run, not just a
+"what this app is building toward" placeholder.
 
 Session B is a plain, single-agent, sequential turn: a calculation,
 repeated verbatim with nothing intervening, then a save-and-recheck loop
-(a real file write via `execute_code`), then a rephrased follow-up --
+(a real file write via `execute_code`), then a rephrased follow-up,
 the same proven confirmed_waste/likely_legitimate/near_duplicate shape
 as the other two demo apps in this package, all within one lineage
 thread so redundo's ancestor-walk candidate search actually applies.
@@ -59,7 +58,7 @@ SESSION_B_PROMPT = (
     "execution:\n"
     "1. Calculate 47 * 89 and show me the result.\n"
     "2. Run that exact same calculation again, verbatim, to confirm it's "
-    "consistent -- don't skip this even though you already know the "
+    "consistent. Don't skip this even though you already know the "
     "answer, I want to see it re-run.\n"
     "3. Save that result to a file named calc.txt in the working "
     "directory.\n"
@@ -92,8 +91,8 @@ def _run_session(label: str, prompt: str) -> None:
 
 
 def main() -> None:
-    _run_session("Session A -- research with real subagent delegation", SESSION_A_PROMPT)
-    _run_session("Session B -- sequential repeat-and-verify", SESSION_B_PROMPT)
+    _run_session("Session A: research with real subagent delegation", SESSION_A_PROMPT)
+    _run_session("Session B: sequential repeat-and-verify", SESSION_B_PROMPT)
 
 
 if __name__ == "__main__":
