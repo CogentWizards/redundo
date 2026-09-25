@@ -79,3 +79,35 @@ The two rephrased searches in Session B land in `near_duplicate` as
 intended; the two sessions' matching opening searches (and closely
 related model turns) land in `recurring_pattern`, since nothing links
 these two independent conversations.
+
+## Why most `llm_call` events here show no cost, and why that's permanent
+
+If you look closely at the report's "Events with no cost" section,
+you'll see `llm_call` entries with no `cost_usd`, not just tool calls
+(which never carry one anywhere in this package). Investigated down to
+OpenClaw's own compiled source, not assumed: this demo drives OpenClaw
+via a bare `openclaw agent --message ...` CLI call, and that specific
+invocation style gets **no per-call cost signal at either tier this
+plugin has**, for any completion but the last one in a multi-round
+turn -- and this is permanent, not a bug to fix here.
+
+- **Tier 1** (a direct per-call estimate) needs real per-call token
+  usage, and OpenClaw's own `model_call_ended` hook payload has no
+  usage field at all -- confirmed from OpenClaw's own compiled type
+  declarations, not the plugin's guess. Only the whole-run `llm_output`
+  hook carries usage, and only once, for the final completion of the
+  turn (see [docs/openclaw-localtrace.md](https://github.com/CogentWizards/redundo/blob/main/docs/openclaw-localtrace.md)'s
+  "Merging two spans").
+- **Tier 2** (`openclaw.turn.cost.usd`, apportioned) is built on
+  OpenClaw's `reply_payload_sending` hook, which only ever fires from
+  inside the channel-delivery pipeline (confirmed by grepping every real
+  call site across OpenClaw's own compiled output) -- never for a bare
+  CLI invocation, which returns its result directly to stdout and never
+  "delivers a reply to a channel" in OpenClaw's own sense.
+
+The only way to get real per-call cost for every completion in a
+multi-round turn is to drive OpenClaw through an actual chat channel
+(Slack, Discord, webchat) instead of the CLI. That's a different demo,
+not a fix available to this one -- see
+[docs/openclaw-localtrace.md](https://github.com/CogentWizards/redundo/blob/main/docs/openclaw-localtrace.md)'s
+"Cost: two tiers" section for the full account.

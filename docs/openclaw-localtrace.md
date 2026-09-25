@@ -148,6 +148,36 @@ other's real spend completely untracked by this tier alone. Tier 1 does
 not depend on reply delivery at all, so it has meaningfully better
 coverage in practice, bounded only by the `llm.call` pairing above.
 
+**A CLI-driven capture (`openclaw agent --message ...`, the shape
+`examples/demo-apps/openclaw-daily-briefing` uses) gets *neither* tier
+for any model.call except the last one in a multi-call turn, and this
+is a permanent property of OpenClaw itself, not a gap this plugin or
+redundo can close.** Confirmed directly from OpenClaw's own source, not
+inferred from behavior:
+
+- Tier 1 needs per-call usage, and the `model_call_ended` hook payload
+  (`PluginHookModelCallEndedEvent`, in OpenClaw's own compiled type
+  declarations) has no usage/cost field at all -- only duration,
+  outcome, and byte counts. Only the whole-run `llm_output` hook carries
+  usage, and only once, for the final completion (see "Merging two
+  spans" above) -- there is no per-call usage signal for this plugin, or
+  any plugin, to read for an intermediate call in a multi-round turn.
+- Tier 2's `reply_payload_sending` hook (see `src/metrics.ts`), the one
+  this plugin's `openclaw.turn.cost.usd` is built on, only fires from
+  inside OpenClaw's channel-delivery pipeline (confirmed by grepping
+  every real call site of it across OpenClaw's own compiled output:
+  `deliver-prepare-*.mjs`, `route-reply-*.mjs`, `bot-message-*.mjs`,
+  `bot-native-command-dispatch-*.mjs` -- never `agent-command-*.mjs` or
+  `cli-runner-*.mjs`). A bare CLI invocation returns its result directly
+  to stdout; it never "delivers a reply to a channel," so this hook
+  never fires for it, and this metric is never emitted, regardless of
+  `captureIdentifiers` or anything else this plugin controls.
+
+The only way to get real per-call cost coverage for every completion in
+a multi-round turn is to drive OpenClaw through an actual chat channel
+(Slack, Discord, webchat) instead of the CLI -- a different capture
+shape, not a fix available to this plugin or to redundo's adapter.
+
 A point carries a session-identifying attribute at all only when
 `captureIdentifiers` is on, the same gate as task_id above, so a
 corpus without `captureIdentifiers` gets no tier-2 cost data, ever, not
