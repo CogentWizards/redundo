@@ -378,6 +378,48 @@ a billing record alone.
 `--summary` reports how often this fires and the total dollar amount
 recovered by it.
 
+## Workflow and model
+
+`workflow`, in preference order:
+
+1. The `subagent_type` of the `Task`-tool call one level up (real
+   nesting, confirmed above: a subagent's own spans have
+   `parent_span_id` pointing straight at the `Task` call that spawned
+   it) -- a human-readable name (`"code-reviewer"`, `"Explore"`) the
+   calling agent itself chose. Preferred over `agent_id` below because
+   it's legible at a glance; `agent_id`'s actual string format isn't
+   documented anywhere and may be an opaque identifier.
+2. The span's own `agent_id` attribute, when Claude Code sets one
+   directly but no `Task`-tool ancestor with a `subagent_type` was found
+   (a version difference, or a delegation path other than the `Task`
+   tool).
+3. `"main"` -- not a placeholder, a real, checkable fact: no delegation
+   happened for this event. Every event in a session that never uses a
+   subagent resolves here, which is the common case for most captures.
+
+`metadata.workflow_basis` states which of the three won
+(`"subagent_type"`/`"agent_id"`/`"no_delegation"`).
+
+`model` is a real, call-level fact on `llm_call` records (read directly
+off the span), never approximated. `tool_call`/`tool_result` records have
+no model of their own -- a tool call isn't itself a model invocation --
+so this adapter derives one instead: the model of the nearest preceding
+`claude_code.llm_request` **in the same workflow**, in true chronological
+order (spans are processed in one global start-time-sorted pass per
+session; a running "current model" is tracked per resolved workflow, not
+one session-wide value, specifically so a subagent's own model can never
+leak onto a tool call the main session -- or a sibling subagent -- makes
+after it returns, or vice versa). `metadata.model_basis =
+"preceding_llm_call"` marks this explicitly, the same way
+`metadata.content_basis`/`cost_basis` mark other derived-not-observed
+values. `None`, with no `model_basis` key, only for a `tool_call` that
+happens before any `llm_request` at all in its own workflow -- genuinely
+nothing to derive from yet, not a gap in this logic. The one synthesized
+llm_call type this adapter produces (see "Synthesized cost records"
+below) always gets `workflow = "main"`: both of its confirmed causes
+(session-title generation, the Agent SDK's opening call) are top-level
+session calls, never subagent work.
+
 ## `metadata.write` is never set
 
 No signal indicates whether a tool call mutated anything. Inferring it

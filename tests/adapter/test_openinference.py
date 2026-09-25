@@ -385,10 +385,94 @@ def test_workflow_is_nearest_agent_or_chain_ancestor_name():
     assert records[0]["workflow"] == "research_agent"
 
 
-def test_workflow_is_none_with_no_agent_or_chain_ancestor():
+def test_workflow_defaults_to_main_with_no_agent_or_chain_ancestor():
     spans = [span("s1", start=0, attributes={"openinference.span.kind": "LLM", "input.value": "hi"})]
     records, _ = convert(traces_document(spans))
-    assert records[0]["workflow"] is None
+    assert records[0]["workflow"] == "main"
+    assert records[0]["metadata"]["workflow_basis"] == "no_workflow_ancestor"
+
+
+def test_workflow_prefers_agent_name_attribute_over_decorated_span_name():
+    # Google ADK's own AGENT-kind span is named "agent_run [<name>]"
+    # (decorated) but carries the bare name in agent.name -- confirmed
+    # against openinference-instrumentation-google-adk's real source
+    # (_wrappers.py). The attribute must win over the span's own name.
+    spans = [
+        span("agent", start=0, name="agent_run [search_agent]",
+             attributes={"openinference.span.kind": "AGENT", "agent.name": "search_agent"}),
+        span("llm1", parent_span_id="agent", start=1,
+             attributes={"openinference.span.kind": "LLM", "input.value": "hi"}),
+    ]
+    records, _ = convert(traces_document(spans))
+    assert records[0]["workflow"] == "search_agent"
+    assert records[0]["metadata"]["workflow_basis"] == "agent_name_attribute"
+
+
+def test_workflow_falls_back_to_span_name_without_agent_name_attribute():
+    spans = [
+        span("agent", start=0, name="research_agent", attributes={"openinference.span.kind": "AGENT"}),
+        span("llm1", parent_span_id="agent", start=1,
+             attributes={"openinference.span.kind": "LLM", "input.value": "hi"}),
+    ]
+    records, _ = convert(traces_document(spans))
+    assert records[0]["workflow"] == "research_agent"
+    assert records[0]["metadata"]["workflow_basis"] == "span_name"
+
+
+# --- model derivation for TOOL spans ----------------------------------
+
+def test_tool_call_gets_model_from_preceding_llm_span_in_same_task():
+    spans = [
+        span("llm1", start=0, attributes={
+            "openinference.span.kind": "LLM", "input.value": "hi", "llm.model_name": "gpt-5",
+        }),
+        span("tool1", start=1, attributes={
+            "openinference.span.kind": "TOOL", "input.value": "args", "output.value": "result",
+        }),
+    ]
+    records, _ = convert(traces_document(spans))
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    result = next(r for r in records if r["event_type"] == "tool_result")
+    assert call["model"] == "gpt-5"
+    assert call["metadata"]["model_basis"] == "preceding_llm_call"
+    assert result["model"] == "gpt-5"
+    assert result["metadata"]["model_basis"] == "preceding_llm_call"
+
+
+def test_tool_call_before_any_llm_span_has_no_model():
+    spans = [
+        span("tool1", start=0, attributes={
+            "openinference.span.kind": "TOOL", "input.value": "args", "output.value": "result",
+        }),
+        span("llm1", start=1, attributes={
+            "openinference.span.kind": "LLM", "input.value": "hi", "llm.model_name": "gpt-5",
+        }),
+    ]
+    records, _ = convert(traces_document(spans))
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    assert call["model"] is None
+    assert "model_basis" not in call["metadata"]
+
+
+def test_subagent_model_does_not_leak_across_workflows():
+    # Two AGENT-wrapped branches in the same task (a real, confirmed shape
+    # -- see the "cross-task/branch" tests above): branch A's model must
+    # never leak onto branch B's tool call just because branch A's LLM
+    # span happens to come first chronologically.
+    spans = [
+        span("agent-a", start=0, name="agent_a", attributes={"openinference.span.kind": "AGENT"}),
+        span("llm-a", parent_span_id="agent-a", start=1, attributes={
+            "openinference.span.kind": "LLM", "input.value": "hi", "llm.model_name": "gpt-5-mini",
+        }),
+        span("agent-b", start=2, name="agent_b", attributes={"openinference.span.kind": "AGENT"}),
+        span("tool-b", parent_span_id="agent-b", start=3, attributes={
+            "openinference.span.kind": "TOOL", "input.value": "args", "output.value": "result",
+        }),
+    ]
+    records, _ = convert(traces_document(spans))
+    tool_b = next(r for r in records if r["event_type"] == "tool_call")
+    assert tool_b["workflow"] == "agent_b"
+    assert tool_b["model"] is None
 
 
 # --- masking diagnostics ---------------------------------------------------

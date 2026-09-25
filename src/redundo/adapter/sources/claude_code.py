@@ -106,6 +106,14 @@ _STRUCTURAL_SPAN_NAMES = {
 _SESSION_ID_ATTR = "session.id"
 _REDACTED = "<REDACTED>"
 
+# workflow: no real delegation happened for this event, confirmed (not a
+# guess -- see _resolve_workflow) rather than an unlabeled gap. The same
+# literal every other adapter in this package uses for the same "ran at
+# the top level, nothing to segment by" case, so a reader sees one
+# consistent label across sources rather than each adapter inventing its
+# own spelling of "no workflow."
+_NO_WORKFLOW_LABEL = "main"
+
 
 @dataclass
 class ConversionSummary:
@@ -469,6 +477,22 @@ def _convert_session(
     kept.sort(key=lambda s: s.start_time_unix_nano)
     summary.kept_spans += len(kept)
 
+    # Every Task-tool call span's own subagent_type (e.g. "code-reviewer",
+    # "Explore") names the workflow it spawns -- a real, human-readable
+    # label Claude Code's telemetry already carries, one hop up from the
+    # subagent's own descendant spans (see docs/claude-code.md's lineage
+    # section: "Subagent spans nest one level deeper, under the parent
+    # claude_code.tool span"). Keyed by that Task span's own span_id, since
+    # a subagent's descendant spans have parent_span_id pointing straight
+    # at it -- no deeper walk needed, this hierarchy is one level, not an
+    # ancestor chain.
+    subagent_type_by_task_span_id: dict[str, str] = {}
+    for s in kept:
+        if s.name == "claude_code.tool" and s.attributes.get("tool_name") == "Task":
+            subagent_type = s.attributes.get("subagent_type")
+            if subagent_type:
+                subagent_type_by_task_span_id[s.span_id] = str(subagent_type)
+
     # Every llm_request within one interaction shares the same direct
     # parent (the interaction span itself -- confirmed empirically, they
     # are not nested progressively round-to-round), so "direct parent is
@@ -493,6 +517,15 @@ def _convert_session(
     chain_tail: dict[str, tuple[int, int, int]] = {}  # ancestor span_id -> (start, end, step)
     records: list[dict[str, Any]] = []
     log_idx = 0  # position into ordered_tool_results; advances once per tool span
+
+    # The model actively running each workflow, updated as llm_request
+    # spans are seen in true chronological order (kept is sorted by
+    # start_time above) and read back for every tool_call/tool_result in
+    # between -- see _resolve_workflow's docstring for why this is keyed
+    # by workflow rather than one session-wide value: a subagent's own
+    # model must never leak onto a tool call the main session makes after
+    # the subagent returns, or vice versa.
+    last_model_by_workflow: dict[str, str] = {}
 
     for span in kept:
         # Claude Code's real hierarchy is shallow and known (interaction ->
@@ -525,15 +558,19 @@ def _convert_session(
                 # span) this becomes a new root within the trace.
                 parent_step = last_step_of_span.get(ancestor_id)
 
+        workflow, workflow_basis = _resolve_workflow(span, subagent_type_by_task_span_id)
+
         if span.name == "claude_code.llm_request":
             record = _llm_event(
                 span, task_id, used_real_session_id, step, parent_step,
                 interaction_user_prompt, span.span_id in first_llm_request_of_interaction,
                 windowed_prompt_by_span_id.get(span.span_id),
-                api_requests_by_request_id, summary,
+                api_requests_by_request_id, summary, workflow, workflow_basis,
             )
             records.append(record)
             last_step_of_span[span.span_id] = step
+            if record["model"]:
+                last_model_by_workflow[workflow] = record["model"]
             _extend_chain_tail(chain_tail, ancestor_id, span.start_time_unix_nano, span_end, step)
             step += 1
 
@@ -542,7 +579,8 @@ def _convert_session(
             log_idx += 1
             call, result = _tool_events(
                 span, task_id, used_real_session_id, step, parent_step,
-                children_by_parent, log_result, summary,
+                children_by_parent, log_result, summary, workflow, workflow_basis,
+                last_model_by_workflow.get(workflow),
             )
             records.append(call)
             call_step = step
@@ -584,6 +622,34 @@ def _extend_chain_tail(
     if ancestor_id is None:
         return
     chain_tail[ancestor_id] = (start, end, step)
+
+
+def _resolve_workflow(
+    span: Span, subagent_type_by_task_span_id: dict[str, str]
+) -> tuple[str, str]:
+    """(workflow, workflow_basis) for one span, in preference order:
+
+    1. The subagent_type of the Task-tool call one level up (see the
+       caller's subagent_type_by_task_span_id) -- a human-readable name
+       ("code-reviewer", "Explore") the calling agent itself chose,
+       preferred over the raw agent_id below because it's legible at a
+       glance; agent_id's actual format isn't documented and may be an
+       opaque identifier.
+    2. The span's own agent_id attribute, when Claude Code's telemetry
+       sets one directly but no Task-tool ancestor with a subagent_type
+       was found (a version difference, or a delegation path other than
+       the Task tool).
+    3. _NO_WORKFLOW_LABEL ("main") -- not a guess, a real, checkable fact:
+       no delegation happened for this event. Every span in a session
+       with no subagent use at all resolves here.
+    """
+    subagent_type = subagent_type_by_task_span_id.get(span.parent_span_id or "")
+    if subagent_type:
+        return subagent_type, "subagent_type"
+    agent_id = span.attributes.get("agent_id")
+    if agent_id:
+        return str(agent_id), "agent_id"
+    return _NO_WORKFLOW_LABEL, "no_delegation"
 
 
 def _iso_timestamp(unix_nano: int) -> str:
@@ -691,7 +757,11 @@ def _synthesized_cost_only_event(
         "cost_usd": float(cost_usd) if cost_usd is not None else None,
         "model": rec.attributes.get("model"),
         "parent_id": None,
-        "workflow": None,
+        # "main": both confirmed causes of this synthesized event type
+        # (session-title generation, the Agent SDK's opening call before
+        # span instrumentation starts) are top-level session calls; no
+        # confirmed case of this ever being subagent work.
+        "workflow": _NO_WORKFLOW_LABEL,
         "metadata": {
             "hash_spec": hashing.HASH_SPEC,
             "masked_spans": masks,
@@ -715,6 +785,8 @@ def _llm_event(
     windowed_prompt: str | None,
     api_requests_by_request_id: dict[str, LogRecord],
     summary: ConversionSummary,
+    workflow: str,
+    workflow_basis: str,
 ) -> dict[str, Any]:
     model = span.attributes.get("model") or span.attributes.get("gen_ai.request.model")
     request_id = span.attributes.get("request_id")
@@ -774,10 +846,14 @@ def _llm_event(
         "cost_usd": float(cost_usd) if cost_usd is not None else None,
         "model": model,
         "parent_id": parent_step,
-        "workflow": span.attributes.get("agent_id"),
+        "workflow": workflow,
         "metadata": _base_metadata(
             span, used_real_session_id, content_basis,
-            {"masked_spans": masks, "request_id": span.attributes.get("request_id")},
+            {
+                "masked_spans": masks,
+                "request_id": span.attributes.get("request_id"),
+                "workflow_basis": workflow_basis,
+            },
             similarity_fingerprint=fingerprint,
         ),
     }
@@ -792,6 +868,9 @@ def _tool_events(
     children_by_parent: dict[str, list[Span]],
     log_result: LogRecord | None,
     summary: ConversionSummary,
+    workflow: str,
+    workflow_basis: str,
+    preceding_model: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     tool_name = span.attributes.get("tool_name") or span.name
     # tool_use_id/gen_ai.tool.call.id would be the reliable join key if
@@ -839,6 +918,13 @@ def _tool_events(
 
     outcome = _tool_outcome(span, children_by_parent)
 
+    call_extra: dict[str, Any] = {
+        "masked_spans": call_masks, "tool_use_id": tool_use_id, "mcp": is_mcp,
+        "workflow_basis": workflow_basis,
+    }
+    if preceding_model:
+        call_extra["model_basis"] = "preceding_llm_call"
+
     call = {
         "task_id": task_id,
         "step_index": step,
@@ -850,12 +936,17 @@ def _tool_events(
         "outcome": None,
         "timestamp": _iso_timestamp(span.start_time_unix_nano),
         "cost_usd": None,
-        "model": None,
+        # Not a call-level fact -- a tool call has no model of its own --
+        # but the model actively running the workflow that made this call,
+        # the nearest preceding llm_request in true chronological order
+        # (see _convert_session's last_model_by_workflow). None only when
+        # no llm_request has happened yet in this workflow at all. See
+        # metadata.model_basis and docs/schema.md.
+        "model": preceding_model,
         "parent_id": parent_step,
-        "workflow": span.attributes.get("agent_id"),
+        "workflow": workflow,
         "metadata": _base_metadata(
-            span, used_real_session_id, call_basis,
-            {"masked_spans": call_masks, "tool_use_id": tool_use_id, "mcp": is_mcp},
+            span, used_real_session_id, call_basis, call_extra,
             similarity_fingerprint=call_fingerprint,
         ),
     }
@@ -897,6 +988,12 @@ def _tool_events(
         result_hash, result_masks = _opaque_hash(span)
         result_basis = "opaque"
         summary.records_with_opaque_content += 1
+        result_extra: dict[str, Any] = {
+            "masked_spans": result_masks, "tool_use_id": tool_use_id, "mcp": is_mcp,
+            "workflow_basis": workflow_basis,
+        }
+        if preceding_model:
+            result_extra["model_basis"] = "preceding_llm_call"
         result = {
             "task_id": task_id,
             "step_index": None,  # filled in by _convert_session
@@ -908,18 +1005,23 @@ def _tool_events(
             "outcome": outcome,
             "timestamp": _iso_timestamp(span.end_time_unix_nano or span.start_time_unix_nano),
             "cost_usd": None,
-            "model": None,
+            "model": preceding_model,
             "parent_id": None,  # filled in by _convert_session
-            "workflow": span.attributes.get("agent_id"),
+            "workflow": workflow,
             "metadata": _base_metadata(
-                span, used_real_session_id, result_basis,
-                {"masked_spans": result_masks, "tool_use_id": tool_use_id, "mcp": is_mcp},
+                span, used_real_session_id, result_basis, result_extra,
             ),
         }
         return call, result
 
     result_hash, result_masks = hashing.content_hash(result_content, structured=False)
     result_basis = "prompt"
+    result_extra: dict[str, Any] = {
+        "masked_spans": result_masks, "tool_use_id": tool_use_id, "mcp": is_mcp,
+        "workflow_basis": workflow_basis,
+    }
+    if preceding_model:
+        result_extra["model_basis"] = "preceding_llm_call"
 
     result = {
         "task_id": task_id,
@@ -932,12 +1034,11 @@ def _tool_events(
         "outcome": outcome,
         "timestamp": _iso_timestamp(span.end_time_unix_nano or span.start_time_unix_nano),
         "cost_usd": None,
-        "model": None,
+        "model": preceding_model,
         "parent_id": None,  # filled in by _convert_session
-        "workflow": span.attributes.get("agent_id"),
+        "workflow": workflow,
         "metadata": _base_metadata(
-            span, used_real_session_id, result_basis,
-            {"masked_spans": result_masks, "tool_use_id": tool_use_id, "mcp": is_mcp},
+            span, used_real_session_id, result_basis, result_extra,
         ),
     }
     return call, result

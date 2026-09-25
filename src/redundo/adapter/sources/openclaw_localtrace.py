@@ -97,8 +97,26 @@ _EVENT_TYPE_BY_SPAN_NAME = {
 }
 
 _SESSION_ID_ATTR = "openclaw.sessionId"
+# The real OpenClaw agent id (--agent, or the operator's configured
+# default) -- present on the real OpenClaw hook context object
+# (cli-runner's own hookContext.agentId, confirmed by reading the
+# installed CLI's source) on every run, chat-routed or not, unlike
+# channel below, which is absent for a bare `openclaw agent` CLI
+# invocation with no --channel/message provider. Not yet emitted by the
+# plugin as of this writing (spans.ts's own AgentContext interface never
+# declared ctx.agentId, so it was never read off the real hook context
+# passed to it) -- read here in anticipation of a plugin update; absent
+# on every capture from an older plugin version, which is not a
+# regression, just nothing new to read yet.
+_AGENT_ID_ATTR = "openclaw.agentId"
 _CHANNEL_ATTR = "openclaw.channel"
-_CHANNEL_ID_ATTR = "openclaw.channel"
+_CHANNEL_ID_ATTR = "openclaw.channelId"
+
+# workflow: no agentId, channel, or channelId at all (an older plugin
+# version's capture, or the run genuinely carries none of them) -- not a
+# guess, the same literal every adapter in this package defaults to for
+# "nothing to segment by."
+_NO_WORKFLOW_LABEL = "main"
 
 _INPUT_MESSAGES_ATTR = "gen_ai.input.messages"
 _OUTPUT_MESSAGES_ATTR = "gen_ai.output.messages"
@@ -282,7 +300,7 @@ def convert_openclaw_localtrace(
         task_id, session_id = _resolve_task_id(trace_spans, trace_id)
         if session_id is not None:
             sessions_seen.add(session_id)
-        workflow = _workflow_of(run_span)
+        workflow, workflow_basis = _workflow_of(run_span)
 
         model_call_spans = sorted(
             (s for s in trace_spans if s.name == "openclaw-localtrace.model.call"),
@@ -307,20 +325,32 @@ def convert_openclaw_localtrace(
         run_llm_call_records: list[dict[str, Any]] = []
         run_start = run_span.start_time_unix_nano if run_span is not None else None
         run_end = run_span.end_time_unix_nano if run_span is not None else None
+        # The model actively running this run, updated as model.call spans
+        # are seen in true chronological order (kept is sorted by
+        # start_time above) and read back for every tool.execution span in
+        # between. One value per run, not per workflow: this plugin's v1
+        # scope has no nested-call topology (see module docstring point 4),
+        # so a run's workflow never changes partway through it.
+        last_model: str | None = None
 
         for span in kept:
             step = len(task_records)
             if span.name == "openclaw-localtrace.model.call":
                 record = _llm_event(
-                    span, task_id, step, workflow, enrichment_by_span_id.get(span.span_id), summary
+                    span, task_id, step, workflow, workflow_basis,
+                    enrichment_by_span_id.get(span.span_id), summary,
                 )
                 task_records.append(record)
                 run_llm_call_records.append(record)
+                if record["model"]:
+                    last_model = record["model"]
                 run_start = span.start_time_unix_nano if run_start is None else min(run_start, span.start_time_unix_nano)
                 span_end = span.end_time_unix_nano or span.start_time_unix_nano
                 run_end = span_end if run_end is None else max(run_end, span_end)
             else:
-                call, result = _tool_events(span, task_id, step, workflow, summary)
+                call, result = _tool_events(
+                    span, task_id, step, workflow, workflow_basis, last_model, summary
+                )
                 task_records.append(call)
                 if result is not None:
                     result["step_index"] = len(task_records)
@@ -362,11 +392,24 @@ def _resolve_task_id(trace_spans: list[Span], trace_id: str) -> tuple[str, str |
     return trace_id, None
 
 
-def _workflow_of(run_span: Span | None) -> str | None:
+def _workflow_of(run_span: Span | None) -> tuple[str, str]:
+    """(workflow, workflow_basis), preferring the real agent id (which
+    axis of the plugin -- see _AGENT_ID_ATTR) over channel (which chat
+    surface it arrived on): "workflow" everywhere else in this schema
+    means "which logical agent/pipeline handled this" (research_agent,
+    trading_agent, ...), not delivery channel, and agentId is populated
+    on every run regardless of whether it's chat-routed at all, unlike
+    channel/channelId.
+    """
     if run_span is None:
-        return None
+        return _NO_WORKFLOW_LABEL, "no_run_span"
+    agent_id = run_span.attributes.get(_AGENT_ID_ATTR)
+    if agent_id:
+        return str(agent_id), "agent_id"
     channel = run_span.attributes.get(_CHANNEL_ATTR) or run_span.attributes.get(_CHANNEL_ID_ATTR)
-    return str(channel) if channel else None
+    if channel:
+        return str(channel), "channel"
+    return _NO_WORKFLOW_LABEL, "no_workflow_signal"
 
 
 def _span_end(span: Span) -> int:
@@ -504,7 +547,8 @@ def _llm_event(
     span: Span,
     task_id: str,
     step: int,
-    workflow: str | None,
+    workflow: str,
+    workflow_basis: str,
     llm_call_span: Span | None,
     summary: ConversionSummary,
 ) -> dict[str, Any]:
@@ -539,6 +583,7 @@ def _llm_event(
             cost_usd = float(cost_usd_raw)
 
     metadata = _base_metadata(span, masks, content_basis, task_id_source, fingerprint)
+    metadata["workflow_basis"] = workflow_basis
     if response_hash is not None:
         metadata["response_hash"] = response_hash
     if cost_usd is not None:
@@ -584,7 +629,9 @@ def _tool_events(
     span: Span,
     task_id: str,
     step: int,
-    workflow: str | None,
+    workflow: str,
+    workflow_basis: str,
+    preceding_model: str | None,
     summary: ConversionSummary,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     task_id_source = "conversation_id" if span.attributes.get(_SESSION_ID_ATTR) else "trace_id_fallback"
@@ -605,6 +652,9 @@ def _tool_events(
     has_ended = span.end_time_unix_nano is not None
 
     metadata = _base_metadata(span, call_masks, call_basis, task_id_source, call_fingerprint)
+    metadata["workflow_basis"] = workflow_basis
+    if preceding_model:
+        metadata["model_basis"] = "preceding_llm_call"
     mutating = span.attributes.get(_MUTATING_ACTION_ATTR)
     if isinstance(mutating, bool):
         # The single most valuable capability unlock this source has
@@ -624,7 +674,13 @@ def _tool_events(
         "outcome": "error" if error else None,
         "timestamp": _iso_timestamp(span.start_time_unix_nano),
         "cost_usd": None,
-        "model": None,
+        # Not a call-level fact -- a tool call has no model of its own --
+        # but the model actively running this run, the nearest preceding
+        # model.call in true chronological order (see
+        # convert_openclaw_localtrace()'s last_model). None only when no
+        # model.call has happened yet in this run. See
+        # metadata.model_basis and docs/schema.md.
+        "model": preceding_model,
         "parent_id": None,
         "workflow": workflow,
         "metadata": metadata,
@@ -642,6 +698,11 @@ def _tool_events(
     result_hash, result_masks = hashing.content_hash(raw_result, structured=True)
     summary.records_with_prompt_content += 1
 
+    result_metadata = _base_metadata(span, result_masks, "prompt", task_id_source)
+    result_metadata["workflow_basis"] = workflow_basis
+    if preceding_model:
+        result_metadata["model_basis"] = "preceding_llm_call"
+
     result = {
         "task_id": task_id,
         "step_index": None,  # filled in by convert_openclaw_localtrace() once the call's step is known
@@ -653,10 +714,10 @@ def _tool_events(
         "outcome": "error" if error else ("ok" if has_ended else None),
         "timestamp": _iso_timestamp(span.end_time_unix_nano or span.start_time_unix_nano),
         "cost_usd": None,
-        "model": None,
+        "model": preceding_model,
         "parent_id": None,
         "workflow": workflow,
-        "metadata": _base_metadata(span, result_masks, "prompt", task_id_source),
+        "metadata": result_metadata,
     }
     return call, result
 
