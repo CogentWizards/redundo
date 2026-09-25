@@ -27,6 +27,21 @@ python3 -m venv "$REPO_COPY/.venv"
 
 REDUNDO_ROOT="$(cd "$HERE/../../.." && pwd)"
 
+# Send SIGTERM to a PID and wait for it to actually exit, bounded --
+# plain `wait "$pid"` blocks indefinitely if the process never dies from
+# SIGTERM, and there's no guarantee it always will in every environment.
+# SIGKILL after the timeout rather than risk blocking forever.
+stop_pid() {
+  local pid="$1"
+  [[ -n "$pid" ]] || return 0
+  kill "$pid" 2>/dev/null || return 0
+  for _ in $(seq 1 10); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 1
+  done
+  kill -9 "$pid" 2>/dev/null || true
+}
+
 cleanup() {
   # `uv run` doesn't reliably forward SIGTERM to the actual `redundo
   # collect` child process it spawns. Killing just $COLLECT_PID (the
@@ -36,8 +51,7 @@ cleanup() {
   # process regardless of the process tree shape.
   pkill -f "redundo collect --out-dir $TRACES_DIR" 2>/dev/null || true
   if [[ -n "${COLLECT_PID:-}" ]]; then
-    kill "$COLLECT_PID" 2>/dev/null || true
-    wait "$COLLECT_PID" 2>/dev/null || true
+    stop_pid "$COLLECT_PID"
   fi
 }
 trap cleanup EXIT
@@ -55,8 +69,7 @@ echo
 echo "Waiting for telemetry to flush..."
 sleep 3
 pkill -f "redundo collect --out-dir $TRACES_DIR" 2>/dev/null || true
-kill "$COLLECT_PID" 2>/dev/null || true
-wait "$COLLECT_PID" 2>/dev/null || true
+stop_pid "$COLLECT_PID"
 unset COLLECT_PID
 
 echo

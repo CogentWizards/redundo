@@ -84,6 +84,7 @@ from typing import Any
 
 from .. import hashing
 from ..base import AdapterSource, Detection
+from ..model_inference import fill_missing_tool_model
 from ..otlp import (
     LogRecord,
     Span,
@@ -240,6 +241,7 @@ def convert_claude_code(
         _synthesize_orphaned_cost_records(records, api_requests_by_request_id, task_id_by_session_id, summary)
     )
 
+    fill_missing_tool_model(records)
     summary.total_records = len(records)
     return records, summary
 
@@ -518,15 +520,6 @@ def _convert_session(
     records: list[dict[str, Any]] = []
     log_idx = 0  # position into ordered_tool_results; advances once per tool span
 
-    # The model actively running each workflow, updated as llm_request
-    # spans are seen in true chronological order (kept is sorted by
-    # start_time above) and read back for every tool_call/tool_result in
-    # between -- see _resolve_workflow's docstring for why this is keyed
-    # by workflow rather than one session-wide value: a subagent's own
-    # model must never leak onto a tool call the main session makes after
-    # the subagent returns, or vice versa.
-    last_model_by_workflow: dict[str, str] = {}
-
     for span in kept:
         # Claude Code's real hierarchy is shallow and known (interaction ->
         # {llm_request, tool} directly; subagent spans -> a parent tool
@@ -569,8 +562,6 @@ def _convert_session(
             )
             records.append(record)
             last_step_of_span[span.span_id] = step
-            if record["model"]:
-                last_model_by_workflow[workflow] = record["model"]
             _extend_chain_tail(chain_tail, ancestor_id, span.start_time_unix_nano, span_end, step)
             step += 1
 
@@ -580,7 +571,6 @@ def _convert_session(
             call, result = _tool_events(
                 span, task_id, used_real_session_id, step, parent_step,
                 children_by_parent, log_result, summary, workflow, workflow_basis,
-                last_model_by_workflow.get(workflow),
             )
             records.append(call)
             call_step = step
@@ -870,7 +860,6 @@ def _tool_events(
     summary: ConversionSummary,
     workflow: str,
     workflow_basis: str,
-    preceding_model: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     tool_name = span.attributes.get("tool_name") or span.name
     # tool_use_id/gen_ai.tool.call.id would be the reliable join key if
@@ -922,8 +911,6 @@ def _tool_events(
         "masked_spans": call_masks, "tool_use_id": tool_use_id, "mcp": is_mcp,
         "workflow_basis": workflow_basis,
     }
-    if preceding_model:
-        call_extra["model_basis"] = "preceding_llm_call"
 
     call = {
         "task_id": task_id,
@@ -936,13 +923,12 @@ def _tool_events(
         "outcome": None,
         "timestamp": _iso_timestamp(span.start_time_unix_nano),
         "cost_usd": None,
-        # Not a call-level fact -- a tool call has no model of its own --
-        # but the model actively running the workflow that made this call,
-        # the nearest preceding llm_request in true chronological order
-        # (see _convert_session's last_model_by_workflow). None only when
-        # no llm_request has happened yet in this workflow at all. See
+        # Not a call-level fact -- a tool call has no model of its own.
+        # Filled in by model_inference.fill_missing_tool_model() once
+        # every record in this task exists, from the nearest llm_request
+        # in true chronological order, in either direction -- see
         # metadata.model_basis and docs/schema.md.
-        "model": preceding_model,
+        "model": None,
         "parent_id": parent_step,
         "workflow": workflow,
         "metadata": _base_metadata(
@@ -992,8 +978,6 @@ def _tool_events(
             "masked_spans": result_masks, "tool_use_id": tool_use_id, "mcp": is_mcp,
             "workflow_basis": workflow_basis,
         }
-        if preceding_model:
-            result_extra["model_basis"] = "preceding_llm_call"
         result = {
             "task_id": task_id,
             "step_index": None,  # filled in by _convert_session
@@ -1005,7 +989,7 @@ def _tool_events(
             "outcome": outcome,
             "timestamp": _iso_timestamp(span.end_time_unix_nano or span.start_time_unix_nano),
             "cost_usd": None,
-            "model": preceding_model,
+            "model": None,  # filled in by model_inference.fill_missing_tool_model()
             "parent_id": None,  # filled in by _convert_session
             "workflow": workflow,
             "metadata": _base_metadata(
@@ -1020,8 +1004,6 @@ def _tool_events(
         "masked_spans": result_masks, "tool_use_id": tool_use_id, "mcp": is_mcp,
         "workflow_basis": workflow_basis,
     }
-    if preceding_model:
-        result_extra["model_basis"] = "preceding_llm_call"
 
     result = {
         "task_id": task_id,
@@ -1034,7 +1016,7 @@ def _tool_events(
         "outcome": outcome,
         "timestamp": _iso_timestamp(span.end_time_unix_nano or span.start_time_unix_nano),
         "cost_usd": None,
-        "model": preceding_model,
+        "model": None,  # filled in by model_inference.fill_missing_tool_model()
         "parent_id": None,  # filled in by _convert_session
         "workflow": workflow,
         "metadata": _base_metadata(
