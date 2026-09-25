@@ -15,9 +15,9 @@ reimplemented independently as long as it agrees on this shape.
 | `outcome` | `ok` \| `error` \| empty |
 | `timestamp` | when the event happened |
 | `cost_usd` | dollar-denominated cost, if the source has it directly, or an adapter's own estimate/apportionment when it doesn't (see `metadata.cost_basis` below and [docs/pricing.md](pricing.md)) |
-| `model` | cost fallback, and waste segmented by model |
+| `model` | cost fallback, and waste segmented by model. A real, call-level fact on `llm_call`; on `tool_call`/`tool_result` (which have no model of their own), most adapters derive one from the nearest preceding `llm_call` in the same workflow instead of leaving it empty -- see `metadata.model_basis` |
 | `parent_id` | the `step_index` (within this `task_id`) of the event that produced/spawned this one |
-| `workflow` | free-text segmentation label (agent name, pipeline stage, ...) |
+| `workflow` | free-text segmentation label (agent name, pipeline stage, ...). Most adapters default absent workflow to `"main"` (a real fact -- no delegation happened -- not a guess) rather than leaving it empty -- see `metadata.workflow_basis` |
 | `metadata` | escape hatch: anything else, keyed by convention (below) |
 
 `task_id` + `step_index` is an event's identity. `parent_id` points at
@@ -89,6 +89,24 @@ Keys `analyze` looks for. Absence is not a claim of a default value.
   distinct basis regardless of this key. `redundo analyze`'s own report
   states the dollar mixture across these, so a real billed amount and a
   bundled-price-table guess never look equally authoritative.
+- `metadata.model_basis` (str, optional): present, and set to
+  `"preceding_llm_call"`, when `model` on a `tool_call`/`tool_result`
+  record was derived rather than directly observed -- the model of the
+  nearest preceding `llm_call` in the same task and workflow, since a
+  tool call has no model of its own to report. Absent on every `llm_call`
+  record (a directly-observed, call-level fact there, never approximated)
+  and on a `tool_call`/`tool_result` for which no preceding `llm_call`
+  exists yet in its workflow (`model` stays `None` in that case, not a
+  guess).
+- `metadata.workflow_basis` (str, optional): which signal produced
+  `workflow`, since a source can have more than one candidate and they
+  don't all carry equal confidence. Values are source-specific (e.g.
+  `"subagent_type"`/`"agent_id"`/`"no_delegation"` for Claude Code,
+  `"agent_name_attribute"`/`"span_name"`/`"no_workflow_ancestor"` for
+  OpenInference sources) -- see each adapter's own doc
+  ([claude-code.md](claude-code.md), [openinference.md](openinference.md),
+  [openclaw-localtrace.md](openclaw-localtrace.md)) for what each value
+  means for that source.
 - `metadata.source_path` (str, optional): the local directory `redundo
   adapt` read this record's source OTLP documents from, absolute,
   resolved at conversion time. Stamped once, corpus-wide, by the `redundo

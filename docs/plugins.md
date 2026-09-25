@@ -135,11 +135,18 @@ empty/`None` by default and rendered only when you populate them:
 
 By-model/by-workflow breakdowns also follow a shared convention:
 `redundo.analyzer.metrics.UNKNOWN_MODEL_LABEL`/`UNLABELED_WORKFLOW_LABEL`
-name the placeholder to use when an event has no real model/workflow
-value (e.g. a tool_call, which rarely carries a model at all). Using
-these exact two strings, instead of inventing your own placeholder
-text, is what keeps a reader's expectations consistent across every
-analysis's breakdowns.
+name the placeholder to use when an event genuinely has no model/workflow
+value at all. The built-in adapters populate both fields for almost
+every event, including `tool_call`/`tool_result` (which have no model of
+their own, but most adapters derive one from the nearest preceding
+`llm_call` in the same workflow -- see `metadata.model_basis` in
+[docs/schema.md](schema.md)) and default an unset `workflow` to `"main"`
+rather than leaving it empty, so these placeholders are the genuine
+exception now (an event before any `llm_call` has happened in its
+workflow, or a source this package doesn't yet enrich), not the common
+case. Using these exact two strings for that exception, instead of
+inventing your own placeholder text, is what keeps a reader's
+expectations consistent across every analysis's breakdowns.
 
 Register it:
 

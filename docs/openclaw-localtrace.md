@@ -190,6 +190,48 @@ There is no nested-call topology in this plugin's v1 scope to represent,
 so `parent_id` is simply `None` for every record this adapter produces,
 genuinely simpler, not a limitation.
 
+## Workflow and model
+
+`workflow` prefers the run span's own `openclaw.agentId` (the real
+`--agent`, or the operator's configured default) over `openclaw.channel`/
+`openclaw.channelId`: "workflow" everywhere else in this schema means
+"which logical agent/pipeline handled this" (`research_agent`,
+`trading_agent`, ...), not which chat surface a message arrived on, and
+`agentId` is populated on every run regardless of whether it's
+chat-routed at all -- confirmed by reading the installed OpenClaw CLI's
+own source (`cli-runner`'s `hookContext.agentId`), a bare `openclaw agent
+--message ...` CLI invocation with no `--channel` never populates
+`channel`/`channelId` at all, since OpenClaw's own hook-context builder
+falls through to `undefined` for both when no message provider or
+channel is set. `agentId` is not yet emitted by the plugin as of this
+writing (`spans.ts`'s own `AgentContext` interface never declared
+`ctx.agentId`, so it was never read off the real hook context object
+passed to `before_agent_run`) -- read here in anticipation of a plugin
+update; absent on any capture from an older plugin version, degrading to
+`channel`/`channelId`, then to `"main"` when none of the three are
+present. `metadata.workflow_basis` states which one won
+(`"agent_id"`/`"channel"`/`"no_workflow_signal"`).
+
+(A real, independent bug lived here until fixed: `_CHANNEL_ID_ATTR` was
+defined as the same string as `_CHANNEL_ATTR`, both
+`"openclaw.channel"`, so the intended `channel or channelId` fallback
+was dead code -- a real `openclaw.channelId` value with no
+`openclaw.channel` was silently dropped. Fixed to the correct
+`"openclaw.channelId"`.)
+
+`model` is a real, call-level fact on `llm_call` records
+(`openclaw.model`, direct off the `model.call` span), never approximated.
+`tool_call`/`tool_result` records have no model of their own -- OpenClaw's
+telemetry never attaches one to a `tool.execution` span -- so this
+adapter derives one instead: the model of the nearest preceding
+`model.call` span in the same run, in true chronological order.
+`metadata.model_basis = "preceding_llm_call"` marks this explicitly, the
+same way `metadata.cost_basis` marks an estimated dollar figure, so a
+reader never mistakes it for a directly-observed fact. `None`, with no
+`model_basis` key, only for a `tool_call` that happens before any
+`model.call` at all in its run -- genuinely nothing to derive from yet,
+not a gap in this logic.
+
 ## Three real bugs, found only by running it
 
 None were visible from this plugin's or adapter's own unit test suites

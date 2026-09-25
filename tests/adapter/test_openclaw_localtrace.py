@@ -29,6 +29,8 @@ def _turn(
     tool=False,
     llm_call=False,
     channel=None,
+    channel_id=None,
+    agent_id=None,
     tokens_in=None,
     tokens_out=None,
     mutating=None,
@@ -36,6 +38,7 @@ def _turn(
     run_end=3,
     direct_cost_usd=None,
     pricing_generated_at=None,
+    tool_before_model=False,
 ):
     """One realistic run: run span + model.call span (+ optional
     tool.execution and llm.call siblings), matching the real span shapes
@@ -47,6 +50,10 @@ def _turn(
         run_attrs["openclaw.sessionId"] = session_id
     if channel:
         run_attrs["openclaw.channel"] = channel
+    if channel_id:
+        run_attrs["openclaw.channelId"] = channel_id
+    if agent_id:
+        run_attrs["openclaw.agentId"] = agent_id
     spans = [
         span("run", trace_id=trace_id, name="openclaw-localtrace.run",
              start=run_start, end=run_end, attributes=run_attrs),
@@ -84,9 +91,10 @@ def _turn(
             tool_attrs["openclaw.mutatingAction"] = mutating
         if session_id:
             tool_attrs["openclaw.sessionId"] = session_id
+        tool_start = 0 if tool_before_model else model_end
         spans.append(
             span("tool", trace_id=trace_id, name="openclaw-localtrace.tool.execution",
-                 start=model_end, end=model_end + 1, attributes=tool_attrs)
+                 start=tool_start, end=tool_start + 1, attributes=tool_attrs)
         )
     return spans
 
@@ -257,11 +265,48 @@ def test_no_mutating_action_attribute_leaves_write_unset():
 def test_workflow_comes_from_the_run_spans_channel_attribute():
     records, _ = convert(traces_document(_turn("t1", channel="discord")))
     assert records[0]["workflow"] == "discord"
+    assert records[0]["metadata"]["workflow_basis"] == "channel"
 
 
-def test_workflow_is_none_without_a_channel():
+def test_workflow_defaults_to_main_without_agentid_or_channel():
     records, _ = convert(traces_document(_turn("t1")))
-    assert records[0]["workflow"] is None
+    assert records[0]["workflow"] == "main"
+    assert records[0]["metadata"]["workflow_basis"] == "no_workflow_signal"
+
+
+def test_workflow_prefers_agent_id_over_channel():
+    records, _ = convert(traces_document(_turn("t1", agent_id="agentsmith", channel="discord")))
+    assert records[0]["workflow"] == "agentsmith"
+    assert records[0]["metadata"]["workflow_basis"] == "agent_id"
+
+
+def test_workflow_falls_back_to_channel_id_when_channel_absent():
+    # Regression test for the _CHANNEL_ID_ATTR bug: it used to be defined
+    # as the same string as _CHANNEL_ATTR ("openclaw.channel" twice), so
+    # this fallback was dead code -- a real openclaw.channelId value with
+    # no openclaw.channel was silently dropped.
+    records, _ = convert(traces_document(_turn("t1", channel_id="webchat")))
+    assert records[0]["workflow"] == "webchat"
+    assert records[0]["metadata"]["workflow_basis"] == "channel"
+
+
+# --- model derivation for tool_call/tool_result -----------------------------
+
+def test_tool_call_gets_model_from_the_runs_model_call():
+    records, _ = convert(traces_document(_turn("t1", tool=True)))
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    result = next(r for r in records if r["event_type"] == "tool_result")
+    assert call["model"] == "claude-sonnet-5"
+    assert call["metadata"]["model_basis"] == "preceding_llm_call"
+    assert result["model"] == "claude-sonnet-5"
+    assert result["metadata"]["model_basis"] == "preceding_llm_call"
+
+
+def test_tool_call_before_any_model_call_has_no_model():
+    records, _ = convert(traces_document(_turn("t1", tool=True, tool_before_model=True)))
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    assert call["model"] is None
+    assert "model_basis" not in call["metadata"]
 
 
 # --- cost apportionment ------------------------------------------------------

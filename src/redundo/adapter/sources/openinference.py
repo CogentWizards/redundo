@@ -68,6 +68,22 @@ from ..otlp import Span, is_trace_document, parse_spans
 SUPPORTED_KINDS = frozenset({"LLM", "TOOL"})
 _WORKFLOW_KINDS = frozenset({"AGENT", "CHAIN"})
 
+# workflow: no AGENT/CHAIN ancestor exists for this event at all -- not a
+# guess, a real fact (this ran at the top level of the task, not inside a
+# delegated sub-workflow). The same literal every adapter in this package
+# uses for the equivalent case, so a reader sees one consistent label
+# across sources.
+_NO_WORKFLOW_LABEL = "main"
+# The real, human-chosen agent name -- confirmed set by both
+# openinference-instrumentation-openai-agents (Agent(name=...), where it
+# happens to equal the span's own name too) and
+# openinference-instrumentation-google-adk (LlmAgent's own .name, where
+# it does NOT equal the span's own name: ADK's AGENT-kind span is named
+# "agent_run [<name>]", decorated, while this attribute carries the bare
+# name). Checked first for that reason -- relying on the span's own name
+# alone silently surfaces ADK's decorated form.
+_AGENT_NAME_ATTR = "agent.name"
+
 _KIND_ATTR = "openinference.span.kind"
 # gen_ai.conversation.id is the primary attribute; session.id is
 # OpenInference's own separate convention for the identical concept,
@@ -315,6 +331,14 @@ def convert_openinference(
         # -- silently breaking candidate-pair detection between anything
         # before and after the nested span, however far apart.
         chain_tail: dict[str, tuple[int, int, int]] = {}  # ancestor span_id -> (start, end, step)
+        # The model actively running each workflow within this task,
+        # updated as LLM-kind spans are seen in true chronological order
+        # (task_spans is sorted by start_time above) and read back for
+        # every TOOL span in between. Keyed by workflow (see
+        # _workflow_of), not one task-wide value: a subagent's own model
+        # must never leak onto a tool call the parent workflow makes
+        # after the subagent returns, or vice versa.
+        last_model_by_workflow: dict[str, str] = {}
 
         for span in task_spans:
             kind = _kind_of(span)
@@ -332,15 +356,19 @@ def convert_openinference(
                 else:
                     parent_step = last_step_of_span[ancestor_id]
 
+            workflow, workflow_basis = _workflow_of(span, span_by_id)
+
             if kind == "LLM":
                 record = _llm_event(
                     span, task_id, used_conversation_id, parent_task_id, step, parent_step,
-                    span_by_id, summary, pricing_context, children_by_parent,
+                    summary, pricing_context, children_by_parent, workflow, workflow_basis,
                 )
                 if record is None:
                     summary.skipped_missing_content += 1
                     continue
                 records.append(record)
+                if record["model"]:
+                    last_model_by_workflow[workflow] = record["model"]
                 last_step_of_span[span.span_id] = step
                 _extend_chain_tail(chain_tail, ancestor_id, span.start_time_unix_nano, span_end, step)
                 step += 1
@@ -348,7 +376,7 @@ def convert_openinference(
             else:  # TOOL
                 call, result = _tool_events(
                     span, task_id, used_conversation_id, parent_task_id, step, parent_step,
-                    span_by_id, summary,
+                    summary, workflow, workflow_basis, last_model_by_workflow.get(workflow),
                 )
                 if call is None:
                     summary.skipped_missing_content += 1
@@ -484,11 +512,17 @@ def _extend_chain_tail(
         chain_tail[ancestor_id] = (start, end, step)
 
 
-def _workflow_of(span: Span, span_by_id: dict[str, Span]) -> str | None:
-    """Best-effort segmentation label: the nearest AGENT/CHAIN ancestor's
-    span name. Unlike task_id, this has no "never guess" constraint --
-    workflow is inherently an approximate label, so a documented heuristic
-    is fine. None (not a guess) when no such ancestor exists.
+def _workflow_of(span: Span, span_by_id: dict[str, Span]) -> tuple[str, str]:
+    """(workflow, workflow_basis): the nearest AGENT/CHAIN ancestor's own
+    agent.name attribute when present, else its span name, else
+    _NO_WORKFLOW_LABEL when no such ancestor exists at all. Unlike
+    task_id, this has no "never guess" constraint -- workflow is
+    inherently an approximate label, so a documented heuristic is fine.
+
+    agent.name over the span's own name because at least one real,
+    confirmed source (Google ADK) decorates its AGENT-kind span's name
+    ("agent_run [search_agent]") while carrying the bare, human-chosen
+    name ("search_agent") in this attribute instead -- see _AGENT_NAME_ATTR.
     """
     current_id = span.parent_span_id
     seen: set[str] = set()
@@ -496,11 +530,14 @@ def _workflow_of(span: Span, span_by_id: dict[str, Span]) -> str | None:
         seen.add(current_id)
         parent = span_by_id.get(current_id)
         if parent is None:
-            return None
+            return _NO_WORKFLOW_LABEL, "no_workflow_ancestor"
         if _kind_of(parent) in _WORKFLOW_KINDS:
-            return parent.name
+            name = parent.attributes.get(_AGENT_NAME_ATTR)
+            if name:
+                return str(name), "agent_name_attribute"
+            return parent.name, "span_name"
         current_id = parent.parent_span_id
-    return None
+    return _NO_WORKFLOW_LABEL, "no_workflow_ancestor"
 
 
 def _first_present(attributes: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -594,10 +631,11 @@ def _llm_event(
     parent_task_id: str | None,
     step: int,
     parent_step: int | None,
-    span_by_id: dict[str, Span],
     summary: ConversionSummary,
     pricing_context: pricing.PricingContext,
     children_by_parent: dict[str, list[Span]],
+    workflow: str,
+    workflow_basis: str,
 ) -> dict[str, Any] | None:
     raw_input = _first_present(span.attributes, (_INPUT_ATTR,))
     if raw_input is None:
@@ -626,6 +664,7 @@ def _llm_event(
 
     cost = _first_present(span.attributes, _COST_ATTRS)
     metadata = _base_metadata(span, mask_count, used_conversation_id, parent_task_id)
+    metadata["workflow_basis"] = workflow_basis
     cost_usd = float(cost) if cost is not None else None
     if cost_usd is None:
         estimated = pricing.estimate_cost_usd(
@@ -654,7 +693,7 @@ def _llm_event(
         "cost_usd": cost_usd,
         "model": model,
         "parent_id": parent_step,
-        "workflow": _workflow_of(span, span_by_id),
+        "workflow": workflow,
         "metadata": metadata,
     }
 
@@ -666,8 +705,10 @@ def _tool_events(
     parent_task_id: str | None,
     step: int,
     parent_step: int | None,
-    span_by_id: dict[str, Span],
     summary: ConversionSummary,
+    workflow: str,
+    workflow_basis: str,
+    preceding_model: str | None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     raw_input = _first_present(span.attributes, (_INPUT_ATTR,))
     if raw_input is None:
@@ -678,7 +719,11 @@ def _tool_events(
     _record_mask_stats(summary, call_masks)
 
     tool_name = _first_present(span.attributes, _TOOL_NAME_ATTRS) or span.name
-    workflow = _workflow_of(span, span_by_id)
+
+    call_metadata = _base_metadata(span, call_masks, used_conversation_id, parent_task_id)
+    call_metadata["workflow_basis"] = workflow_basis
+    if preceding_model:
+        call_metadata["model_basis"] = "preceding_llm_call"
 
     call = {
         "task_id": task_id,
@@ -691,10 +736,16 @@ def _tool_events(
         "outcome": None,
         "timestamp": _iso_timestamp(span.start_time_unix_nano),
         "cost_usd": None,
-        "model": None,
+        # Not a call-level fact -- a tool call has no model of its own --
+        # but the model actively running this workflow, the nearest
+        # preceding LLM-kind span in the same task and workflow (see
+        # convert_openinference()'s last_model_by_workflow). None only
+        # when no LLM span has happened yet in this workflow. See
+        # metadata.model_basis and docs/schema.md.
+        "model": preceding_model,
         "parent_id": parent_step,
         "workflow": workflow,
-        "metadata": _base_metadata(span, call_masks, used_conversation_id, parent_task_id),
+        "metadata": call_metadata,
     }
 
     raw_output = _first_present(span.attributes, (_OUTPUT_ATTR,))
@@ -704,6 +755,11 @@ def _tool_events(
     structured_out = _is_structured(span.attributes, _OUTPUT_MIME_ATTR, raw_output)
     result_hash, result_masks = hashing.content_hash(raw_output, structured=structured_out)
     _record_mask_stats(summary, result_masks)
+
+    result_metadata = _base_metadata(span, result_masks, used_conversation_id, parent_task_id)
+    result_metadata["workflow_basis"] = workflow_basis
+    if preceding_model:
+        result_metadata["model_basis"] = "preceding_llm_call"
 
     result = {
         "task_id": task_id,
@@ -716,10 +772,10 @@ def _tool_events(
         "outcome": _outcome(span.status_code),
         "timestamp": _iso_timestamp(span.end_time_unix_nano or span.start_time_unix_nano),
         "cost_usd": None,
-        "model": None,
+        "model": preceding_model,
         "parent_id": None,  # filled in by convert()
         "workflow": workflow,
-        "metadata": _base_metadata(span, result_masks, used_conversation_id, parent_task_id),
+        "metadata": result_metadata,
     }
     return call, result
 

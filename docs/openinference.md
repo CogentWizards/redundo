@@ -129,6 +129,40 @@ candidate for repeat detection). A `TOOL` span with `input.value` but no
 `output.value` still produces its `tool_call` record, the analyzer's
 result-identity signal for it will correctly read as unknown.
 
+## Workflow and model
+
+`workflow` is the nearest `AGENT`/`CHAIN` ancestor's own `agent.name`
+attribute when present, else that span's own name, else `"main"` when no
+such ancestor exists at all (a real fact -- this event ran at the top
+level of the task, not inside a delegated sub-workflow -- not a guess).
+`agent.name` is checked first, not the span's own name, because at least
+one real, confirmed source decorates it:
+`openinference-instrumentation-google-adk`'s own `AGENT`-kind span is
+named `"agent_run [<name>]"` while carrying the bare, human-chosen name
+in `agent.name` instead (confirmed by reading `_wrappers.py`'s real
+source: `attributes[SpanAttributes.AGENT_NAME] = instance.name` is set
+independently of the span's own decorated `name`).
+`openinference-instrumentation-openai-agents` happens to set both to the
+same value (`Agent(name=...)`), so this preference is a no-op there, not
+a regression. `metadata.workflow_basis` states which of the three won
+(`"agent_name_attribute"`/`"span_name"`/`"no_workflow_ancestor"`).
+
+`model` is a real, call-level fact on `llm_call` records (`llm.model_name`/
+`gen_ai.request.model`, read directly off the span), never approximated.
+`TOOL`-kind spans carry no model attribute in any confirmed source --
+a tool call isn't itself a model invocation -- so this adapter derives
+one instead: the model of the nearest preceding `LLM`-kind span **in the
+same task and workflow**, in true chronological order (`task_spans` is
+processed in one start-time-sorted pass per task; a running "current
+model" is tracked per resolved workflow, not one task-wide value,
+specifically so one `AGENT` branch's model can never leak onto a sibling
+branch's tool call just because its own `LLM` span happens to come first
+chronologically -- see the cross-task/branch tests in
+`tests/adapter/test_openinference.py`). `metadata.model_basis =
+"preceding_llm_call"` marks this explicitly. `None`, with no
+`model_basis` key, only for a `TOOL` span that happens before any `LLM`
+span at all in its workflow -- genuinely nothing to derive from yet.
+
 ## Lineage (`parent_id`)
 
 Walks the real OTLP `parentSpanId` chain, transparently skipping

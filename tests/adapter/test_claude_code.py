@@ -406,3 +406,110 @@ def test_windowed_prompt_absent_without_any_user_prompt_logs():
     records, summary = convert([traces_document(spans)])
     assert records[0]["metadata"]["content_basis"] == "opaque"
     assert summary.sessions_without_interaction_span == 1
+
+
+# --- model/workflow derivation for tool_call/tool_result -----------------
+
+def test_tool_call_gets_model_from_preceding_llm_request():
+    spans = [
+        _interaction(),
+        _llm_request("llm1", "interaction", 10, 100, model="claude-opus-5"),
+        _tool("tool1", "interaction", "Bash", 200, 300, events=[
+            span_event("tool.output", time=290, attributes={"output": "ok"}),
+        ]),
+    ]
+    records, _ = convert([traces_document(spans)])
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    result = next(r for r in records if r["event_type"] == "tool_result")
+    assert call["model"] == "claude-opus-5"
+    assert call["metadata"]["model_basis"] == "preceding_llm_call"
+    assert result["model"] == "claude-opus-5"
+    assert result["metadata"]["model_basis"] == "preceding_llm_call"
+
+
+def test_tool_call_before_any_llm_request_has_no_model():
+    spans = [
+        _interaction(),
+        _tool("tool1", "interaction", "Bash", 10, 20, events=[
+            span_event("tool.output", time=15, attributes={"output": "ok"}),
+        ]),
+        _llm_request("llm1", "interaction", 200, 300, model="claude-opus-5"),
+    ]
+    records, _ = convert([traces_document(spans)])
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    assert call["model"] is None
+    assert "model_basis" not in call["metadata"]
+
+
+def test_tool_call_model_updates_to_latest_preceding_llm_request():
+    spans = [
+        _interaction(),
+        _llm_request("llm1", "interaction", 10, 100, model="claude-haiku-4-5"),
+        _tool("tool1", "interaction", "Bash", 110, 120, events=[
+            span_event("tool.output", time=115, attributes={"output": "ok"}),
+        ]),
+        _llm_request("llm2", "interaction", 200, 300, model="claude-opus-5"),
+        _tool("tool2", "interaction", "Bash", 310, 320, events=[
+            span_event("tool.output", time=315, attributes={"output": "ok"}),
+        ]),
+    ]
+    records, _ = convert([traces_document(spans)])
+    calls = [r for r in records if r["event_type"] == "tool_call"]
+    assert calls[0]["model"] == "claude-haiku-4-5"
+    assert calls[1]["model"] == "claude-opus-5"
+
+
+def test_workflow_defaults_to_main_without_delegation():
+    spans = [
+        _interaction(),
+        _llm_request("llm1", "interaction", 10, 100),
+    ]
+    records, _ = convert([traces_document(spans)])
+    assert records[0]["workflow"] == "main"
+    assert records[0]["metadata"]["workflow_basis"] == "no_delegation"
+
+
+def test_workflow_uses_raw_agent_id_when_no_subagent_type_ancestor():
+    spans = [
+        _interaction(),
+        _llm_request("llm1", "interaction", 10, 100, agent_id="agent-xyz"),
+    ]
+    records, _ = convert([traces_document(spans)])
+    assert records[0]["workflow"] == "agent-xyz"
+    assert records[0]["metadata"]["workflow_basis"] == "agent_id"
+
+
+def test_workflow_prefers_subagent_type_over_raw_agent_id():
+    spans = [
+        _interaction(),
+        _tool("task1", "interaction", "Task", 10, 500, subagent_type="code-reviewer"),
+        _llm_request("sub_llm1", "task1", 20, 100, agent_id="agent-xyz"),
+    ]
+    records, _ = convert([traces_document(spans)])
+    sub_llm = next(r for r in records if r["event_type"] == "llm_call")
+    assert sub_llm["workflow"] == "code-reviewer"
+    assert sub_llm["metadata"]["workflow_basis"] == "subagent_type"
+
+
+def test_subagent_model_does_not_leak_onto_main_session_tool_call():
+    # Main session uses opus, delegates to a haiku subagent via Task, then
+    # (after the subagent returns) makes its own tool call with no
+    # intervening llm_request of its own -- that tool call must still
+    # resolve to opus (the main workflow's own last model), never the
+    # subagent's haiku, even though the subagent's llm_request is the most
+    # recent one chronologically.
+    spans = [
+        _interaction(),
+        _llm_request("llm1", "interaction", 10, 100, model="claude-opus-5"),
+        _tool("task1", "interaction", "Task", 110, 300, subagent_type="Explore"),
+        _llm_request("sub_llm1", "task1", 120, 200, model="claude-haiku-4-5"),
+        _tool("tool1", "interaction", "Bash", 310, 320, events=[
+            span_event("tool.output", time=315, attributes={"output": "ok"}),
+        ]),
+    ]
+    records, _ = convert([traces_document(spans)])
+    main_tool_call = next(r for r in records if r["name"] == "Bash" and r["event_type"] == "tool_call")
+    sub_llm = next(r for r in records if r.get("workflow") == "Explore")
+    assert main_tool_call["workflow"] == "main"
+    assert main_tool_call["model"] == "claude-opus-5"
+    assert sub_llm["model"] == "claude-haiku-4-5"
