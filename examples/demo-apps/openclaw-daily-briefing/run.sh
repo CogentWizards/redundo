@@ -15,6 +15,25 @@ REDUNDO_ROOT="$(cd "$HERE/../../.." && pwd)"
 AGENT="${OPENCLAW_DEMO_AGENT:-agentsmith}"
 GATEWAY_PORT="${OPENCLAW_DEMO_GATEWAY_PORT:-18789}"
 
+# Send SIGTERM to a PID and wait for it to actually exit, bounded --
+# plain `wait "$pid"` blocks indefinitely if the process never dies from
+# SIGTERM, and `openclaw gateway run`'s own shutdown path isn't reliably
+# fast, or even guaranteed to complete at all, in every environment
+# (confirmed: this is what hung the script for one real user, well past
+# this "waiting for telemetry to flush" step, with no way out short of a
+# manual kill). SIGKILL after the timeout rather than risk blocking
+# forever a second time.
+stop_pid() {
+  local pid="$1"
+  [[ -n "$pid" ]] || return 0
+  kill "$pid" 2>/dev/null || return 0
+  for _ in $(seq 1 10); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 1
+  done
+  kill -9 "$pid" 2>/dev/null || true
+}
+
 WORK_DIR="$(mktemp -d /tmp/redundo-demo-openclaw-briefing.XXXXXX)"
 TRACES_DIR="$WORK_DIR/traces"
 mkdir -p "$TRACES_DIR"
@@ -42,11 +61,10 @@ cleanup() {
   local port_pid
   port_pid="$(lsof -ti "tcp:$GATEWAY_PORT" 2>/dev/null || true)"
   if [[ -n "$port_pid" ]]; then
-    kill $port_pid 2>/dev/null || true
+    for p in $port_pid; do stop_pid "$p"; done
   fi
   if [[ -n "${GATEWAY_PID:-}" ]]; then
-    kill "$GATEWAY_PID" 2>/dev/null || true
-    wait "$GATEWAY_PID" 2>/dev/null || true
+    stop_pid "$GATEWAY_PID"
   fi
   if [[ "$PREVIOUS_OUTPUT_DIR" == "null" ]]; then
     openclaw config unset plugins.entries.openclaw-localtrace.config.outputDir >/dev/null 2>&1 || true
@@ -76,8 +94,7 @@ python3 "$HERE/briefing_bot.py" --agent "$AGENT"
 echo
 echo "Waiting for telemetry to flush..."
 sleep 3
-kill "$GATEWAY_PID" 2>/dev/null || true
-wait "$GATEWAY_PID" 2>/dev/null || true
+stop_pid "$GATEWAY_PID"
 unset GATEWAY_PID
 
 echo

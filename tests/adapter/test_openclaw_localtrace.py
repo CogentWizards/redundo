@@ -302,8 +302,28 @@ def test_tool_call_gets_model_from_the_runs_model_call():
     assert result["metadata"]["model_basis"] == "preceding_llm_call"
 
 
-def test_tool_call_before_any_model_call_has_no_model():
+def test_tool_call_before_any_model_call_falls_back_to_the_following_one():
+    # Confirmed real shape (Claude Code, and plausible here for the same
+    # architectural reason): a run's first kept event can be a
+    # tool.execution span, its model.call only appearing later. The
+    # nearest one is still a real fact about this run's own execution,
+    # just found by looking forward instead of back.
     records, _ = convert(traces_document(_turn("t1", tool=True, tool_before_model=True)))
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    assert call["model"] == "claude-sonnet-5"
+    assert call["metadata"]["model_basis"] == "following_llm_call"
+
+
+def test_tool_call_with_no_model_call_anywhere_in_its_run_has_no_model():
+    spans = [
+        span("run", trace_id="t1", name="openclaw-localtrace.run", start=0, end=3),
+        span("tool", trace_id="t1", name="openclaw-localtrace.tool.execution", start=1, end=2,
+             attributes={
+                 "openclaw.toolName": "exec",
+                 "gen_ai.tool.call.arguments": json.dumps({"command": "echo hi"}),
+             }),
+    ]
+    records, _ = convert(traces_document(spans))
     call = next(r for r in records if r["event_type"] == "tool_call")
     assert call["model"] is None
     assert "model_basis" not in call["metadata"]

@@ -77,6 +77,7 @@ from typing import Any
 
 from .. import hashing
 from ..base import AdapterSource, Detection
+from ..model_inference import fill_missing_tool_model
 from ..otlp import (
     MetricPoint,
     Span,
@@ -325,13 +326,6 @@ def convert_openclaw_localtrace(
         run_llm_call_records: list[dict[str, Any]] = []
         run_start = run_span.start_time_unix_nano if run_span is not None else None
         run_end = run_span.end_time_unix_nano if run_span is not None else None
-        # The model actively running this run, updated as model.call spans
-        # are seen in true chronological order (kept is sorted by
-        # start_time above) and read back for every tool.execution span in
-        # between. One value per run, not per workflow: this plugin's v1
-        # scope has no nested-call topology (see module docstring point 4),
-        # so a run's workflow never changes partway through it.
-        last_model: str | None = None
 
         for span in kept:
             step = len(task_records)
@@ -342,14 +336,12 @@ def convert_openclaw_localtrace(
                 )
                 task_records.append(record)
                 run_llm_call_records.append(record)
-                if record["model"]:
-                    last_model = record["model"]
                 run_start = span.start_time_unix_nano if run_start is None else min(run_start, span.start_time_unix_nano)
                 span_end = span.end_time_unix_nano or span.start_time_unix_nano
                 run_end = span_end if run_end is None else max(run_end, span_end)
             else:
                 call, result = _tool_events(
-                    span, task_id, step, workflow, workflow_basis, last_model, summary
+                    span, task_id, step, workflow, workflow_basis, summary
                 )
                 task_records.append(call)
                 if result is not None:
@@ -365,6 +357,7 @@ def convert_openclaw_localtrace(
             )
 
     records: list[dict[str, Any]] = [r for task_records in records_by_task.values() for r in task_records]
+    fill_missing_tool_model(records)
     summary.total_records = len(records)
     summary.sessions_found = len(sessions_seen)
 
@@ -631,7 +624,6 @@ def _tool_events(
     step: int,
     workflow: str,
     workflow_basis: str,
-    preceding_model: str | None,
     summary: ConversionSummary,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     task_id_source = "conversation_id" if span.attributes.get(_SESSION_ID_ATTR) else "trace_id_fallback"
@@ -653,8 +645,6 @@ def _tool_events(
 
     metadata = _base_metadata(span, call_masks, call_basis, task_id_source, call_fingerprint)
     metadata["workflow_basis"] = workflow_basis
-    if preceding_model:
-        metadata["model_basis"] = "preceding_llm_call"
     mutating = span.attributes.get(_MUTATING_ACTION_ATTR)
     if isinstance(mutating, bool):
         # The single most valuable capability unlock this source has
@@ -674,13 +664,12 @@ def _tool_events(
         "outcome": "error" if error else None,
         "timestamp": _iso_timestamp(span.start_time_unix_nano),
         "cost_usd": None,
-        # Not a call-level fact -- a tool call has no model of its own --
-        # but the model actively running this run, the nearest preceding
-        # model.call in true chronological order (see
-        # convert_openclaw_localtrace()'s last_model). None only when no
-        # model.call has happened yet in this run. See
+        # Not a call-level fact -- a tool call has no model of its own.
+        # Filled in by model_inference.fill_missing_tool_model() once
+        # every record in this task exists, from the nearest model.call
+        # in true chronological order, in either direction -- see
         # metadata.model_basis and docs/schema.md.
-        "model": preceding_model,
+        "model": None,
         "parent_id": None,
         "workflow": workflow,
         "metadata": metadata,
@@ -700,8 +689,6 @@ def _tool_events(
 
     result_metadata = _base_metadata(span, result_masks, "prompt", task_id_source)
     result_metadata["workflow_basis"] = workflow_basis
-    if preceding_model:
-        result_metadata["model_basis"] = "preceding_llm_call"
 
     result = {
         "task_id": task_id,
@@ -714,7 +701,7 @@ def _tool_events(
         "outcome": "error" if error else ("ok" if has_ended else None),
         "timestamp": _iso_timestamp(span.end_time_unix_nano or span.start_time_unix_nano),
         "cost_usd": None,
-        "model": preceding_model,
+        "model": None,  # filled in by model_inference.fill_missing_tool_model()
         "parent_id": None,
         "workflow": workflow,
         "metadata": result_metadata,

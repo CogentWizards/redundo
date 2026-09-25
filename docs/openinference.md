@@ -151,17 +151,25 @@ a regression. `metadata.workflow_basis` states which of the three won
 `gen_ai.request.model`, read directly off the span), never approximated.
 `TOOL`-kind spans carry no model attribute in any confirmed source --
 a tool call isn't itself a model invocation -- so this adapter derives
-one instead: the model of the nearest preceding `LLM`-kind span **in the
-same task and workflow**, in true chronological order (`task_spans` is
-processed in one start-time-sorted pass per task; a running "current
-model" is tracked per resolved workflow, not one task-wide value,
-specifically so one `AGENT` branch's model can never leak onto a sibling
-branch's tool call just because its own `LLM` span happens to come first
-chronologically -- see the cross-task/branch tests in
-`tests/adapter/test_openinference.py`). `metadata.model_basis =
-"preceding_llm_call"` marks this explicitly. `None`, with no
-`model_basis` key, only for a `TOOL` span that happens before any `LLM`
-span at all in its workflow -- genuinely nothing to derive from yet.
+one instead, via the shared
+`redundo.adapter.model_inference.fill_missing_tool_model()` (every
+source in this package uses the same function): once every record in a
+task exists, it finds the nearest `LLM`-kind span **in the same
+workflow**, checking both backward and forward in true chronological
+order and taking whichever is closer (ties go to the earlier one).
+Looking forward matters: a task's very first event can genuinely be a
+`TOOL` span (confirmed against real Claude Code captures, and the same
+shape is architecturally possible here), and a backward-only search
+would leave its model at `None` forever even though the very next `LLM`
+span in the same workflow is a real fact about what was about to run.
+Scoped per workflow, not per task, specifically so one `AGENT` branch's
+model can never leak onto a sibling branch's tool call, or vice versa --
+see the cross-branch tests in `tests/adapter/test_openinference.py` and
+`tests/adapter/test_model_inference.py`. `metadata.model_basis =
+"preceding_llm_call"` or `"following_llm_call"` marks which direction
+won. `None`, with no `model_basis` key, only for a `TOOL` span whose
+workflow has no `LLM` span at all anywhere in the task -- genuinely
+nothing to derive from.
 
 ## Lineage (`parent_id`)
 

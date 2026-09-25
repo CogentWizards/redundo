@@ -63,6 +63,7 @@ from typing import Any
 
 from .. import hashing, pricing
 from ..base import AdapterSource, Detection
+from ..model_inference import fill_missing_tool_model
 from ..otlp import Span, is_trace_document, parse_spans
 
 SUPPORTED_KINDS = frozenset({"LLM", "TOOL"})
@@ -331,14 +332,6 @@ def convert_openinference(
         # -- silently breaking candidate-pair detection between anything
         # before and after the nested span, however far apart.
         chain_tail: dict[str, tuple[int, int, int]] = {}  # ancestor span_id -> (start, end, step)
-        # The model actively running each workflow within this task,
-        # updated as LLM-kind spans are seen in true chronological order
-        # (task_spans is sorted by start_time above) and read back for
-        # every TOOL span in between. Keyed by workflow (see
-        # _workflow_of), not one task-wide value: a subagent's own model
-        # must never leak onto a tool call the parent workflow makes
-        # after the subagent returns, or vice versa.
-        last_model_by_workflow: dict[str, str] = {}
 
         for span in task_spans:
             kind = _kind_of(span)
@@ -367,8 +360,6 @@ def convert_openinference(
                     summary.skipped_missing_content += 1
                     continue
                 records.append(record)
-                if record["model"]:
-                    last_model_by_workflow[workflow] = record["model"]
                 last_step_of_span[span.span_id] = step
                 _extend_chain_tail(chain_tail, ancestor_id, span.start_time_unix_nano, span_end, step)
                 step += 1
@@ -376,7 +367,7 @@ def convert_openinference(
             else:  # TOOL
                 call, result = _tool_events(
                     span, task_id, used_conversation_id, parent_task_id, step, parent_step,
-                    summary, workflow, workflow_basis, last_model_by_workflow.get(workflow),
+                    summary, workflow, workflow_basis,
                 )
                 if call is None:
                     summary.skipped_missing_content += 1
@@ -395,6 +386,7 @@ def convert_openinference(
                     step += 1
                 _extend_chain_tail(chain_tail, ancestor_id, span.start_time_unix_nano, span_end, final_step)
 
+    fill_missing_tool_model(records)
     summary.total_records = len(records)
     return records, summary
 
@@ -708,7 +700,6 @@ def _tool_events(
     summary: ConversionSummary,
     workflow: str,
     workflow_basis: str,
-    preceding_model: str | None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     raw_input = _first_present(span.attributes, (_INPUT_ATTR,))
     if raw_input is None:
@@ -722,8 +713,6 @@ def _tool_events(
 
     call_metadata = _base_metadata(span, call_masks, used_conversation_id, parent_task_id)
     call_metadata["workflow_basis"] = workflow_basis
-    if preceding_model:
-        call_metadata["model_basis"] = "preceding_llm_call"
 
     call = {
         "task_id": task_id,
@@ -736,13 +725,12 @@ def _tool_events(
         "outcome": None,
         "timestamp": _iso_timestamp(span.start_time_unix_nano),
         "cost_usd": None,
-        # Not a call-level fact -- a tool call has no model of its own --
-        # but the model actively running this workflow, the nearest
-        # preceding LLM-kind span in the same task and workflow (see
-        # convert_openinference()'s last_model_by_workflow). None only
-        # when no LLM span has happened yet in this workflow. See
+        # Not a call-level fact -- a tool call has no model of its own.
+        # Filled in by model_inference.fill_missing_tool_model() once
+        # every record in this task exists, from the nearest LLM-kind
+        # span in true chronological order, in either direction -- see
         # metadata.model_basis and docs/schema.md.
-        "model": preceding_model,
+        "model": None,
         "parent_id": parent_step,
         "workflow": workflow,
         "metadata": call_metadata,
@@ -758,8 +746,6 @@ def _tool_events(
 
     result_metadata = _base_metadata(span, result_masks, used_conversation_id, parent_task_id)
     result_metadata["workflow_basis"] = workflow_basis
-    if preceding_model:
-        result_metadata["model_basis"] = "preceding_llm_call"
 
     result = {
         "task_id": task_id,
@@ -772,7 +758,7 @@ def _tool_events(
         "outcome": _outcome(span.status_code),
         "timestamp": _iso_timestamp(span.end_time_unix_nano or span.start_time_unix_nano),
         "cost_usd": None,
-        "model": preceding_model,
+        "model": None,  # filled in by model_inference.fill_missing_tool_model()
         "parent_id": None,  # filled in by convert()
         "workflow": workflow,
         "metadata": result_metadata,

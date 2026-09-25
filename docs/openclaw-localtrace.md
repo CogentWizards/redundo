@@ -223,14 +223,22 @@ was dead code -- a real `openclaw.channelId` value with no
 (`openclaw.model`, direct off the `model.call` span), never approximated.
 `tool_call`/`tool_result` records have no model of their own -- OpenClaw's
 telemetry never attaches one to a `tool.execution` span -- so this
-adapter derives one instead: the model of the nearest preceding
-`model.call` span in the same run, in true chronological order.
-`metadata.model_basis = "preceding_llm_call"` marks this explicitly, the
-same way `metadata.cost_basis` marks an estimated dollar figure, so a
-reader never mistakes it for a directly-observed fact. `None`, with no
-`model_basis` key, only for a `tool_call` that happens before any
-`model.call` at all in its run -- genuinely nothing to derive from yet,
-not a gap in this logic.
+adapter derives one instead, via the shared
+`redundo.adapter.model_inference.fill_missing_tool_model()` (every
+source in this package uses the same function): once every record in a
+run exists, it finds the nearest `model.call` span, checking both
+backward and forward in true chronological order and taking whichever
+is closer (ties go to the earlier one). Looking forward matters: a run's
+first kept event can genuinely be a `tool.execution` span, its first
+`model.call` only appearing later, and a backward-only search would
+leave that `tool_call`'s model at `None` forever even though the very
+next `model.call` in the same run is a real fact about what was about to
+run. `metadata.model_basis = "preceding_llm_call"` or
+`"following_llm_call"` marks which direction won, the same way
+`metadata.cost_basis` marks an estimated dollar figure, so a reader
+never mistakes it for a directly-observed fact. `None`, with no
+`model_basis` key, only for a run with no `model.call` span at all --
+genuinely nothing to derive from, not a gap in this logic.
 
 ## Three real bugs, found only by running it
 

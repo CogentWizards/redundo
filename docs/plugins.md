@@ -54,6 +54,19 @@ this package and `my-source` appears in `redundo adapt --source`'s
 choices, and in auto-detection if `detect()` returns non-`None` for a
 real corpus.
 
+If your source distinguishes `llm_call` from `tool_call`/`tool_result`
+at all, call `redundo.adapter.model_inference.fill_missing_tool_model(records)`
+on your finished `records` list before returning it from `convert()` --
+every built-in adapter does. It fills `model` on any `tool_call`/
+`tool_result` that doesn't already have one, from the nearest `llm_call`
+in the same `task_id` and `workflow` (checked both backward and forward
+in time; a tool call before any `llm_call` your source ever emits is a
+real, confirmed shape, not an edge case worth special-casing yourself),
+and sets `metadata.model_basis` accordingly. Building this yourself per
+adapter is exactly the trap this package's own three built-in adapters
+fell into before this function existed: a backward-only version looks
+correct until a real capture's task starts with a tool call.
+
 ## Analyses
 
 ```python
@@ -138,12 +151,14 @@ By-model/by-workflow breakdowns also follow a shared convention:
 name the placeholder to use when an event genuinely has no model/workflow
 value at all. The built-in adapters populate both fields for almost
 every event, including `tool_call`/`tool_result` (which have no model of
-their own, but most adapters derive one from the nearest preceding
-`llm_call` in the same workflow -- see `metadata.model_basis` in
+their own, but every adapter derives one via the shared
+`redundo.adapter.model_inference.fill_missing_tool_model()` -- the
+nearest `llm_call` in the same workflow, checked both backward and
+forward in time, whichever is closer -- see `metadata.model_basis` in
 [docs/schema.md](schema.md)) and default an unset `workflow` to `"main"`
 rather than leaving it empty, so these placeholders are the genuine
-exception now (an event before any `llm_call` has happened in its
-workflow, or a source this package doesn't yet enrich), not the common
+exception now (a workflow with no `llm_call` at all anywhere in its
+task, or a source this package doesn't yet enrich), not the common
 case. Using these exact two strings for that exception, instead of
 inventing your own placeholder text, is what keeps a reader's
 expectations consistent across every analysis's breakdowns.

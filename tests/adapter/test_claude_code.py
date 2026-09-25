@@ -427,13 +427,29 @@ def test_tool_call_gets_model_from_preceding_llm_request():
     assert result["metadata"]["model_basis"] == "preceding_llm_call"
 
 
-def test_tool_call_before_any_llm_request_has_no_model():
+def test_tool_call_before_any_llm_request_falls_back_to_the_following_one():
+    # Confirmed real shape: a session's step 0 can genuinely be a
+    # tool_call, its first llm_request only appearing later. The nearest
+    # llm_request is still a real fact about this task's own execution,
+    # just found by looking forward instead of back.
     spans = [
         _interaction(),
         _tool("tool1", "interaction", "Bash", 10, 20, events=[
             span_event("tool.output", time=15, attributes={"output": "ok"}),
         ]),
         _llm_request("llm1", "interaction", 200, 300, model="claude-opus-5"),
+    ]
+    records, _ = convert([traces_document(spans)])
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    assert call["model"] == "claude-opus-5"
+    assert call["metadata"]["model_basis"] == "following_llm_call"
+
+
+def test_tool_call_with_no_llm_request_anywhere_in_its_workflow_has_no_model():
+    spans = [
+        _tool("tool1", None, "Bash", 10, 20, events=[
+            span_event("tool.output", time=15, attributes={"output": "ok"}),
+        ]),
     ]
     records, _ = convert([traces_document(spans)])
     call = next(r for r in records if r["event_type"] == "tool_call")

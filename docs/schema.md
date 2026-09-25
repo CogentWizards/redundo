@@ -15,7 +15,7 @@ reimplemented independently as long as it agrees on this shape.
 | `outcome` | `ok` \| `error` \| empty |
 | `timestamp` | when the event happened |
 | `cost_usd` | dollar-denominated cost, if the source has it directly, or an adapter's own estimate/apportionment when it doesn't (see `metadata.cost_basis` below and [docs/pricing.md](pricing.md)) |
-| `model` | cost fallback, and waste segmented by model. A real, call-level fact on `llm_call`; on `tool_call`/`tool_result` (which have no model of their own), most adapters derive one from the nearest preceding `llm_call` in the same workflow instead of leaving it empty -- see `metadata.model_basis` |
+| `model` | cost fallback, and waste segmented by model. A real, call-level fact on `llm_call`; on `tool_call`/`tool_result` (which have no model of their own), every adapter derives one from the nearest `llm_call` in the same workflow (backward or forward in time, whichever is closer) instead of leaving it empty -- see `metadata.model_basis` |
 | `parent_id` | the `step_index` (within this `task_id`) of the event that produced/spawned this one |
 | `workflow` | free-text segmentation label (agent name, pipeline stage, ...). Most adapters default absent workflow to `"main"` (a real fact -- no delegation happened -- not a guess) rather than leaving it empty -- see `metadata.workflow_basis` |
 | `metadata` | escape hatch: anything else, keyed by convention (below) |
@@ -90,14 +90,19 @@ Keys `analyze` looks for. Absence is not a claim of a default value.
   states the dollar mixture across these, so a real billed amount and a
   bundled-price-table guess never look equally authoritative.
 - `metadata.model_basis` (str, optional): present, and set to
-  `"preceding_llm_call"`, when `model` on a `tool_call`/`tool_result`
-  record was derived rather than directly observed -- the model of the
-  nearest preceding `llm_call` in the same task and workflow, since a
-  tool call has no model of its own to report. Absent on every `llm_call`
-  record (a directly-observed, call-level fact there, never approximated)
-  and on a `tool_call`/`tool_result` for which no preceding `llm_call`
-  exists yet in its workflow (`model` stays `None` in that case, not a
-  guess).
+  `"preceding_llm_call"` or `"following_llm_call"`, when `model` on a
+  `tool_call`/`tool_result` record was derived rather than directly
+  observed -- the nearest `llm_call` in the same task and workflow,
+  checked both backward and forward in true chronological order (see
+  `redundo.adapter.model_inference.fill_missing_tool_model()`, the one
+  shared implementation every adapter in this package uses), since a
+  tool call has no model of its own to report. The forward case is real,
+  not theoretical: a task's very first event can genuinely be a
+  `tool_call`, its first `llm_call` only appearing later. Absent on
+  every `llm_call` record (a directly-observed, call-level fact there,
+  never approximated) and on a `tool_call`/`tool_result` whose workflow
+  has no `llm_call` at all anywhere in its task (`model` stays `None` in
+  that case, not a guess).
 - `metadata.workflow_basis` (str, optional): which signal produced
   `workflow`, since a source can have more than one candidate and they
   don't all carry equal confidence. Values are source-specific (e.g.

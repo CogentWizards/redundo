@@ -403,18 +403,27 @@ recovered by it.
 `model` is a real, call-level fact on `llm_call` records (read directly
 off the span), never approximated. `tool_call`/`tool_result` records have
 no model of their own -- a tool call isn't itself a model invocation --
-so this adapter derives one instead: the model of the nearest preceding
-`claude_code.llm_request` **in the same workflow**, in true chronological
-order (spans are processed in one global start-time-sorted pass per
-session; a running "current model" is tracked per resolved workflow, not
-one session-wide value, specifically so a subagent's own model can never
-leak onto a tool call the main session -- or a sibling subagent -- makes
-after it returns, or vice versa). `metadata.model_basis =
-"preceding_llm_call"` marks this explicitly, the same way
-`metadata.content_basis`/`cost_basis` mark other derived-not-observed
-values. `None`, with no `model_basis` key, only for a `tool_call` that
-happens before any `llm_request` at all in its own workflow -- genuinely
-nothing to derive from yet, not a gap in this logic. The one synthesized
+so this adapter derives one instead, via the shared
+`redundo.adapter.model_inference.fill_missing_tool_model()` (every
+source in this package uses the same function, not a per-adapter
+reimplementation): once every record in a session exists, it finds the
+nearest `claude_code.llm_request` **in the same workflow**, checking both
+backward and forward in true chronological order and taking whichever is
+closer (ties go to the earlier one). Looking forward matters: a
+session's step 0 can genuinely be a `claude_code.tool` call, its first
+`claude_code.llm_request` only appearing later -- confirmed against real
+captures, not a hypothetical -- and a backward-only search would leave
+that tool_call's model at `None` forever even though the very next
+`llm_request` in the same workflow is a real fact about what was about
+to run. Scoped per workflow, not per session, specifically so a
+subagent's own model can never leak onto a tool call the main session --
+or a sibling subagent -- makes, or vice versa.
+`metadata.model_basis = "preceding_llm_call"` or `"following_llm_call"`
+marks which direction won, the same way `metadata.content_basis`/
+`cost_basis` mark other derived-not-observed values. `None`, with no
+`model_basis` key, only for a `tool_call` whose workflow has no
+`llm_request` at all anywhere in the session -- genuinely nothing to
+derive from, not a gap in this logic. The one synthesized
 llm_call type this adapter produces (see "Synthesized cost records"
 below) always gets `workflow = "main"`: both of its confirmed causes
 (session-title generation, the Agent SDK's opening call) are top-level

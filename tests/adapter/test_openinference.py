@@ -439,13 +439,29 @@ def test_tool_call_gets_model_from_preceding_llm_span_in_same_task():
     assert result["metadata"]["model_basis"] == "preceding_llm_call"
 
 
-def test_tool_call_before_any_llm_span_has_no_model():
+def test_tool_call_before_any_llm_span_falls_back_to_the_following_one():
+    # Confirmed real shape (Claude Code): a task's step 0 can genuinely be
+    # a tool call, its first llm_call only appearing later. The nearest
+    # LLM span is still a real fact about this task's own execution, just
+    # found by looking forward instead of back.
     spans = [
         span("tool1", start=0, attributes={
             "openinference.span.kind": "TOOL", "input.value": "args", "output.value": "result",
         }),
         span("llm1", start=1, attributes={
             "openinference.span.kind": "LLM", "input.value": "hi", "llm.model_name": "gpt-5",
+        }),
+    ]
+    records, _ = convert(traces_document(spans))
+    call = next(r for r in records if r["event_type"] == "tool_call")
+    assert call["model"] == "gpt-5"
+    assert call["metadata"]["model_basis"] == "following_llm_call"
+
+
+def test_tool_call_with_no_llm_span_anywhere_in_its_workflow_has_no_model():
+    spans = [
+        span("tool1", start=0, attributes={
+            "openinference.span.kind": "TOOL", "input.value": "args", "output.value": "result",
         }),
     ]
     records, _ = convert(traces_document(spans))
