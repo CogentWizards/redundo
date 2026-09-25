@@ -253,8 +253,8 @@ mapping it back to the real task id once, right after the coverage
 block, so a reader doesn't scroll past the same UUID a dozen times.
 Every count above traces back to a real, checkable case in
 [`examples/demo_trace.jsonl`](https://github.com/CogentWizards/redundo/blob/main/examples/demo_trace.jsonl). Full report:
-[`examples/demo_report.html`](https://github.com/CogentWizards/redundo/blob/main/examples/demo_report.html). Three live,
-narrated demo apps (Claude Agent SDK, OpenClaw, Hermes): [`examples/demo-apps/`](https://github.com/CogentWizards/redundo/tree/main/examples/demo-apps/).
+[`examples/demo_report.html`](https://github.com/CogentWizards/redundo/blob/main/examples/demo_report.html). Five live,
+narrated demo apps (Claude Agent SDK, OpenClaw, Hermes, OpenAI Agents SDK, Google ADK): [`examples/demo-apps/`](https://github.com/CogentWizards/redundo/tree/main/examples/demo-apps/).
 
 ## How it works
 

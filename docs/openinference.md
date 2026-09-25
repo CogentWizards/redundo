@@ -131,21 +131,37 @@ result-identity signal for it will correctly read as unknown.
 
 ## Workflow and model
 
-`workflow` is the nearest `AGENT`/`CHAIN` ancestor's own `agent.name`
-attribute when present, else that span's own name, else `"main"` when no
-such ancestor exists at all (a real fact -- this event ran at the top
-level of the task, not inside a delegated sub-workflow -- not a guess).
-`agent.name` is checked first, not the span's own name, because at least
-one real, confirmed source decorates it:
-`openinference-instrumentation-google-adk`'s own `AGENT`-kind span is
-named `"agent_run [<name>]"` while carrying the bare, human-chosen name
-in `agent.name` instead (confirmed by reading `_wrappers.py`'s real
-source: `attributes[SpanAttributes.AGENT_NAME] = instance.name` is set
-independently of the span's own decorated `name`).
-`openinference-instrumentation-openai-agents` happens to set both to the
-same value (`Agent(name=...)`), so this preference is a no-op there, not
-a regression. `metadata.workflow_basis` states which of the three won
-(`"agent_name_attribute"`/`"span_name"`/`"no_workflow_ancestor"`).
+`workflow` walks the **whole** ancestor chain (not just the nearest
+`AGENT`/`CHAIN` span) looking for one with a real agent-name attribute
+(`agent.name`, else `gen_ai.agent.name`), and returns that immediately
+when found; only when none exists anywhere in the chain does it fall
+back to the *nearest* `AGENT`/`CHAIN` ancestor's own span name; `"main"`
+when there's no `AGENT`/`CHAIN` ancestor at all (a real fact -- this
+event ran at the top level of the task, not inside a delegated
+sub-workflow -- not a guess).
+
+Stopping at the nearest `AGENT`/`CHAIN` ancestor (an earlier version of
+this logic, based on reading `openinference-instrumentation-openai-agents`'s
+source alone) turned out wrong once checked against a real, live
+capture, built specifically to check it (see
+[`examples/demo-apps/openai-agents-strategic-advisor/`](../examples/demo-apps/openai-agents-strategic-advisor/)):
+that library nests a real, named `Agent(...)` span **inside** unnamed,
+purely structural `CHAIN` wrappers (`"turn"`, one per tool-use round;
+`"Agent workflow"`, one per run). The *nearest* `AGENT`/`CHAIN` ancestor
+of an LLM/TOOL span is almost always one of these structural spans, not
+the real agent -- a live capture returned `"turn"` as the workflow,
+not the actual agent's name, until this walked past it instead of
+stopping there. The two attribute keys have the same live-capture
+story: Google ADK's own `AGENT`-kind span is named `"agent_run [<name>]"`
+(decorated) while carrying the bare name in `agent.name` (confirmed by
+reading `_wrappers.py`'s real source, later confirmed again on a real
+capture, see
+[`examples/demo-apps/google-adk-recipe-creator/`](../examples/demo-apps/google-adk-recipe-creator/));
+Hermes's own subagent `AGENT`-kind span never sets `agent.name` at all,
+only `gen_ai.agent.name` (found only by reading a real Hermes capture
+directly, not documented anywhere). `metadata.workflow_basis` states
+which of the three won (`"agent_name_attribute"`/`"span_name"`/
+`"no_workflow_ancestor"`).
 
 `model` is a real, call-level fact on `llm_call` records (`llm.model_name`/
 `gen_ai.request.model`, read directly off the span), never approximated.
