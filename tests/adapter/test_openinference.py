@@ -419,6 +419,58 @@ def test_workflow_falls_back_to_span_name_without_agent_name_attribute():
     assert records[0]["metadata"]["workflow_basis"] == "span_name"
 
 
+def test_workflow_walks_past_unnamed_chain_wrappers_to_a_named_agent_ancestor():
+    # Confirmed real shape (openai-agents, live capture): a real, named
+    # Agent(...) span sits *outside* unnamed, purely structural CHAIN
+    # wrappers ("turn" per tool-use round, "Agent workflow" per run).
+    # The nearest AGENT/CHAIN ancestor of the LLM span is "turn", which
+    # has no agent name at all -- stopping there (the old behavior)
+    # returned "turn" instead of the real agent. Must walk past it.
+    spans = [
+        span("agent", start=0, name="Agent workflow",
+             attributes={"openinference.span.kind": "CHAIN"}),
+        span("real_agent", parent_span_id="agent", start=1, name="Strategic Advisor",
+             attributes={"openinference.span.kind": "AGENT", "agent.name": "Strategic Advisor"}),
+        span("turn", parent_span_id="real_agent", start=2, name="turn",
+             attributes={"openinference.span.kind": "CHAIN"}),
+        span("llm1", parent_span_id="turn", start=3,
+             attributes={"openinference.span.kind": "LLM", "input.value": "hi"}),
+    ]
+    records, _ = convert(traces_document(spans))
+    assert records[0]["workflow"] == "Strategic Advisor"
+    assert records[0]["metadata"]["workflow_basis"] == "agent_name_attribute"
+
+
+def test_workflow_uses_gen_ai_agent_name_when_agent_name_is_absent():
+    # Confirmed real shape (Hermes, live capture): hermes-otel's own
+    # subagent AGENT-kind span never sets agent.name at all, only
+    # gen_ai.agent.name.
+    spans = [
+        span("agent", start=0, name="subagent.leaf",
+             attributes={"openinference.span.kind": "AGENT", "gen_ai.agent.name": "leaf"}),
+        span("llm1", parent_span_id="agent", start=1,
+             attributes={"openinference.span.kind": "LLM", "input.value": "hi"}),
+    ]
+    records, _ = convert(traces_document(spans))
+    assert records[0]["workflow"] == "leaf"
+    assert records[0]["metadata"]["workflow_basis"] == "agent_name_attribute"
+
+
+def test_workflow_falls_back_to_nearest_span_name_when_no_ancestor_has_a_name():
+    # Every AGENT/CHAIN ancestor lacks a name attribute -- falls back to
+    # the *nearest* one's own span name, not the farthest.
+    spans = [
+        span("outer", start=0, name="outer_chain", attributes={"openinference.span.kind": "CHAIN"}),
+        span("inner", parent_span_id="outer", start=1, name="inner_chain",
+             attributes={"openinference.span.kind": "CHAIN"}),
+        span("llm1", parent_span_id="inner", start=2,
+             attributes={"openinference.span.kind": "LLM", "input.value": "hi"}),
+    ]
+    records, _ = convert(traces_document(spans))
+    assert records[0]["workflow"] == "inner_chain"
+    assert records[0]["metadata"]["workflow_basis"] == "span_name"
+
+
 # --- model derivation for TOOL spans ----------------------------------
 
 def test_tool_call_gets_model_from_preceding_llm_span_in_same_task():

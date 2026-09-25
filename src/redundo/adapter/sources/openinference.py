@@ -75,15 +75,18 @@ _WORKFLOW_KINDS = frozenset({"AGENT", "CHAIN"})
 # uses for the equivalent case, so a reader sees one consistent label
 # across sources.
 _NO_WORKFLOW_LABEL = "main"
-# The real, human-chosen agent name -- confirmed set by both
-# openinference-instrumentation-openai-agents (Agent(name=...), where it
-# happens to equal the span's own name too) and
+# The real, human-chosen agent name. agent.name: confirmed set by both
+# openinference-instrumentation-openai-agents (Agent(name=...)) and
 # openinference-instrumentation-google-adk (LlmAgent's own .name, where
 # it does NOT equal the span's own name: ADK's AGENT-kind span is named
 # "agent_run [<name>]", decorated, while this attribute carries the bare
-# name). Checked first for that reason -- relying on the span's own name
-# alone silently surfaces ADK's decorated form.
-_AGENT_NAME_ATTR = "agent.name"
+# name). gen_ai.agent.name: a *different* key, confirmed real and
+# necessary for Hermes -- hermes-otel's own subagent AGENT-kind span
+# never sets agent.name at all, only gen_ai.agent.name (found by reading
+# a real capture, not assumed from either source's docs). Checked in
+# this order for every candidate ancestor, not just the nearest one --
+# see _workflow_of.
+_AGENT_NAME_ATTRS = ("agent.name", "gen_ai.agent.name")
 
 _KIND_ATTR = "openinference.span.kind"
 # gen_ai.conversation.id is the primary attribute; session.id is
@@ -505,30 +508,50 @@ def _extend_chain_tail(
 
 
 def _workflow_of(span: Span, span_by_id: dict[str, Span]) -> tuple[str, str]:
-    """(workflow, workflow_basis): the nearest AGENT/CHAIN ancestor's own
-    agent.name attribute when present, else its span name, else
-    _NO_WORKFLOW_LABEL when no such ancestor exists at all. Unlike
-    task_id, this has no "never guess" constraint -- workflow is
-    inherently an approximate label, so a documented heuristic is fine.
+    """(workflow, workflow_basis): walks the *whole* ancestor chain (not
+    just the nearest AGENT/CHAIN span) looking for one with a real
+    agent-name attribute, and returns that immediately when found. Only
+    when none exists anywhere in the chain does this fall back to the
+    nearest AGENT/CHAIN ancestor's own span name; "main" when there's no
+    AGENT/CHAIN ancestor at all. Unlike task_id, this has no "never
+    guess" constraint -- workflow is inherently an approximate label, so
+    a documented heuristic is fine.
 
-    agent.name over the span's own name because at least one real,
-    confirmed source (Google ADK) decorates its AGENT-kind span's name
-    ("agent_run [search_agent]") while carrying the bare, human-chosen
-    name ("search_agent") in this attribute instead -- see _AGENT_NAME_ATTR.
+    Stopping at the *nearest* AGENT/CHAIN ancestor (an earlier version of
+    this function) is wrong for a real, confirmed shape: openai-agents'
+    own instrumentation nests a real, named Agent(...) span *inside*
+    unnamed, purely structural CHAIN wrappers ("turn", one per
+    tool-use round; "Agent workflow", one per run) -- the nearest
+    AGENT/CHAIN ancestor of an LLM/TOOL span is almost always one of
+    these structural spans, not the real agent, confirmed against a live
+    capture where this returned "turn" instead of the actual agent's
+    name. Walking past ancestors with no agent-name attribute, rather
+    than stopping at the first one, is what finds the real name instead.
+
+    Checked in `_AGENT_NAME_ATTRS` order over the span's own name because
+    two real, confirmed sources disagree on both the key and on whether
+    the span name is even useful: Google ADK decorates its AGENT-kind
+    span's name ("agent_run [search_agent]") while carrying the bare
+    name in `agent.name`; Hermes never sets `agent.name` at all, only
+    `gen_ai.agent.name` (found by reading a real capture, not assumed).
     """
     current_id = span.parent_span_id
     seen: set[str] = set()
+    fallback_name: str | None = None
     while current_id and current_id not in seen:
         seen.add(current_id)
         parent = span_by_id.get(current_id)
         if parent is None:
-            return _NO_WORKFLOW_LABEL, "no_workflow_ancestor"
+            break
         if _kind_of(parent) in _WORKFLOW_KINDS:
-            name = parent.attributes.get(_AGENT_NAME_ATTR)
+            name = _first_present(parent.attributes, _AGENT_NAME_ATTRS)
             if name:
                 return str(name), "agent_name_attribute"
-            return parent.name, "span_name"
+            if fallback_name is None:
+                fallback_name = parent.name
         current_id = parent.parent_span_id
+    if fallback_name is not None:
+        return fallback_name, "span_name"
     return _NO_WORKFLOW_LABEL, "no_workflow_ancestor"
 
 
