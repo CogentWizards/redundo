@@ -69,6 +69,15 @@ tool results the model is responding to). Every context contains the
 whole context before it, so fingerprinting the full context would make
 every consecutive pair of calls look like a near-duplicate.
 
+<<<<<<< HEAD
+=======
+Short new inputs, a tool's one-line result for instance, share a lot of
+structure, so two unrelated ones can still land under the near-duplicate
+threshold. Treat an `llm_call` near-duplicate at a high bit distance as a
+weak signal; a 0-bit one means the model really was given the same input
+again.
+
+>>>>>>> origin/main
 **`tool_call`**: the call's `arguments`. **`tool_result`**: the result's
 `content` blocks.
 

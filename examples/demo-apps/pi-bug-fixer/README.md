@@ -65,6 +65,7 @@ call after its edit and its call after reading the file sit 21 bits
 apart, under the 24-bit threshold, because short tool outputs share a
 lot of structure. That one is noise.
 
+<<<<<<< HEAD
 These results were recorded under `similarity_spec` v1 with a 24-bit
 near-duplicate threshold. v2 counts each distinct shingle once and
 lowers the threshold to 16 (see
@@ -79,6 +80,8 @@ under v1, are 8 bits apart under v2. No 16-bit band of the two
 fingerprints matches, and the cross-task search only compares pairs
 that share one, so that `recurring_pattern` hit is gone.
 
+=======
+>>>>>>> origin/main
 Building this demo found two real problems, both fixed before it
 shipped: Pi stamps an undocumented `durationMs` on every message, which
 had to be kept out of the context hash, and the report called any
