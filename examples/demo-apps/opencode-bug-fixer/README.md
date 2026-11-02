@@ -73,7 +73,6 @@ Building this demo found two real problems:
   snapshot recorded that as a file change, marking the test runs as
   writes. The demo now sets `PYTHONDONTWRITEBYTECODE=1`.
 
-<<<<<<< HEAD
 These results were recorded under `similarity_spec` v1 with a 24-bit
 near-duplicate threshold. That run also put Session C's call after the
 subagent reported back 0 bits from Session B's call after a failing
@@ -90,10 +89,3 @@ re-run saw the same output, so they're now a 0-bit `recurring_pattern`.
 The `cross_task_redundancy` pair is no longer reported: it's 9 bits
 apart, but no 16-bit band of the two fingerprints matches, and the
 cross-task search only compares pairs that share one.
-=======
-One limit is still there. Session C's call after the subagent reported
-back fingerprints at 0 bits from Session B's call after a failing test,
-because `unittest`'s long separator lines outweigh the text that
-differs. It shows up as a `recurring_pattern` between unrelated tasks,
-which claims nothing, but it's noise.
->>>>>>> origin/main
