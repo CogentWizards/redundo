@@ -45,14 +45,17 @@ from .cycles import CandidatePair, find_candidate_pairs
 from .lineage import TaskLineage, group_by_task
 from .schema import Event
 
-# Bits out of 64 (see hashing.SIMHASH_BITS). A starting point calibrated
-# against one real capture (a near-identical URL differing by one query
-# param landed at 8; a genuinely unrelated pair landed at 34), not a
-# validated constant -- override via
+# Bits out of 64 (see hashing.SIMHASH_BITS). A starting point, not a
+# validated constant. First set at 24 against one real capture (a
+# near-identical URL differing by one query param landed at 8; a
+# genuinely unrelated pair landed at 34). Lowered to 16 with
+# similarity_spec v2: on the OpenCode and Pi demo captures, true near
+# matches sit at 0 to 9 bits and consecutive short tool results at 19 to
+# 24, so 24 reported those as near-duplicates. Override via
 # WasteAnalysis(near_duplicate_threshold=...). Biased conservative (fewer
 # false positives), matching this codebase's stated preference elsewhere
 # (hashing.mask_volatile's mask_integers docstring).
-DEFAULT_SIMILARITY_THRESHOLD = 24
+DEFAULT_SIMILARITY_THRESHOLD = 16
 
 
 @dataclass(frozen=True, slots=True)
