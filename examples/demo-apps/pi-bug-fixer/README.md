@@ -35,8 +35,9 @@ re-runs the tests once more and adds a docstring example.
 
 ## What actually happens on real data
 
-Verified against a real run (Pi 1.5.0, `claude-opus-4-8`): 11 model calls,
-8 tool calls, $0.0745, every model call priced by Pi itself.
+Verified against a real run (Pi 1.5.0, `claude-opus-4-8`, `hash_spec`
+v2, `similarity_spec` v3, 16-bit near-duplicate threshold): 11 model
+calls, 8 tool calls, $0.0744, every model call priced by Pi itself.
 
 **Session A** lands in `unclassified`, reason: "result identical; no
 intervening write; task succeeded, but that doesn't confirm this
@@ -46,6 +47,9 @@ changed anything, so write status is unknown, and the task ended in a
 normal reply, so redundo won't promote it to `confirmed_waste`. That's
 the same honest limit the Claude Agent SDK and OpenClaw demos hit, see
 [docs/pi.md](https://github.com/CogentWizards/redundo/blob/main/docs/pi.md).
+Its second model call got exactly the same input as its first (the same
+failing test output), so the two are a 0-bit `near_duplicate`. That's
+the only `near_duplicate` in the run.
 
 **Session B** lands in `likely_legitimate`, reason: "result changed".
 The tests failed before the edit and passed after it.
@@ -53,34 +57,27 @@ The tests failed before the edit and passed after it.
 **Session C** is where Pi's fork handling shows. Its file holds all 13
 of Session B's entries, copied verbatim, and `--summary` reports "13
 copied entries skipped", so none of Session B's calls are counted
-twice. Its re-run of the tests lands in `cross_task_redundancy` (an
-exact match to Session B's first test run), because Pi itself links the
-fork to Session B. `redundo drift` shows the chain `demo-b -> demo-c`,
-the first real continuation link redundo has had to work with.
+twice. Pi itself links the fork to Session B, so its repeats land in
+`cross_task_redundancy`, three of them:
 
-Two `near_duplicate` hits are worth reading closely. Session A's second
-model call got exactly the same input as its first (the same failing
-test output), a 0-bit match, which is true and is the point. Session B's
-call after its edit and its call after reading the file sit 21 bits
-apart, under the 24-bit threshold, because short tool outputs share a
-lot of structure. That one is noise.
+- its test run, an exact match to Session B's first one
+- its model call after that run, 0 bits from Session B's call after its
+  passing re-run, since both saw the same passing output
+- its model call after its edit, 0 bits from Session B's call after its
+  edit, since both edits returned the same one-line result
 
-These results were recorded under `similarity_spec` v1 with a 24-bit
-near-duplicate threshold. v2 counts each distinct shingle once and
-lowers the threshold to 16 (see
-[docs/hashing.md](https://github.com/CogentWizards/redundo/blob/main/docs/hashing.md#similarity-fingerprinting)).
-Re-adapting the same sessions under v2 leaves the exact-match findings
-unchanged. The 21-bit noise hit in Session B is gone, leaving only
-Session A's 0-bit `near_duplicate`. `cross_task_redundancy` gains a
-third pair: Session C's call after its edit and Session B's call after
-its edit both saw the same one-line edit result, so they're 0 bits
-apart. Session A's and Session B's first test commands, 6 bits apart
-under v1, are 8 bits apart under v2. No 16-bit band of the two
-fingerprints matches, and the cross-task search only compares pairs
-that share one, so that `recurring_pattern` hit is gone.
+`redundo drift` shows the chain `demo-b -> demo-c`, the first real
+continuation link redundo has had to work with.
+
+Session A's and Session B's first test commands differ only in the test
+class name, 8 bits apart. Those sessions aren't linked, so that pair is
+a `recurring_pattern`, which claims nothing.
 
 Building this demo found two real problems, both fixed before it
 shipped: Pi stamps an undocumented `durationMs` on every message, which
 had to be kept out of the context hash, and the report called any
 cross-task pair with identical fingerprints an "exact match", even when
-the content differed.
+the content differed. An earlier run also showed `unittest`'s separator
+lines pulling unrelated fingerprints together, which `similarity_spec`
+v2 fixed (see
+[docs/hashing.md](https://github.com/CogentWizards/redundo/blob/main/docs/hashing.md#similarity-fingerprinting)).
