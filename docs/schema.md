@@ -104,7 +104,7 @@ Keys `analyze` looks for. Absence is not a claim of a default value.
   has no `llm_call` at all anywhere in its task (`model` stays `None` in
   that case, not a guess). One more value, `"issuing_llm_call"`, means
   the source records exactly which `llm_call` requested this tool (Pi
-  does), so `model` is that call's model, not the nearest one's.
+  and OpenCode do), so `model` is that call's model, not the nearest one's.
 - `metadata.workflow_basis` (str, optional): which signal produced
   `workflow`, since a source can have more than one candidate and they
   don't all carry equal confidence. Values are source-specific (e.g.
@@ -112,7 +112,8 @@ Keys `analyze` looks for. Absence is not a claim of a default value.
   `"agent_name_attribute"`/`"span_name"`/`"no_workflow_ancestor"` for
   OpenInference sources) -- see each adapter's own doc
   ([claude-code.md](claude-code.md), [openinference.md](openinference.md),
-  [openclaw-localtrace.md](openclaw-localtrace.md), [pi.md](pi.md)) for what each value
+  [openclaw-localtrace.md](openclaw-localtrace.md), [pi.md](pi.md),
+  [opencode.md](opencode.md)) for what each value
   means for that source.
 - `metadata.source_path` (str, optional): the local file or directory
   `redundo adapt` read this record's source data from, absolute,

@@ -8,8 +8,8 @@ guessing a relationship a source didn't report.
 
 A task with no parent_task_id anywhere in its own events is its own
 singleton component, the common case for most corpora today, since
-only two sources populate this key at all: hermes-otel, via Hermes's
-own subagent delegation, and Pi, for a forked or cloned session. That's not a degraded case; it's
+only three sources populate this key at all: hermes-otel and OpenCode,
+for subagent delegation, and Pi, for a forked or cloned session. That's not a degraded case; it's
 the honest default until more sources expose an equivalent link.
 
 parent_task_id alone doesn't say what *kind* of relationship it is, and
