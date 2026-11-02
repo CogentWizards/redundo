@@ -5,7 +5,8 @@ schema contract.
     redundo adapt ./otlp_traces -o trace.jsonl
     redundo adapt ~/.pi/agent/sessions/--Users-me-project--/ -o trace.jsonl
 
-The source (OpenInference/Hermes, Claude Code, Cowork, OpenClaw, Pi, or a
+The source (OpenInference/Hermes, Claude Code, Cowork, OpenClaw, Pi,
+OpenCode, or a
 third-party plugin registered under the `redundo.adapter.sources` entry
 point group) is auto-detected from the captured data itself -- see
 `registry.py` for exactly how, and `--source` to skip detection and force
@@ -43,8 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "input_path", type=Path, metavar="INPUT",
         help="Directory of *.json OTLP export batch files (traces, logs, and/or "
-        "metrics, any mix), or a native capture: a Pi session .jsonl file, or "
-        "a directory of them",
+        "metrics, any mix), or a native capture: a Pi session .jsonl file or a "
+        "directory of them, an OpenCode database, or `opencode export` .json files",
     )
     parser.add_argument(
         "-o", "--output", type=Path, default=None, metavar="PATH",
