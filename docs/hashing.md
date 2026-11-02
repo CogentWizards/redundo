@@ -93,10 +93,10 @@ here than for exact hashing: an unmasked shared timestamp or UUID could
 artificially inflate similarity between two genuinely unrelated calls,
 not merely fail to match two identical ones. Each shingle is hashed with
 `blake2b` (stable across processes, unlike Python's randomized builtin
-`hash()`) to 64 bits; each of the 64 bit positions gets a
-term-frequency-weighted vote across every shingle, and the final bit is
-the sign of that vote. Two fingerprints are compared by Hamming distance
-(bits differing, 0 to 64). Smaller means more similar, 0 means identical
+`hash()`) to 64 bits; each of the 64 bit positions gets one vote from
+each *distinct* shingle, however many times that shingle occurs, and the
+final bit is the sign of that vote. Two fingerprints are compared by
+Hamming distance (bits differing, 0 to 64). Smaller means more similar, 0 means identical
 fingerprint (not necessarily identical content, SimHash is lossy).
 
 **This is not a stronger or weaker version of `content_hash`. It is a
@@ -116,14 +116,67 @@ deliberate tradeoff accepted for the capability, not an oversight. It
 does **not** change anything about `content_hash`'s own guarantee, which
 is unaffected and unchanged.
 
-**No IDF, only TF.** Unlike a corpus-aware similarity scheme, this
-function sees one record's content at a time, the same one-record-at-a-time
-trust boundary `content_hash` already has, never accumulating content
-across records. That means there is no document-frequency signal to
-down-weight boilerplate: a JSON payload's repeated keys and punctuation
-get outsized influence on the resulting bits for short structured
-content. A known, inherent limitation of this approach on this kind of
-content, not a bug to fix later.
+**Each distinct shingle votes once.** This is `similarity_spec` v2.
+v1 weighted each shingle by how often it occurred, and that broke on
+real tool output. Python's `unittest` prints 70 `=` or `-` characters
+per separator line, so one line cast 67 identical votes, enough to
+outvote everything else in a short input. In real OpenCode and Pi
+captures, a passing subagent report and an unrelated failing test
+output fingerprinted 0 bits apart, and in Pi a failing and a passing
+run of the same command landed 2 bits apart.
+
+Five variants were measured against those captures and the calibration
+pairs in `tests/adapter/test_hashing.py` (Hamming distance in bits,
+threshold 24). The URL pair is the one the threshold was tuned to keep
+at 8 bits. The 34-bit unrelated pair it was tuned against came from a
+capture that isn't in this repo, so the test suite's unrelated pair
+stands in for it.
+
+| Pair | v1 (count) | v2 (set) | cap at 2 | 1 + log(count) | collapse runs, count | collapse runs, set |
+|---|---|---|---|---|---|---|
+| Near-identical URL (test pair) | 8 | 8 | 8 | 8 | 8 | 8 |
+| Unrelated sentences (test pair) | 25 | 26 | 25 | 26 | 25 | 26 |
+| Subagent report vs failing test (OpenCode) | 0 | 28 | 26 | 27 | 22 | 29 |
+| Failing vs passing run, same command (OpenCode) | 40 | 17 | 17 | 18 | 16 | 16 |
+| Failing vs passing run, same command (Pi) | 2 | 30 | 26 | 25 | 30 | 28 |
+| Read result vs edit result (OpenCode) | 24 | 21 | 19 | 21 | 20 | 21 |
+| Identical inputs (both sources) | 0 | 0 | 0 | 0 | 0 | 0 |
+
+"Collapse runs" shortens any run of one repeated character to 3 before
+shingling. On its own it leaves the headline pair under the threshold,
+because shorter repeats (escaped newlines, quotes, traceback carets)
+still get counted. Combined with set weighting it changes almost
+nothing that set weighting doesn't already do. Capping and log
+weighting land between v1 and set weighting. Set weighting is the
+simplest rule that fixes the collision, so it's what v2 uses.
+
+Two pairs got closer, and neither is something per-shingle weighting
+can fix. In the OpenCode failing-vs-passing pair, v1's 40 bits came
+from the separator lines in the failing output. The passing output's
+own separator line had been swallowed by the `<TMP>` mask, which runs
+to the next whitespace and in canonical JSON takes the closing quote,
+the `"output"` key and the start of the output with it. What's left of
+the passing input is almost entirely contained in the failing one, so
+any shingle-based fingerprint puts them close. The read-vs-edit pairs
+are short inputs that share most of their JSON envelope.
+
+On the OpenCode and Pi demo captures, the end-to-end effect at the
+current threshold is mixed. The 0-bit false match between unrelated
+tasks is gone. But consecutive model calls whose new inputs are short
+tool results now sit at 20 to 24 bits, where v1's separator votes had
+scattered them, so each demo reports two or three more within-task
+near-duplicates that are noise. True near matches on the same captures
+sit at 0 to 9 bits.
+
+**No IDF.** Unlike a corpus-aware similarity scheme, this function sees
+one record's content at a time, the same one-record-at-a-time trust
+boundary `content_hash` already has, never accumulating content across
+records. That means there is no document-frequency signal to
+down-weight boilerplate: a JSON payload's keys and punctuation still
+pull short structured inputs toward each other. Set weighting stops a
+repeated shingle from counting more than once, but it doesn't make a
+shared one count less. A known, inherent limitation of this approach on
+this kind of content.
 
 **The similarity threshold is not a validated constant.** The commonly
 cited "around 3 bits out of 64" figure from web-page near-duplicate
@@ -176,10 +229,13 @@ just differently-normalized identical content. **Refuse to compare
 mismatched specs rather than producing a confident wrong answer.**
 
 `metadata.similarity_spec` versions `similarity_fingerprint()` the same
-way, independently of `HASH_SPEC`. A future change to the SimHash
-procedure (shingle size, hash function, bit width) shouldn't silently
-also invalidate `content_hash` comparisons, and vice versa. Same refusal
-discipline applies: `redundo.analyzer.ingest.check_consistent_similarity_spec`
+way, independently of `HASH_SPEC`. It is currently `"v2"`: v1 weighted
+shingles by count, v2 counts each distinct shingle once (see above).
+Re-run `redundo adapt` on older captures before analyzing them alongside
+new ones. A future change to the SimHash procedure (shingle size,
+weighting, hash function, bit width) shouldn't silently also invalidate
+`content_hash` comparisons, and vice versa. Same refusal discipline
+applies: `redundo.analyzer.ingest.check_consistent_similarity_spec`
 raises rather than comparing fingerprints computed under two different
 procedures.
 

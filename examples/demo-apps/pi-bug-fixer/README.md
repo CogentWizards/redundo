@@ -65,6 +65,18 @@ call after its edit and its call after reading the file sit 21 bits
 apart, under the 24-bit threshold, because short tool outputs share a
 lot of structure. That one is noise.
 
+These results were recorded under `similarity_spec` v1. Re-adapting the
+same sessions under v2, which counts each distinct shingle once (see
+[docs/hashing.md](https://github.com/CogentWizards/redundo/blob/main/docs/hashing.md#similarity-fingerprinting)),
+leaves the exact-match findings unchanged. It adds three more
+`near_duplicate` hits at 23 bits between consecutive model calls whose
+new inputs are short tool results, which are noise. One of them claims
+Session B's call after its passing re-run, so Session C's matching call
+is no longer reported as `cross_task_redundancy`. Session A's and
+Session B's first test commands, 6 bits apart under v1, are 8 bits apart
+under v2 and no longer share a band in the cross-task search, so that
+`recurring_pattern` hit is gone too.
+
 Building this demo found two real problems, both fixed before it
 shipped: Pi stamps an undocumented `durationMs` on every message, which
 had to be kept out of the context hash, and the report called any

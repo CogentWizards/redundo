@@ -92,11 +92,11 @@ OpenCode 1.19 writes each step of a turn as its own assistant message.
 That's handled: a message's first step takes the previous message's last
 step as its new input, not the user's message.
 
-Short new inputs that are mostly separator lines (Python's `unittest`
-prints 70 `=` or `-` characters per line, for instance) can fingerprint
-close together even when their text differs, because those repeated
-characters outvote the rest. Treat a near-duplicate between two test runs
-with a grain of salt; `content_hash` equality is what proves a repeat.
+Short new inputs, a single tool call and its result for instance, share
+most of their JSON structure, so two unrelated ones can still land just
+under the near-duplicate threshold (20 to 24 bits on the demo capture).
+Treat an `llm_call` near-duplicate at a high bit distance as a weak
+signal; `content_hash` equality is what proves a repeat.
 
 **`tool_call`**: `state.input`. **`tool_result`**: `state.output`, or
 `state.error` for a failed call.

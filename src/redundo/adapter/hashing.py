@@ -32,7 +32,7 @@ from typing import Any
 HASH_SPEC = "v1"
 HASH_LENGTH = 16  # hex chars = 64 bits. See docs/hashing.md for the birthday-bound math.
 
-SIMILARITY_SPEC = "v1"
+SIMILARITY_SPEC = "v2"  # v2: each distinct shingle votes once; v1 weighted by count
 SIMHASH_BITS = 64
 SIMHASH_HEX_LENGTH = SIMHASH_BITS // 4  # kept as its own constant -- see docs/hashing.md
 _SHINGLE_SIZE = 4  # characters, not words -- see similarity_fingerprint's docstring
@@ -233,22 +233,28 @@ def _stable_shingle_hash(shingle: str) -> int:
 
 
 def simhash64(text: str) -> int:
-    """TF-weighted SimHash over character shingles. Term-frequency
-    weighted, not TF-IDF -- there is no corpus-level document-frequency
-    signal available here; this function sees one record's content at a
-    time, by the same trust-boundary design as `content_hash` (raw
-    content never accumulates across records inside this module). That
-    means a JSON payload's repeated boilerplate keys/punctuation get
-    outsized influence over the resulting bits for short structured
-    content -- a known, inherent limitation of TF-only weighting on this
-    kind of content, not a bug to fix later. See docs/hashing.md.
+    """SimHash over the *set* of character shingles: each distinct
+    shingle votes once, however many times it occurs. v1 weighted each
+    shingle by its count, and a long run of one repeated character
+    (Python's `unittest` prints 70 `=` or `-` per separator line) then
+    cast dozens of identical votes that outweighed everything else in a
+    short input. Two unrelated tool outputs that both contained a few
+    separator lines could fingerprint 0 bits apart. See docs/hashing.md
+    for the measurements behind this choice.
+
+    No IDF either: there is no corpus-level document-frequency signal
+    available here; this function sees one record's content at a time,
+    by the same trust-boundary design as `content_hash` (raw content
+    never accumulates across records inside this module). Shared JSON
+    keys and punctuation still pull short structured inputs toward each
+    other. See docs/hashing.md.
 
     A bit position whose vote sums to exactly zero resolves to 0,
     deterministically -- not a coin flip, so identical input always
     produces an identical fingerprint.
     """
     votes = [0] * SIMHASH_BITS
-    for shingle in _shingles(text):
+    for shingle in set(_shingles(text)):
         shingle_hash = _stable_shingle_hash(shingle)
         for bit in range(SIMHASH_BITS):
             if (shingle_hash >> bit) & 1:

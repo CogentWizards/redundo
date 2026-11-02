@@ -73,8 +73,16 @@ Building this demo found two real problems:
   snapshot recorded that as a file change, marking the test runs as
   writes. The demo now sets `PYTHONDONTWRITEBYTECODE=1`.
 
-One limit is still there. Session C's call after the subagent reported
-back fingerprints at 0 bits from Session B's call after a failing test,
-because `unittest`'s long separator lines outweigh the text that
-differs. It shows up as a `recurring_pattern` between unrelated tasks,
-which claims nothing, but it's noise.
+These results were recorded under `similarity_spec` v1. That run also
+put Session C's call after the subagent reported back 0 bits from
+Session B's call after a failing test, because `unittest`'s long
+separator lines outvoted the text that differs. v2 counts each distinct
+shingle once (see
+[docs/hashing.md](https://github.com/CogentWizards/redundo/blob/main/docs/hashing.md#similarity-fingerprinting)),
+and on the same capture that pair is 28 bits apart and no longer
+reported. The exact-match findings above don't change. The similarity
+ones do: Session B's consecutive model calls pick up one more
+`near_duplicate` hit, for three at 20 to 24 bits, all noise, and Session C's call after its own run becomes a
+`near_duplicate` of its call after the subagent's report (24 bits). That claims the call before the
+cross-task search runs, so the `cross_task_redundancy` pair is no longer
+reported.
