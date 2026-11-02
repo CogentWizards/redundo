@@ -46,7 +46,7 @@ in this order:
 | UUIDs | `<UUID>` |
 | Durations (`1.23s`, `450ms`) | `<DUR>` |
 | Hex addresses (`0x7f...`) | `<ADDR>` |
-| Temp paths (`/tmp/...`, `/var/folders/...`) | `<TMP>` |
+| Temp paths (`/tmp/...`, `/var/folders/...`), up to the next whitespace, `"` or `\` | `<TMP>` |
 | OpenClaw's `EXTERNAL_UNTRUSTED_CONTENT id="..."` wrapper id | `<ID>` |
 | Bare integers (5+ digits) | `<NUM>`. Opt-in only, off by default |
 
@@ -153,12 +153,21 @@ simplest rule that fixes the collision, so it's what v2 uses.
 Two pairs got closer, and neither is something per-shingle weighting
 can fix. In the OpenCode failing-vs-passing pair, v1's 40 bits came
 from the separator lines in the failing output. The passing output's
-own separator line had been swallowed by the `<TMP>` mask, which runs
-to the next whitespace and in canonical JSON takes the closing quote,
-the `"output"` key and the start of the output with it. What's left of
-the passing input is almost entirely contained in the failing one, so
-any shingle-based fingerprint puts them close. The read-vs-edit pairs
-are short inputs that share most of their JSON envelope.
+own separator line had been swallowed by the `<TMP>` mask, which under
+`hash_spec` v1 ran to the next whitespace and in canonical JSON took the
+closing quote, the `"output"` key and the start of the output with it.
+With the mask fixed (`hash_spec` v2, see below), v1 weighting puts that
+pair at 3 bits and set weighting at 17: the two outputs really are
+close, and set weighting is what keeps them apart. The read-vs-edit
+pairs are short inputs that share most of their JSON envelope.
+
+The table above was measured under `hash_spec` v1. Re-measured with the
+v2 mask, the OpenCode pairs under set weighting move by up to 7 bits
+in either direction and the Pi pairs by at most 1. On the OpenCode demo
+capture this adds one cross-task `recurring_pattern`: two `bash` calls
+in unlinked sessions that run different test classes from the same
+directory, 10 bits apart. Under v1 masking they were 11 bits apart but
+shared no LSH band, so the cross-task search never compared them.
 
 On the OpenCode and Pi demo captures, the end-to-end effect at the
 current threshold is mixed. The 0-bit false match between unrelated
@@ -221,16 +230,24 @@ point of reporting a masking rate at all.
 
 ### Versioning
 
-Every record's `metadata.hash_spec` is the string `"v1"` (this document's
+Every record's `metadata.hash_spec` is the string `"v2"` (this document's
 version). If this normalization or masking procedure changes, that bumps.
+v1's temp-path mask ran to the next whitespace. Canonical JSON has no
+literal whitespace, so on `{"workdir":"/tmp/x","output":"Ran 2 tests"}`
+it also swallowed the closing quote, the `"output"` key and the start of
+its value, up to the first space inside it. v2 stops the mask at a `"`
+or a `\` as well, so the closing quote survives, and so does an escaped
+quote or newline inside a JSON document nested as a string.
 Comparing two corpora hashed under different `hash_spec` values is
 meaningless: differing hashes could mean genuinely different content, or
 just differently-normalized identical content. **Refuse to compare
 mismatched specs rather than producing a confident wrong answer.**
 
 `metadata.similarity_spec` versions `similarity_fingerprint()` the same
-way, independently of `HASH_SPEC`. It is currently `"v2"`: v1 weighted
-shingles by count, v2 counts each distinct shingle once (see above).
+way, independently of `HASH_SPEC`. It is currently `"v3"`: v1 weighted
+shingles by count, v2 counts each distinct shingle once (see above), and
+v3 fingerprints the text `hash_spec` v2 masks. A fingerprint hashes the
+same masked text `content_hash` does, so a masking change bumps both.
 Re-run `redundo adapt` on older captures before analyzing them alongside
 new ones. A future change to the SimHash procedure (shingle size,
 weighting, hash function, bit width) shouldn't silently also invalidate
@@ -255,7 +272,7 @@ MASKS = [
     (r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "<UUID>"),
     (r"\b\d+(?:\.\d+)?(?:ms|us|ns|s|m|h)\b", "<DUR>"),
     (r"\b0x[0-9a-fA-F]{4,}\b", "<ADDR>"),
-    (r"(?:/tmp/|/var/folders/)\S*", "<TMP>"),
+    (r'(?:/tmp/|/var/folders/)[^\s"\\]*', "<TMP>"),
 ]
 
 def content_hash(text: str, structured: bool = False) -> str:
