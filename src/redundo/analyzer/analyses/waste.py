@@ -268,8 +268,8 @@ class WasteAnalysis(Analysis):
                     f"{pair.original.step_index} (Hamming distance "
                     f"{pair.hamming_distance}/64 bits, threshold "
                     f"{self._near_duplicate_threshold}, tuned so a near-identical URL "
-                    "match at 8 bits counts and a genuinely unrelated pair at 34 "
-                    "bits doesn't): similar, not identical, not a verdict"
+                    "match at 8 bits counts and unrelated short tool results at 19 "
+                    "to 24 bits don't): similar, not identical, not a verdict"
                 ),
             )
         )

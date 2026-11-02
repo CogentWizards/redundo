@@ -126,9 +126,9 @@ output fingerprinted 0 bits apart, and in Pi a failing and a passing
 run of the same command landed 2 bits apart.
 
 Five variants were measured against those captures and the calibration
-pairs in `tests/adapter/test_hashing.py` (Hamming distance in bits,
-threshold 24). The URL pair is the one the threshold was tuned to keep
-at 8 bits. The 34-bit unrelated pair it was tuned against came from a
+pairs in `tests/adapter/test_hashing.py` (Hamming distance in bits;
+the near-duplicate threshold was 24 at the time). The URL pair is the
+one the threshold was tuned to keep at 8 bits. The 34-bit unrelated pair it was tuned against came from a
 capture that isn't in this repo, so the test suite's unrelated pair
 stands in for it.
 
@@ -160,13 +160,23 @@ the passing input is almost entirely contained in the failing one, so
 any shingle-based fingerprint puts them close. The read-vs-edit pairs
 are short inputs that share most of their JSON envelope.
 
-On the OpenCode and Pi demo captures, the end-to-end effect at the
-current threshold is mixed. The 0-bit false match between unrelated
-tasks is gone. But consecutive model calls whose new inputs are short
-tool results now sit at 20 to 24 bits, where v1's separator votes had
-scattered them, so each demo reports two or three more within-task
-near-duplicates that are noise. True near matches on the same captures
-sit at 0 to 9 bits.
+On the OpenCode and Pi demo captures, v2 at the old 24-bit threshold
+was a mixed result. The 0-bit false match between unrelated tasks was
+gone. But consecutive model calls whose new inputs are short tool
+results sat at 19 to 24 bits, where v1's separator votes had scattered
+them, so each demo reported two or three more within-task
+near-duplicates that were noise. True near matches on the same captures
+sit at 0 to 9 bits. So v2 also lowers
+`near_duplicates.DEFAULT_SIMILARITY_THRESHOLD` to 16. At 16, neither
+demo reports a noise near-duplicate. Every pair of different inputs on
+those captures that lands at 16 bits or less is a related one: the same
+command with a different test name, or a model call after the same
+command's output.
+
+One known weak spot remains. When a short input is mostly contained in
+a longer one, a passing test run and a failing run of the same command
+for instance, every shingle of the short one also votes in the long
+one. On the OpenCode capture such a pair sits at 12 to 17 bits.
 
 **No IDF.** Unlike a corpus-aware similarity scheme, this function sees
 one record's content at a time, the same one-record-at-a-time trust
