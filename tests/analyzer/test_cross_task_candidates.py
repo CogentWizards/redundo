@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from redundo.analyzer import cross_task_candidates
 from redundo.analyzer.cross_task_candidates import find_cross_task_pairs
 from redundo.analyzer.cycles import find_candidate_pairs
-from redundo.analyzer.near_duplicates import find_near_duplicate_pairs
+from redundo.analyzer.near_duplicates import DEFAULT_SIMILARITY_THRESHOLD, find_near_duplicate_pairs
 from redundo.analyzer.schema import Event
 
 ZERO_FP = "0" * 16
@@ -232,7 +232,7 @@ def test_near_duplicate_search_matches_brute_force_on_random_fingerprints():
                 continue
             fp_a = int(repeat.metadata["similarity_fingerprint"], 16)
             fp_b = int(original.metadata["similarity_fingerprint"], 16)
-            if bin(fp_a ^ fp_b).count("1") <= 24 and (best is None or original.timestamp > best.timestamp):
+            if bin(fp_a ^ fp_b).count("1") <= DEFAULT_SIMILARITY_THRESHOLD and (best is None or original.timestamp > best.timestamp):
                 best = original
         if best is not None:
             expected[(repeat.task_id, repeat.step_index)] = (best.task_id, best.step_index)

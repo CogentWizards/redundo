@@ -49,11 +49,12 @@ _CALL_TYPES = ("llm_call", "tool_call")
 # bands of 16 bits only guarantee a shared band when distance < 4, and a
 # pair at distance d shares no band with probability
 #   sum_k (-1)^k C(4,k) C(64-16k, d) / C(64, d)
-# which is 10% at d=4, 42% at d=6, 67% at d=8 and 99.95% at d=24. On real
-# captures that dropped every cross-task near match. Narrower bands don't
-# rescue it, since any banding selective enough to save work misses most
-# pairs near 24 bits. The window keeps the cost linear in group size (at
-# most this many XOR/popcounts per event), and each scan stops at the
+# which is 10% at d=4, 42% at d=6, 67% at d=8, 98% at d=16 and 99.95% at
+# d=24. On real captures that dropped every cross-task near match.
+# Narrower bands don't rescue it, since any banding selective enough to
+# save work misses most pairs near the threshold. The window keeps the
+# cost linear in group size (at most this many XOR/popcounts per event),
+# and each scan stops at the
 # first, i.e. nearest-in-time, qualifying predecessor.
 _EXHAUSTIVE_WINDOW = 4096
 
