@@ -29,10 +29,10 @@ import re
 import unicodedata
 from typing import Any
 
-HASH_SPEC = "v1"
+HASH_SPEC = "v2"  # v2: the <TMP> mask stops at a quote or backslash; v1 ran to whitespace
 HASH_LENGTH = 16  # hex chars = 64 bits. See docs/hashing.md for the birthday-bound math.
 
-SIMILARITY_SPEC = "v2"  # v2: each distinct shingle votes once; v1 weighted by count
+SIMILARITY_SPEC = "v3"  # v3: HASH_SPEC v2 masking; v2: each distinct shingle votes once
 SIMHASH_BITS = 64
 SIMHASH_HEX_LENGTH = SIMHASH_BITS // 4  # kept as its own constant -- see docs/hashing.md
 _SHINGLE_SIZE = 4  # characters, not words -- see similarity_fingerprint's docstring
@@ -53,7 +53,16 @@ _UUID_RE = re.compile(
 )
 _DURATION_RE = re.compile(r"\b\d+(?:\.\d+)?(?:ms|us|µs|ns|s|m|h)\b")
 _HEX_ADDR_RE = re.compile(r"\b0x[0-9a-fA-F]{4,}\b")
-_TMP_PATH_RE = re.compile(r"(?:/tmp/|/var/folders/)\S*")
+# A temp path ends at whitespace, a double quote, or a backslash.
+# Canonical JSON has no literal whitespace, so v1's `\S*` ran past the
+# closing quote and swallowed the following keys and values up to the
+# next space: `{"workdir":"/tmp/x","output":"Ran 2 tests"}` became
+# `{"workdir":"<TMP> 2 tests"}`, losing the `"output"` key and the start
+# of its value. Stopping at a backslash too keeps an escaped quote (`\"`,
+# at any JSON-string nesting depth) and an escaped newline (`\n`) outside
+# the mask, so the same path masks the same way however many JSON layers
+# sit around it.
+_TMP_PATH_RE = re.compile(r'(?:/tmp/|/var/folders/)[^\s"\\]*')
 _BARE_INTEGER_RE = re.compile(r"\b\d{5,}\b")  # opt-in only; see mask_volatile
 # OpenClaw's own prompt-injection defense wraps every piece of external/
 # untrusted tool content (web_search/web_fetch results, at minimum) in

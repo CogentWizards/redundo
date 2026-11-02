@@ -210,6 +210,61 @@ def test_tmp_path_masked():
     assert count2 == 1
 
 
+def test_tmp_path_mask_stops_at_whitespace_and_quotes_in_plain_text():
+    text, count = mask_volatile('cd "/tmp/abc123" && ls /var/folders/xy/T/f.txt now')
+    assert text == 'cd "<TMP>" && ls <TMP> now'
+    assert count == 2
+
+
+def test_tmp_path_mask_stops_at_closing_quote_in_canonical_json():
+    # Canonical JSON has no literal whitespace. A mask that only stopped at
+    # whitespace ate the closing quote, the "output" key and the start of
+    # its value (seen on a real OpenCode capture).
+    canonical = canonicalize_json(
+        {"workdir": "/private/tmp/x", "output": "----\nRan 2 tests\n\nOK"}
+    )
+    text, count = mask_volatile(canonical)
+    assert text == '{"output":"----\\nRan 2 tests\\n\\nOK","workdir":"/private<TMP>"}'
+    assert count == 1
+
+    canonical = canonicalize_json({"path": "/tmp/abc/out.json", "z": "kept"})
+    text, _ = mask_volatile(canonical)
+    assert text == '{"path":"<TMP>","z":"kept"}'
+
+
+def test_tmp_path_mask_stops_at_escaped_quotes_in_nested_json():
+    # A JSON document stored as a string inside another one, at one and
+    # two levels of nesting. The mask must stop at the backslash before
+    # the escaped quote, leaving the escaping intact.
+    inner = canonicalize_json({"path": "/tmp/abc/out.json", "z": "kept"})
+    once = canonicalize_json({"text": inner})
+    text, count = mask_volatile(once)
+    assert text == '{"text":"{\\"path\\":\\"<TMP>\\",\\"z\\":\\"kept\\"}"}'
+    assert count == 1
+
+    twice = canonicalize_json({"outer": once})
+    text, count = mask_volatile(twice)
+    assert text == (
+        '{"outer":"{\\"text\\":\\"{\\\\\\"path\\\\\\":\\\\\\"<TMP>\\\\\\",'
+        '\\\\\\"z\\\\\\":\\\\\\"kept\\\\\\"}\\"}"}'
+    )
+    assert count == 1
+
+
+def test_tmp_path_mask_stops_at_escaped_newline_in_canonical_json():
+    canonical = canonicalize_json({"output": "wrote /tmp/abc/out.json\nRan 2 tests"})
+    text, _ = mask_volatile(canonical)
+    assert text == '{"output":"wrote <TMP>\\nRan 2 tests"}'
+
+
+def test_different_tmp_dirs_hash_identically_but_following_content_still_counts():
+    a, _ = content_hash({"workdir": "/tmp/run-a", "output": "OK"}, structured=True)
+    b, _ = content_hash({"workdir": "/tmp/run-b", "output": "OK"}, structured=True)
+    c, _ = content_hash({"workdir": "/tmp/run-a", "output": "FAILED"}, structured=True)
+    assert a == b
+    assert a != c
+
+
 def test_bare_integers_not_masked_by_default():
     text, count = mask_volatile("order id 123456789")
     assert "123456789" in text
