@@ -11,11 +11,11 @@ Two matching regimes, same as the rest of this package: exact
 content_hash equality, and SimHash near-duplicate similarity. Both scan
 the *whole* corpus, not one task's own lineage, which is the entire
 point (see docs on cross-run fragmentation and cross-agent redundancy).
-Exact match stays a simple O(n) hash-group scan. Near-duplicate uses LSH
-banding (the fingerprint split into fixed-width bands, candidates only
-compared within a shared band) so it doesn't degenerate into an
-all-pairs Hamming-distance scan at corpus scale. The standard trick
-that makes SimHash search practical past a single small group.
+Exact match stays a simple O(n) hash-group scan. Near-duplicate compares
+every pair within one (event_type, name) group exactly, as long as the
+group is small enough for that to be cheap, and only falls back to LSH
+banding past that size. See `_EXHAUSTIVE_GROUP_LIMIT` for why banding
+can't be the default at this threshold.
 
 "Nearest, not every" still applies, generalized from "nearest lineage
 ancestor" to "nearest-in-time predecessor from a different task": the
@@ -37,20 +37,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..adapter.hashing import hamming_distance
 from .cycles import CandidatePair
 from .near_duplicates import DEFAULT_SIMILARITY_THRESHOLD, NearDuplicatePair
 from .schema import Event
 
 _CALL_TYPES = ("llm_call", "tool_call")
 
-# The 64-bit fingerprint split into 4 non-overlapping 16-bit bands. A
-# real near-duplicate is highly likely to collide in at least one band
-# even when it doesn't collide in all four; this is what keeps the
-# search sub-quadratic without missing genuine near-matches. More bands
-# means smaller (cheaper) buckets but a slightly higher chance a real
-# near-duplicate never shares one; 4 is a reasonable starting point, not
-# a validated constant.
+# Near-duplicate search compares each event against every earlier event
+# in its (event_type, name) group, newest first, up to this many back.
+# Banding alone can't do this job at the default threshold: 4 exact
+# bands of 16 bits only guarantee a shared band when distance < 4, and a
+# pair at distance d shares no band with probability
+#   sum_k (-1)^k C(4,k) C(64-16k, d) / C(64, d)
+# which is 10% at d=4, 42% at d=6, 67% at d=8 and 99.95% at d=24. On real
+# captures that dropped every cross-task near match. Narrower bands don't
+# rescue it, since any banding selective enough to save work misses most
+# pairs near 24 bits. The window keeps the cost linear in group size (at
+# most this many XOR/popcounts per event), and each scan stops at the
+# first, i.e. nearest-in-time, qualifying predecessor.
+_EXHAUSTIVE_WINDOW = 4096
+
+# Events older than the window are still reachable through the old 4 x
+# 16-bit banding, so a very close match far back in a huge group is not
+# lost: nothing the banded search used to find is missed now.
 _BAND_COUNT = 4
 _BAND_BITS = 64 // _BAND_COUNT
 
@@ -141,8 +150,7 @@ def _exact_cross_task_pairs(candidates: list[Event]) -> list[CrossTaskPair]:
     return pairs
 
 
-def _bands(fingerprint: str) -> tuple[int, ...]:
-    value = int(fingerprint, 16)
+def _bands(value: int) -> tuple[int, ...]:
     mask = (1 << _BAND_BITS) - 1
     return tuple((value >> (i * _BAND_BITS)) & mask for i in range(_BAND_COUNT))
 
@@ -154,81 +162,80 @@ def _fingerprint_of(event: Event) -> str | None:
     return fingerprint if isinstance(fingerprint, str) else None
 
 
-def _nearest_qualifying_predecessor(
-    group: list[Event],
-    fingerprints: dict[tuple[str, int], str],
-    threshold: int,
-) -> dict[tuple[str, int], Event]:
-    """Like _nearest_different_task_predecessor, but a band collision only
-    makes a pair cheap enough to *check*, it doesn't mean the pair is
-    actually within `threshold`. Every earlier, different-task candidate
-    in the bucket is checked against the real Hamming distance; among the
-    ones that pass, the nearest in time wins. O(bucket_size^2) worst
-    case, fine here since LSH banding is what keeps buckets themselves
-    small, not this step.
-    """
-    ordered = sorted(group, key=lambda e: (e.timestamp, e.task_id, e.step_index))
-    seen: list[Event] = []
-    predecessor: dict[tuple[str, int], Event] = {}
+def _nearest_qualifying_predecessors(
+    group: list[tuple[Event, int]], threshold: int,
+) -> list[tuple[Event, Event, int]]:
+    """group: (event, fingerprint) pairs sharing one (event_type, name),
+    any task. Returns (repeat, original, distance) for every event with a
+    different-task predecessor within `threshold`, picking the nearest
+    in time. Ties (identical timestamp) go to the later task_id, the same
+    rule _nearest_different_task_predecessor uses.
 
-    for event in ordered:
-        key = (event.task_id, event.step_index)
-        fp = fingerprints[key]
-        best: Event | None = None
-        for candidate in seen:
+    Predecessors inside the last _EXHAUSTIVE_WINDOW events are all
+    checked, newest first. Only if none qualifies are the older ones
+    reached through the band index, which is filled as events slide out
+    of the window, so it never holds anything the window already covers.
+    """
+    ordered = sorted(group, key=lambda p: (p[0].timestamp, p[0].task_id, p[0].step_index))
+    band_index: dict[tuple[int, int], list[int]] = {}
+    results: list[tuple[Event, Event, int]] = []
+
+    for i, (event, fp) in enumerate(ordered):
+        evicted = i - _EXHAUSTIVE_WINDOW - 1
+        if evicted >= 0:
+            for band in enumerate(_bands(ordered[evicted][1])):
+                band_index.setdefault(band, []).append(evicted)
+
+        match: tuple[int, int] | None = None  # (index into ordered, distance)
+        for j in range(i - 1, max(evicted, -1), -1):
+            candidate, candidate_fp = ordered[j]
             if candidate.task_id == event.task_id:
                 continue
-            candidate_fp = fingerprints[(candidate.task_id, candidate.step_index)]
-            if hamming_distance(fp, candidate_fp) > threshold:
-                continue
-            if best is None or candidate.timestamp > best.timestamp:
-                best = candidate
-        if best is not None:
-            predecessor[key] = best
-        seen.append(event)
+            distance = (fp ^ candidate_fp).bit_count()
+            if distance <= threshold:
+                match = (j, distance)
+                break
 
-    return predecessor
+        if match is None and band_index:
+            for band in enumerate(_bands(fp)):
+                for j in reversed(band_index.get(band, ())):
+                    if match is not None and j <= match[0]:
+                        break
+                    candidate, candidate_fp = ordered[j]
+                    if candidate.task_id == event.task_id:
+                        continue
+                    distance = (fp ^ candidate_fp).bit_count()
+                    if distance <= threshold:
+                        match = (j, distance)
+                        break
+
+        if match is not None:
+            results.append((event, ordered[match[0]][0], match[1]))
+
+    return results
 
 
 def _near_cross_task_pairs(candidates: list[Event], threshold: int) -> list[CrossTaskPair]:
-    fingerprints: dict[tuple[str, int], str] = {}
-    buckets: dict[tuple[str, str, int, int], list[Event]] = {}
+    groups: dict[tuple[str, str], list[tuple[Event, int]]] = {}
     for event in candidates:
         fingerprint = _fingerprint_of(event)
         if fingerprint is None:
             continue
-        fingerprints[(event.task_id, event.step_index)] = fingerprint
-        # An event lands in up to _BAND_COUNT buckets, one per band, so a
-        # genuine near-duplicate only needs to collide in one of them to
-        # be found at all.
-        for band_idx, band_value in enumerate(_bands(fingerprint)):
-            buckets.setdefault((event.event_type, event.name, band_idx, band_value), []).append(event)
-
-    # An (original, repeat) pair may collide in more than one band, so
-    # keep only the single best (nearest-in-time, threshold-qualifying)
-    # predecessor per repeat across every bucket it appears in.
-    best_predecessor: dict[tuple[str, int], Event] = {}
-    for group in buckets.values():
-        if len({e.task_id for e in group}) < 2:
-            continue
-        for key, predecessor in _nearest_qualifying_predecessor(group, fingerprints, threshold).items():
-            current_best = best_predecessor.get(key)
-            if current_best is None or predecessor.timestamp > current_best.timestamp:
-                best_predecessor[key] = predecessor
+        groups.setdefault((event.event_type, event.name), []).append(
+            (event, int(fingerprint, 16))
+        )
 
     pairs: list[CrossTaskPair] = []
-    for (task_id, step_index), predecessor in best_predecessor.items():
-        repeat_fp = fingerprints[(task_id, step_index)]
-        pred_fp = fingerprints[(predecessor.task_id, predecessor.step_index)]
-        repeat = next(
-            e for e in candidates if (e.task_id, e.step_index) == (task_id, step_index)
-        )
-        pairs.append(
-            CrossTaskPair(
-                task_id=task_id,
-                original=predecessor,
-                repeat=repeat,
-                hamming_distance=hamming_distance(repeat_fp, pred_fp),
+    for group in groups.values():
+        if len({e.task_id for e, _ in group}) < 2:
+            continue
+        for repeat, original, distance in _nearest_qualifying_predecessors(group, threshold):
+            pairs.append(
+                CrossTaskPair(
+                    task_id=repeat.task_id,
+                    original=original,
+                    repeat=repeat,
+                    hamming_distance=distance,
+                )
             )
-        )
     return pairs
