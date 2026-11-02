@@ -351,6 +351,46 @@ def test_masking_prevents_a_shared_volatile_span_from_inflating_similarity():
     assert hamming_distance(a, b) > 20
 
 
+def test_separator_runs_do_not_pull_unrelated_outputs_together():
+    # Shaped like real OpenCode captures: a failing unittest run and an
+    # unrelated subagent report that both happen to contain 70-character
+    # separator lines. Counting every repeated shingle (similarity_spec v1)
+    # put these 0 bits apart; each distinct shingle voting once keeps them
+    # well above the near-duplicate threshold.
+    eq, dash = "=" * 70, "-" * 70
+    failing = [{
+        "tool": "bash",
+        "input": {"command": "python3 -m unittest tests.test_cart -q"},
+        "output": (
+            f"{eq}\nFAIL: test_bulk_discount (tests.test_cart.CartTest.test_bulk_discount)\n{dash}\n"
+            "Traceback (most recent call last):\n"
+            '  File "tests/test_cart.py", line 12, in test_bulk_discount\n'
+            "    self.assertEqual(cart.total(), 45.0)\nAssertionError: 450.0 != 45.0\n\n"
+            f"{dash}\nRan 3 tests in 0.002s\n\nFAILED (failures=1)\n"
+        ),
+    }]
+    report = [{
+        "tool": "task",
+        "input": {
+            "description": "Summarize the changelog",
+            "prompt": "Read CHANGELOG.md and list what changed in 2.1",
+        },
+        "output": (
+            f"Here is what changed:\n\n```\n{dash}\nAdded: export to CSV\n"
+            f"Fixed: crash on empty cart\n{dash}\n```\n\nNothing else changed in 2.1."
+        ),
+    }]
+    a = similarity_fingerprint(failing, structured=True)
+    b = similarity_fingerprint(report, structured=True)
+    assert hamming_distance(a, b) > 24
+
+
+def test_repeating_a_shingle_does_not_change_the_fingerprint():
+    # Each distinct shingle votes once, so a separator's length doesn't matter.
+    text = "Ran 3 tests\n\nFAILED (failures=1)\n"
+    assert similarity_fingerprint(text + "=" * 70) == similarity_fingerprint(text + "=" * 7)
+
+
 def test_empty_string_produces_a_valid_fingerprint():
     fp = similarity_fingerprint("")
     assert len(fp) == SIMHASH_HEX_LENGTH

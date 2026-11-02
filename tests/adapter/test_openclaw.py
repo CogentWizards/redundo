@@ -124,7 +124,7 @@ def test_real_content_gets_a_similarity_fingerprint():
                   attributes={"gen_ai.request.model": "m", "gen_ai.input.messages": INPUT_MESSAGES})]
     records, _ = convert(traces_document(spans))
     assert len(records[0]["metadata"]["similarity_fingerprint"]) == 16
-    assert records[0]["metadata"]["similarity_spec"] == "v1"
+    assert records[0]["metadata"]["similarity_spec"] == "v2"
 
 
 def test_tool_call_arguments_also_get_a_similarity_fingerprint():
