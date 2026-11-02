@@ -100,15 +100,17 @@ def test_cli_ignores_unrecognized_json_files(tmp_path, capsys):
 def test_cli_fails_on_missing_directory(tmp_path, capsys):
     exit_code = main([str(tmp_path / "does-not-exist")])
     assert exit_code == 1
-    assert "no such directory" in capsys.readouterr().err
+    assert "no such file or directory" in capsys.readouterr().err
 
 
-def test_cli_fails_with_a_clearer_message_when_path_is_a_file_not_a_directory(tmp_path, capsys):
+def test_cli_fails_with_a_clearer_message_when_path_is_an_unrecognized_file(tmp_path, capsys):
     file_path = tmp_path / "not-a-directory.json"
     file_path.write_text("{}", encoding="utf-8")
     exit_code = main([str(file_path)])
     assert exit_code == 1
-    assert "expected a directory, got a file" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "no source recognized it as its own native format" in err
+    assert "OTLP input must be a directory" in err
 
 
 def test_cli_fails_with_a_clear_message_when_output_path_is_unwritable(tmp_path, capsys):

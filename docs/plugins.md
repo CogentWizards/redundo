@@ -17,6 +17,8 @@ third-party package would. Nothing about being "built-in" is special.
 ## Adapter sources
 
 ```python
+from pathlib import Path
+
 from redundo.adapter import AdapterSource, Detection
 
 class MySource(AdapterSource):
@@ -54,10 +56,35 @@ this package and `my-source` appears in `redundo adapt --source`'s
 choices, and in auto-detection if `detect()` returns non-`None` for a
 real corpus.
 
+### Sources that don't emit OTLP
+
+If your agent writes its own format instead of OTLP (a session log, a
+SQLite file), also override `load()`:
+
+```python
+    def load(self, path: Path) -> list[dict] | None:
+        """path: whatever the user passed to `redundo adapt` (a file or a
+        directory). Return None if it isn't in your format. Otherwise
+        return a list of dicts, in any shape you like, and the same list
+        is handed to detect() and convert(). Raise
+        redundo.adapter.InputLoadError if it is your format but can't be
+        read, with a message that names the path and position and never
+        quotes the content.
+        """
+```
+
+`redundo adapt` only offers an input to `load()` when it holds no OTLP
+documents at all, so OTLP-based sources are never affected. Sources are
+asked in registration order and the first one that returns a non-empty
+list wins, so only claim input you can positively identify (Pi's loader
+checks every file's first line for a Pi session header). The built-in
+Pi source, `redundo.adapter.sources.pi`, is a complete example.
+
 If your source distinguishes `llm_call` from `tool_call`/`tool_result`
 at all, call `redundo.adapter.model_inference.fill_missing_tool_model(records)`
 on your finished `records` list before returning it from `convert()` --
-every built-in adapter does. It fills `model` on any `tool_call`/
+every built-in adapter does, except Pi, whose records already name the
+call that issued each tool. It fills `model` on any `tool_call`/
 `tool_result` that doesn't already have one, from the nearest `llm_call`
 in the same `task_id` and `workflow` (checked both backward and forward
 in time; a tool call before any `llm_call` your source ever emits is a
@@ -151,7 +178,8 @@ By-model/by-workflow breakdowns also follow a shared convention:
 name the placeholder to use when an event genuinely has no model/workflow
 value at all. The built-in adapters populate both fields for almost
 every event, including `tool_call`/`tool_result` (which have no model of
-their own, but every adapter derives one via the shared
+their own, but every adapter derives one: Pi from the exact call that
+issued it, the rest via the shared
 `redundo.adapter.model_inference.fill_missing_tool_model()` -- the
 nearest `llm_call` in the same workflow, checked both backward and
 forward in time, whichever is closer -- see `metadata.model_basis` in

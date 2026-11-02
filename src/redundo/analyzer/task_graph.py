@@ -8,8 +8,8 @@ guessing a relationship a source didn't report.
 
 A task with no parent_task_id anywhere in its own events is its own
 singleton component, the common case for most corpora today, since
-only one source (hermes-otel, via Hermes's own subagent delegation)
-currently populates this key at all. That's not a degraded case; it's
+only two sources populate this key at all: hermes-otel, via Hermes's
+own subagent delegation, and Pi, for a forked or cloned session. That's not a degraded case; it's
 the honest default until more sources expose an equivalent link.
 
 parent_task_id alone doesn't say what *kind* of relationship it is, and
@@ -18,7 +18,7 @@ that distinction matters for anything that cares about ORDER, not just
 (schema.py's META_PARENT_TASK_LINK_KIND_KEY) narrows this: only links
 explicitly marked "continuation" (this task is a later chapter of the
 same thread) show up in `continuation_parent_of`. A "delegation" link
-(hermes-otel's today) or an unmarked one never does, walking a
+(hermes-otel's) or an unmarked one never does, walking a
 delegation edge as if it were a continuation would compare an
 orchestrator to a subagent it spawned, never one continuous thread to
 begin with. `parent_of`/`component_of` are unaffected by this

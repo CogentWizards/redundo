@@ -15,7 +15,7 @@ reimplemented independently as long as it agrees on this shape.
 | `outcome` | `ok` \| `error` \| empty |
 | `timestamp` | when the event happened |
 | `cost_usd` | dollar-denominated cost, if the source has it directly, or an adapter's own estimate/apportionment when it doesn't (see `metadata.cost_basis` below and [docs/pricing.md](pricing.md)) |
-| `model` | cost fallback, and waste segmented by model. A real, call-level fact on `llm_call`; on `tool_call`/`tool_result` (which have no model of their own), every adapter derives one from the nearest `llm_call` in the same workflow (backward or forward in time, whichever is closer) instead of leaving it empty -- see `metadata.model_basis` |
+| `model` | cost fallback, and waste segmented by model. A real, call-level fact on `llm_call`; on `tool_call`/`tool_result` (which have no model of their own), every adapter derives one instead of leaving it empty: the `llm_call` that issued it when the source records that, otherwise the nearest `llm_call` in the same workflow (backward or forward in time, whichever is closer) -- see `metadata.model_basis` |
 | `parent_id` | the `step_index` (within this `task_id`) of the event that produced/spawned this one |
 | `workflow` | free-text segmentation label (agent name, pipeline stage, ...). Most adapters default absent workflow to `"main"` (a real fact -- no delegation happened -- not a guess) rather than leaving it empty -- see `metadata.workflow_basis` |
 | `metadata` | escape hatch: anything else, keyed by convention (below) |
@@ -102,7 +102,9 @@ Keys `analyze` looks for. Absence is not a claim of a default value.
   every `llm_call` record (a directly-observed, call-level fact there,
   never approximated) and on a `tool_call`/`tool_result` whose workflow
   has no `llm_call` at all anywhere in its task (`model` stays `None` in
-  that case, not a guess).
+  that case, not a guess). One more value, `"issuing_llm_call"`, means
+  the source records exactly which `llm_call` requested this tool (Pi
+  does), so `model` is that call's model, not the nearest one's.
 - `metadata.workflow_basis` (str, optional): which signal produced
   `workflow`, since a source can have more than one candidate and they
   don't all carry equal confidence. Values are source-specific (e.g.
@@ -110,10 +112,10 @@ Keys `analyze` looks for. Absence is not a claim of a default value.
   `"agent_name_attribute"`/`"span_name"`/`"no_workflow_ancestor"` for
   OpenInference sources) -- see each adapter's own doc
   ([claude-code.md](claude-code.md), [openinference.md](openinference.md),
-  [openclaw-localtrace.md](openclaw-localtrace.md)) for what each value
+  [openclaw-localtrace.md](openclaw-localtrace.md), [pi.md](pi.md)) for what each value
   means for that source.
-- `metadata.source_path` (str, optional): the local directory `redundo
-  adapt` read this record's source OTLP documents from, absolute,
+- `metadata.source_path` (str, optional): the local file or directory
+  `redundo adapt` read this record's source data from, absolute,
   resolved at conversion time. Stamped once, corpus-wide, by the `redundo
   adapt` CLI itself, not by any individual adapter. Absent for NDJSON
   built by hand or by any path that skips the CLI. Available on
@@ -205,8 +207,9 @@ it in the same execution path):
   fingerprint can and can't support.
 - **cross_task_redundancy**: a same-or-similar call as an earlier one in
   a *different* task, where the two tasks are confirmed related, a
-  real, source-reported delegation link connects them (see
-  [openinference.md](openinference.md)'s `parent_task_id` section),
+  real, source-reported delegation or fork link connects them (see
+  [openinference.md](openinference.md)'s `parent_task_id` section, and
+  [pi.md](pi.md) for forks),
   never inferred from timing or content. Surfaced for review, not a
   waste verdict: what changed between the two calls isn't checked yet,
   that needs cross-task write/outcome semantics this analysis doesn't

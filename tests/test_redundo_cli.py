@@ -42,7 +42,7 @@ def test_adapt_subcommand_dispatches_on_a_missing_directory(tmp_path, capsys):
     missing = tmp_path / "does-not-exist"
     exit_code = main(["adapt", str(missing)])
     assert exit_code == 1
-    assert "no such directory" in capsys.readouterr().err
+    assert "no such file or directory" in capsys.readouterr().err
 
 
 def test_update_pricing_subcommand_dispatches(capsys):

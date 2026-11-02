@@ -4,7 +4,7 @@
 [![CI](https://github.com/CogentWizards/redundo/actions/workflows/ci.yml/badge.svg)](https://github.com/CogentWizards/redundo/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/CogentWizards/redundo/blob/main/LICENSE)
 
-Point it at your AI agent's OTLP traces. Get a report on what's actually wasted: repeated work, not a guess.
+Point it at your AI agent's OTLP traces (or Pi's session files). Get a report on what's actually wasted: repeated work, not a guess.
 
 - **Runs on your machine.** No account, no SaaS. Point it at OTLP traces you already have, or capture them with the bundled collector.
 - **Every number is checkable.** Each bucket links back to a real, hand-verifiable case.
@@ -221,6 +221,23 @@ automatically via a time-window correlation against the logs signal. See
 
 </details>
 
+<details>
+<summary><strong>Pi</strong></summary>
+
+Nothing to capture. Pi emits no OTLP, but it already keeps every
+conversation as a session file with real per-call cost, and `redundo
+adapt` reads those directly. Point it at one session file, or one
+project's session directory (named after the working directory):
+
+```bash
+redundo adapt ~/.pi/agent/sessions/--Users-me-src-myproject--/ --summary | redundo analyze --format html > report.html
+```
+
+Forked and cloned sessions are linked back to the session they came
+from, without counting the copied history twice. See [docs/pi.md](https://github.com/CogentWizards/redundo/blob/main/docs/pi.md).
+
+</details>
+
 ## See it work
 
 ```bash
@@ -253,8 +270,8 @@ mapping it back to the real task id once, right after the coverage
 block, so a reader doesn't scroll past the same UUID a dozen times.
 Every count above traces back to a real, checkable case in
 [`examples/demo_trace.jsonl`](https://github.com/CogentWizards/redundo/blob/main/examples/demo_trace.jsonl). Full report:
-[`examples/demo_report.html`](https://github.com/CogentWizards/redundo/blob/main/examples/demo_report.html). Five live,
-narrated demo apps (Claude Agent SDK, OpenClaw, Hermes, OpenAI Agents SDK, Google ADK): [`examples/demo-apps/`](https://github.com/CogentWizards/redundo/tree/main/examples/demo-apps/).
+[`examples/demo_report.html`](https://github.com/CogentWizards/redundo/blob/main/examples/demo_report.html). Six live,
+narrated demo apps (Claude Agent SDK, OpenClaw, Hermes, OpenAI Agents SDK, Google ADK, Pi): [`examples/demo-apps/`](https://github.com/CogentWizards/redundo/tree/main/examples/demo-apps/).
 
 ## How it works
 
@@ -309,6 +326,7 @@ by writing an `adapt` plugin, or add a new classification by writing an
 | Claude Code (CLI, IDE extensions, Agent SDK) | [docs/claude-code.md](https://github.com/CogentWizards/redundo/blob/main/docs/claude-code.md) |
 | Claude Cowork | [docs/cowork.md](https://github.com/CogentWizards/redundo/blob/main/docs/cowork.md) |
 | OpenClaw | [docs/openclaw.md](https://github.com/CogentWizards/redundo/blob/main/docs/openclaw.md), or the [openclaw-localtrace](https://github.com/CogentWizards/openclaw-localtrace) plugin ([docs](https://github.com/CogentWizards/redundo/blob/main/docs/openclaw-localtrace.md)) for a real write signal |
+| Pi coding agent (its own session files, no OTLP needed) | [docs/pi.md](https://github.com/CogentWizards/redundo/blob/main/docs/pi.md) |
 
 Not listed? Pipe your own NDJSON matching [the schema](https://github.com/CogentWizards/redundo/blob/main/docs/schema.md)
 straight into `analyze`. It doesn't know or care where its input came

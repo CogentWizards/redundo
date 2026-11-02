@@ -108,8 +108,8 @@ _RECURRING_PATTERN_LABEL = "Recurring pattern"
 # checked here, see the module docstring.
 CROSS_TASK_REDUNDANCY_RULE_TEXT = (
     "Same or near-identical call as an earlier one in a different task, where "
-    "the two tasks are confirmed related (a source-reported delegation link, "
-    "never inferred from timing or content). What changed between the two "
+    "the two tasks are confirmed related (a source-reported delegation or "
+    "fork link, never inferred from timing or content). What changed between the two "
     "calls isn't checked here yet."
 )
 # Deliberately not phrased as a finding about the two tasks at all: no
@@ -487,7 +487,7 @@ class WasteAnalysis(Analysis):
         if cross_task_redundancy_pairs:
             coverage.extra_notes.append(
                 f"{len(cross_task_redundancy_pairs)} pair(s) found across tasks confirmed "
-                "to be part of the same real workflow (a source-reported delegation link, "
+                "to be part of the same real workflow (a source-reported delegation or fork link, "
                 "never inferred from timing or content); see the cross_task_redundancy "
                 "bucket below."
             )
