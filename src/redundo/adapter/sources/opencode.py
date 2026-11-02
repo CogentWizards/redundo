@@ -344,7 +344,7 @@ def _convert_session(
             context = _model_context(messages, index, earlier_parts)
             new_input = (
                 _project_parts(steps[step_number - 1]) if step_number
-                else _new_user_input(messages, index)
+                else _new_input_before(messages, index)
             )
             llm = _llm_record(
                 info, step, len(steps) == 1, step_number == len(steps) - 1, context, new_input,
@@ -615,11 +615,16 @@ def _after_compaction(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return messages
 
 
-def _new_user_input(messages: list[dict[str, Any]], index: int) -> list[Any]:
-    parent = messages[index]["info"].get("parentID")
+def _new_input_before(messages: list[dict[str, Any]], index: int) -> list[Any]:
+    """What's new for a message's first step: the previous assistant
+    step's tool calls and results when the turn is still going, else the
+    user's message. OpenCode 1.19 stores each step of a turn as its own
+    assistant message, so a first step isn't necessarily a turn's first."""
     for m in messages[:index][::-1]:
-        if m["info"].get("id") == parent:
-            return [_project_message(m)]
+        if m["info"].get("role") == "assistant":
+            steps = _split_steps(m["parts"])
+            return _project_parts(steps[-1]) if steps else []
+        return [_project_message(m)]
     return []
 
 

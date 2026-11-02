@@ -88,6 +88,16 @@ calls and results. Every context contains the one before it, so a
 whole-context fingerprint would flag every consecutive pair of calls as
 near-duplicates.
 
+OpenCode 1.19 writes each step of a turn as its own assistant message.
+That's handled: a message's first step takes the previous message's last
+step as its new input, not the user's message.
+
+Short new inputs that are mostly separator lines (Python's `unittest`
+prints 70 `=` or `-` characters per line, for instance) can fingerprint
+close together even when their text differs, because those repeated
+characters outvote the rest. Treat a near-duplicate between two test runs
+with a grain of salt; `content_hash` equality is what proves a repeat.
+
 **`tool_call`**: `state.input`. **`tool_result`**: `state.output`, or
 `state.error` for a failed call.
 
@@ -100,6 +110,12 @@ tool, that tool call is marked `metadata.write: true`
 (`write_basis: "step_patch_single_tool"`), since nothing else in the step
 could have made the change. When it ran several, which one wrote is
 unknown, so none is marked.
+
+The snapshot counts any file that changed, build output included. A test
+run that writes `__pycache__` or a `dist/` folder the project doesn't
+gitignore gets a patch too, and its tool call is marked as a write. That's
+true to what happened on disk, but it isn't the kind of write that makes
+a repeat legitimate. Gitignore build output to keep it out.
 
 A step with no patch part isn't marked as a non-write. Snapshots only
 see files git tracks in the project, they can be turned off, and a tool

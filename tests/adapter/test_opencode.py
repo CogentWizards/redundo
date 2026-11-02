@@ -190,6 +190,18 @@ def test_similarity_fingerprint_covers_the_new_input_only():
     assert records[1]["metadata"]["similarity_fingerprint"] == expected
 
 
+def test_one_message_per_step_still_fingerprints_the_tool_results():
+    # OpenCode 1.19 writes each step of a turn as its own assistant message.
+    s = Session()
+    s.user("fix it")
+    s.assistant([("tool", "bash", {"command": "pytest"}, "completed", "1 failed"), ("finish", 0.01)])
+    s.assistant([("tool", "read", {"filePath": "a.py"}, "completed", "x = 1"), ("finish", 0.01)])
+    s.assistant([("text", "done"), ("finish", 0.01)])
+    records, _ = _convert(s.doc())
+    fingerprints = [r["metadata"]["similarity_fingerprint"] for r in records if r["event_type"] == "llm_call"]
+    assert len(set(fingerprints)) == 3
+
+
 def test_compaction_cuts_the_context_like_filter_compacted():
     def build(session_id, early):
         s = Session(session_id=session_id)

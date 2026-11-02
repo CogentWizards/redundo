@@ -24,6 +24,10 @@ git -C "$REPO_COPY" init -q
 git -C "$REPO_COPY" add -A
 git -C "$REPO_COPY" -c user.name=demo -c user.email=demo@example.invalid commit -q -m fixture
 
+# Keep Python from writing __pycache__ into the copy. OpenCode's snapshot
+# would otherwise record every test run as a step that changed files.
+export PYTHONDONTWRITEBYTECODE=1
+
 echo "Working directory: $WORK_DIR"
 echo "OpenCode version: $(opencode --version)"
 

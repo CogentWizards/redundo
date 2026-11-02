@@ -33,20 +33,48 @@ percentage), then re-runs the same command to confirm.
 **Session C** hands the same test run to OpenCode's `general` subagent
 through the `task` tool, then runs it again itself to double-check.
 
-## What to look for
+## What actually happens on real data
 
-- **Session A**'s repeat is the clean "stuck" case: identical call,
-  identical failing result, nothing written in between. As with every
-  source, the task ending in a normal reply means redundo won't call it
-  `confirmed_waste`.
-- **Session B**'s repeat should read as `likely_legitimate`: the result
-  changed. If OpenCode's snapshot recorded the edit in a step that ran
-  only the edit, that call is also marked as a write (see
-  [docs/opencode.md](https://github.com/CogentWizards/redundo/blob/main/docs/opencode.md#writes)).
-- **Session C**'s subagent runs in its own child session, linked to
-  Session C. The parent's double-check repeats the subagent's run across
-  two linked tasks, so it lands in `cross_task_redundancy`, not
-  `recurring_pattern`. The subagent's records carry its own agent name
-  as their workflow.
-- Every `llm_call` is one step, with OpenCode's own per-step cost, and
-  every tool event carries the model of the step that issued it.
+Verified against a real run (OpenCode 1.19.5, `claude-sonnet-4-6`): 4
+sessions (one of them the subagent's), 13 model calls, 9 tool calls,
+$0.3263, every model call priced by OpenCode itself.
+
+**Session A** lands in `unclassified`, reason: "result identical; no
+intervening write; task succeeded, but that doesn't confirm this
+specific repeated call contributed." The same honest limit as every
+other source: the task ended in a normal reply, so redundo won't call
+the repeat `confirmed_waste`. Its two model calls after the two
+identical failing runs are a 0-bit `near_duplicate`, which is true: the
+model was given exactly the same input twice.
+
+**Session B** lands in `likely_legitimate`, reason: "result changed;
+write intervened". The write is real. OpenCode's snapshot recorded the
+edit to `invoice.py` in a step that ran only the edit, so that call is
+marked as a write (see
+[docs/opencode.md](https://github.com/CogentWizards/redundo/blob/main/docs/opencode.md#writes)).
+
+**Session C** delegated the test run to the `general` subagent, which
+became its own session linked back to C as a delegation. The model
+didn't quite follow orders on the double-check: it dropped the `2>&1`,
+so its own run isn't the same call as the subagent's and isn't paired.
+What did repeat across the link is the model call after each run, since
+both saw the same passing output, and that pair lands in
+`cross_task_redundancy`. The subagent's run is also an exact match to
+Session B's first run, but those two tasks aren't linked, so it's a
+`recurring_pattern`, not a finding.
+
+Building this demo found two real problems:
+
+- OpenCode 1.19 stores each step of a turn as its own assistant
+  message, not one message per turn as its schema suggests. Every model
+  call in a session got the same similarity fingerprint (the user's
+  message) until that was fixed.
+- Python writes `__pycache__` when the tests run, and OpenCode's
+  snapshot recorded that as a file change, marking the test runs as
+  writes. The demo now sets `PYTHONDONTWRITEBYTECODE=1`.
+
+One limit is still there. Session C's call after the subagent reported
+back fingerprints at 0 bits from Session B's call after a failing test,
+because `unittest`'s long separator lines outweigh the text that
+differs. It shows up as a `recurring_pattern` between unrelated tasks,
+which claims nothing, but it's noise.
