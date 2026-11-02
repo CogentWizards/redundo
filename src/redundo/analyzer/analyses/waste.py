@@ -108,8 +108,8 @@ _RECURRING_PATTERN_LABEL = "Recurring pattern"
 # checked here, see the module docstring.
 CROSS_TASK_REDUNDANCY_RULE_TEXT = (
     "Same or near-identical call as an earlier one in a different task, where "
-    "the two tasks are confirmed related (a source-reported delegation link, "
-    "never inferred from timing or content). What changed between the two "
+    "the two tasks are confirmed related (a source-reported delegation or "
+    "fork link, never inferred from timing or content). What changed between the two "
     "calls isn't checked here yet."
 )
 # Deliberately not phrased as a finding about the two tasks at all: no
@@ -487,7 +487,7 @@ class WasteAnalysis(Analysis):
         if cross_task_redundancy_pairs:
             coverage.extra_notes.append(
                 f"{len(cross_task_redundancy_pairs)} pair(s) found across tasks confirmed "
-                "to be part of the same real workflow (a source-reported delegation link, "
+                "to be part of the same real workflow (a source-reported delegation or fork link, "
                 "never inferred from timing or content); see the cross_task_redundancy "
                 "bucket below."
             )
@@ -520,8 +520,12 @@ class WasteAnalysis(Analysis):
         return slice_, by_model, by_workflow, reasons
 
     def _cross_task_reason(self, pair: CrossTaskPair) -> str:
+        # Identical fingerprints aren't identical content: a source can
+        # fingerprint only part of what it hashes (Pi and OpenCode
+        # fingerprint just a call's new input), so only equal content
+        # hashes earn "exact match".
         match_desc = (
-            "exact match" if pair.hamming_distance == 0
+            "exact match" if pair.repeat.content_hash == pair.original.content_hash
             else f"similar (Hamming distance {pair.hamming_distance}/64 bits, "
                  f"threshold {self._near_duplicate_threshold})"
         )

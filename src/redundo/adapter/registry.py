@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from importlib.metadata import entry_points
+from pathlib import Path
 from typing import Any
 
 from .base import AdapterSource, Detection, DetectionError
@@ -67,6 +68,19 @@ class SourceRegistry:
                 logger.exception(
                     "failed to load adapter source plugin %r (%s)", ep.name, ep.value
                 )
+
+    def load_native(self, path: Path) -> tuple[str, list[dict[str, Any]]] | None:
+        """Ask each registered source, in registration order, whether `path`
+        is its own native (non-OTLP) capture format. Returns the first
+        source that claims it, with what it loaded, or None if none does.
+        Only consulted when `path` holds no OTLP documents at all, so an
+        OTLP-based source never competes with a native one.
+        """
+        for source in self._sources.values():
+            documents = source.load(path)
+            if documents:
+                return source.name, documents
+        return None
 
     def detect(self, documents: list[dict[str, Any]]) -> Detection:
         for source in self._sources.values():

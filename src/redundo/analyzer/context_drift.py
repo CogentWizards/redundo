@@ -4,11 +4,11 @@ Everything else in this package (WasteAnalysis's buckets, included the
 cross-task ones) is a deterministic, reproducible claim against a
 threshold that's at least been checked against a real capture (see
 near_duplicates.DEFAULT_SIMILARITY_THRESHOLD's own docstring). This
-module has no equivalent evidence behind it: no source today reports a
-real "continuation" link (see task_graph.py's module docstring on why
-that's a different relationship than the "delegation" link
-hermes-otel does report), so nothing here has been calibrated against
-real drift. It intentionally does not classify anything as a bucket,
+module has no equivalent evidence behind it: the only source that
+reports a real "continuation" link is Pi's forks, which are new (see
+task_graph.py's module docstring on why that's a different relationship
+than the "delegation" link hermes-otel reports), so nothing here has
+been calibrated against real drift. It intentionally does not classify anything as a bucket,
 a verdict, or even a threshold pass/fail. It reports measured distances
 plainly and lets a human decide what's worth a look, the way this
 module's own CLI output says so explicitly.

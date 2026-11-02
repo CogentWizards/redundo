@@ -264,6 +264,23 @@ def test_linked_tasks_land_in_cross_task_redundancy():
     assert bucket(result, "recurring_pattern").slice.count == 0
 
 
+def test_identical_fingerprints_with_different_content_are_not_called_exact():
+    # A source can fingerprint less than it hashes (Pi fingerprints only a
+    # call's new input), so a 0-bit fingerprint distance isn't an exact match.
+    fp = {"similarity_fingerprint": _ZERO_FP}
+    events = [
+        make_event(0, task_id="parent", content_hash="a", timestamp=_t(0), metadata=dict(fp)),
+        make_event(0, task_id="child", content_hash="b", timestamp=_t(10),
+                   metadata={**fp, "parent_task_id": "parent"}),
+        make_event(1, task_id="parent", name="other", content_hash="c", timestamp=_t(1)),
+        make_event(1, task_id="child", name="other", content_hash="c", timestamp=_t(11),
+                   metadata={"parent_task_id": "parent"}),
+    ]
+    reasons = run(events).reasons["cross_task_redundancy"]
+    assert any("step=0" in r and "similar (Hamming distance 0/64" in r for r in reasons)
+    assert any("step=1" in r and "exact match" in r for r in reasons)
+
+
 def test_unrelated_tasks_land_in_recurring_pattern_not_cross_task_redundancy():
     events = [
         make_event(0, task_id="t1", timestamp=_t(0)),

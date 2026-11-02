@@ -20,10 +20,10 @@ from .task_graph import build_task_graph
 _DISCLAIMER = (
     "Context drift hints (a heuristic, not a finding)\n"
     "\n"
-    "No redundo adapter currently emits a real \"continuation\" link (see\n"
-    "docs/context-drift.md), so unlike this project's other thresholds,\n"
-    "nothing below has ever been checked against real drift data. Every\n"
-    "number here is a place to look, not a verdict.\n"
+    "Real \"continuation\" links are new (Pi's forked sessions are the\n"
+    "only source so far, see docs/context-drift.md), so unlike this\n"
+    "project's other thresholds, nothing below has been calibrated against\n"
+    "real drift data yet. Every number here is a place to look, not a verdict.\n"
 )
 
 
@@ -158,9 +158,9 @@ def _hint_to_dict(h: DriftHint) -> dict:
 def _to_json(chains: list[list[str]], hints_by_hop: dict[tuple[str, str], DriftHint]) -> str:
     return json.dumps({
         "disclaimer": (
-            "A heuristic, not a finding. No redundo adapter currently emits a "
-            "real continuation link, so nothing here has ever been checked "
-            "against real drift data."
+            "A heuristic, not a finding. Real continuation links are new (Pi's "
+            "forked sessions are the only source so far), so nothing here has "
+            "been calibrated against real drift data yet."
         ),
         "chains": [
             {
