@@ -729,7 +729,7 @@ _VOLATILE_MESSAGE_FIELDS = frozenset({
     "timestamp", "usage", "api", "provider", "model", "responseModel", "responseId",
     "providerThinkingLevel", "thinkingLevel", "diagnostics", "stopReason", "rawStopReason",
     "endTurn", "errorMessage", "deferred", "details", "nestedCalls", "display",
-    "fullOutputPath", "truncated",
+    "fullOutputPath", "truncated", "durationMs",
 })
 _VOLATILE_BLOCK_FIELDS = frozenset({"textSignature", "thinkingSignature", "thoughtSignature", "id"})
 

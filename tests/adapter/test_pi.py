@@ -472,3 +472,19 @@ def test_similarity_fingerprint_covers_only_the_new_input():
     )
     assert second["metadata"]["similarity_fingerprint"] == expected
     assert first["metadata"]["similarity_fingerprint"] != expected
+
+
+def test_duration_is_not_part_of_the_context():
+    # Pi stamps durationMs on assistant messages and tool results (seen in
+    # real 1.5.0 sessions, not in its docs). It changes every run.
+    def build(session_id, ms):
+        s = Session(session_id=session_id)
+        s.user("go")
+        s.assistant(tool_calls=[("c1", "bash", {"command": "ls"})], durationMs=ms)
+        s.tool_result("c1", "bash", "a", durationMs=ms)
+        s.assistant("done", durationMs=ms)
+        return s.doc()
+
+    a, _ = _convert(build("s-a", 90))
+    b, _ = _convert(build("s-b", 1437))
+    assert a[-1]["content_hash"] == b[-1]["content_hash"]

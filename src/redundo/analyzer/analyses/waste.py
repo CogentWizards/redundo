@@ -520,8 +520,12 @@ class WasteAnalysis(Analysis):
         return slice_, by_model, by_workflow, reasons
 
     def _cross_task_reason(self, pair: CrossTaskPair) -> str:
+        # Identical fingerprints aren't identical content: a source can
+        # fingerprint only part of what it hashes (Pi and OpenCode
+        # fingerprint just a call's new input), so only equal content
+        # hashes earn "exact match".
         match_desc = (
-            "exact match" if pair.hamming_distance == 0
+            "exact match" if pair.repeat.content_hash == pair.original.content_hash
             else f"similar (Hamming distance {pair.hamming_distance}/64 bits, "
                  f"threshold {self._near_duplicate_threshold})"
         )

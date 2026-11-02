@@ -33,19 +33,40 @@ twice, but the result changes in between.
 of Session B's history into the new session file, then Session C
 re-runs the tests once more and adds a docstring example.
 
-## What to look for
+## What actually happens on real data
 
-- **Session A**'s repeat is the clean "stuck" case. Pi's tool results
-  don't say whether a tool changed anything, so write status is unknown
-  and, as with every source, the task ending in a normal reply means
-  redundo won't call it `confirmed_waste`. See [docs/pi.md](https://github.com/CogentWizards/redundo/blob/main/docs/pi.md).
-- **Session B**'s repeat should read as `likely_legitimate`, because
-  the result changed.
-- **Session C** shouldn't double-count anything from Session B, even
-  though its file contains all of Session B's entries. Its re-run of the
-  tests repeats Session B's, across two tasks that Pi itself links, so
-  it lands in `cross_task_redundancy`, not `recurring_pattern`.
-- `redundo drift` shows the chain `demo-b -> demo-c`, the first real
-  continuation link redundo has had to work with.
-- Every `llm_call` carries Pi's own cost, and every tool event carries
-  the model of the call that issued it.
+Verified against a real run (Pi 1.5.0, `claude-opus-4-8`): 11 model calls,
+8 tool calls, $0.0745, every model call priced by Pi itself.
+
+**Session A** lands in `unclassified`, reason: "result identical; no
+intervening write; task succeeded, but that doesn't confirm this
+specific repeated call contributed." The repeat really was identical,
+down to the failing output. Pi's tool results don't say whether a tool
+changed anything, so write status is unknown, and the task ended in a
+normal reply, so redundo won't promote it to `confirmed_waste`. That's
+the same honest limit the Claude Agent SDK and OpenClaw demos hit, see
+[docs/pi.md](https://github.com/CogentWizards/redundo/blob/main/docs/pi.md).
+
+**Session B** lands in `likely_legitimate`, reason: "result changed".
+The tests failed before the edit and passed after it.
+
+**Session C** is where Pi's fork handling shows. Its file holds all 13
+of Session B's entries, copied verbatim, and `--summary` reports "13
+copied entries skipped", so none of Session B's calls are counted
+twice. Its re-run of the tests lands in `cross_task_redundancy` (an
+exact match to Session B's first test run), because Pi itself links the
+fork to Session B. `redundo drift` shows the chain `demo-b -> demo-c`,
+the first real continuation link redundo has had to work with.
+
+Two `near_duplicate` hits are worth reading closely. Session A's second
+model call got exactly the same input as its first (the same failing
+test output), a 0-bit match, which is true and is the point. Session B's
+call after its edit and its call after reading the file sit 21 bits
+apart, under the 24-bit threshold, because short tool outputs share a
+lot of structure. That one is noise.
+
+Building this demo found two real problems, both fixed before it
+shipped: Pi stamps an undocumented `durationMs` on every message, which
+had to be kept out of the context hash, and the report called any
+cross-task pair with identical fingerprints an "exact match", even when
+the content differed.
